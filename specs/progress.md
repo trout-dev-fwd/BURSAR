@@ -2,8 +2,8 @@
 
 ## Current State
 - **Active Phase**: Phase 2a
-- **Last Completed Task**: Phase 2a, Task 4
-- **Next Task**: Phase 2a, Task 5
+- **Last Completed Task**: Phase 2a, Task 5
+- **Next Task**: Phase 2a, Task 6
 - **Blockers**: None
 
 ## Completed Phases
@@ -16,7 +16,7 @@
 - [x] Task 2: Create AuditRepo [TEST-FIRST]
 - [x] Task 3: CoA tab — list view
 - [x] Task 4: CoA tab — CRUD actions
-- [ ] Task 5: Account picker widget
+- [x] Task 5: Account picker widget
 - [ ] Task 6: Confirmation widget
 
 ### Phase 1: Foundation (complete)
