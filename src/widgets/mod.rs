@@ -1,9 +1,11 @@
 pub mod account_picker;
 pub mod confirmation;
+pub mod je_form;
 pub mod status_bar;
 
 pub use account_picker::AccountPicker;
 pub use confirmation::Confirmation;
+pub use je_form::JeForm;
 pub use status_bar::StatusBar;
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};

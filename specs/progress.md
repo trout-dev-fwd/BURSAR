@@ -1,9 +1,9 @@
 # Progress Tracker
 
 ## Current State
-- **Active Phase**: Phase 2a (complete — review fixes applied)
-- **Last Completed Task**: Phase 2a review fixes
-- **Next Task**: Phase 2b, Task 1
+- **Active Phase**: Phase 2b (in progress)
+- **Last Completed Task**: Phase 2b, Task 3
+- **Next Task**: Phase 2b, Task 4
 - **Blockers**: None
 
 ## Completed Phases
@@ -11,6 +11,16 @@
 - [x] Phase 2a: Chart of Accounts (completed 2026-03-15, review fixes applied 2026-03-15)
 
 ## Current Phase Progress
+
+### Phase 2b: Journal Entries
+- [x] Task 1: Create JournalRepo [TEST-FIRST]
+- [x] Task 2: Post/reverse orchestration (services/journal.rs)
+- [x] Task 3: Create JeForm widget
+- [ ] Task 4: JE tab — list view
+- [ ] Task 5: JE tab — actions (new, post, reverse)
+- [ ] Task 6: Reconciliation state changes
+- [ ] Task 7: Account balances reflect posted entries
+- [ ] Task 8: Cross-tab navigation (CoA → JE)
 
 ### Phase 2a: Chart of Accounts
 - [x] Task 1: Create AccountRepo [TEST-FIRST]
@@ -43,6 +53,26 @@
 - [x] Task 20: Set up pre-commit hook
 
 ## Decisions & Discoveries
+
+- **[Phase 2b, Task 3]**: `JeForm` is self-contained — embeds `AccountPicker` directly and returns
+  `JeFormAction::Submitted(JeFormOutput)` / `Cancelled` / `Pending`. `JeFormOutput` does not include
+  `fiscal_period_id`; the caller (JE tab or inter-entity modal) resolves that from `entry_date`.
+  `parse_money(s)` is public for use by callers that need to display Money from user strings.
+  `let-chains` (`if let A && let B`) required to satisfy `clippy::collapsible_if`.
+
+- **[Phase 2b, Task 2]**: `post_journal_entry` validates Draft status, ≥2 lines, balanced
+  debits==credits, all accounts active+non-placeholder, fiscal period open. Contains
+  `// TODO(Phase 4): Check for cash receipt and trigger envelope fills` at the envelope
+  fill insertion point. `reverse_journal_entry` creates a mirror draft (flipped debit/credit),
+  promotes it to Posted, then marks the original `is_reversed=true` — all in one transaction.
+  `JournalError` variants holding IDs use `i64` (not `JournalEntryId`) because `JournalEntryId`
+  does not implement `Display` (required by `thiserror`).
+
+- **[Phase 2b, Task 1]**: `JournalRepo::list()` uses dynamic SQL building with
+  `params_from_iter` — not the sentinel pattern from `AuditRepo`. `NewJournalEntry` includes
+  `reversal_of_je_id: Option<JournalEntryId>` (NULL for normal entries) so Task 2 can set the
+  link at creation time. `entity_db_from_conn()` test helper added to `db/mod.rs` (cfg(test))
+  to wrap an in-memory connection for service-layer tests.
 
 - **[Phase 2a, Task 4 + review fix]**: CRUD modals implemented as a `CoaModal` enum on the tab struct.
   After review, the Add form's parent field was wired to use the AccountPicker widget (opens as a
