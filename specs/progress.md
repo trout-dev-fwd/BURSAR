@@ -1,13 +1,15 @@
 # Progress Tracker
 
 ## Current State
-- **Active Phase**: Phase 2a
-- **Last Completed Task**: Phase 2a, Task 5
-- **Next Task**: Phase 2a, Task 6
+- **Active Phase**: Phase 2a (complete — awaiting developer review)
+- **Last Completed Task**: Phase 2a, Task 6
+- **Next Task**: Phase 2b, Task 1 (after developer sign-off)
+- **Blockers**: None
 - **Blockers**: None
 
 ## Completed Phases
 - [x] Phase 1: Foundation (completed 2026-03-15)
+_(Phase 2a complete — awaiting developer review before marking done)_
 
 ## Current Phase Progress
 
@@ -17,7 +19,7 @@
 - [x] Task 3: CoA tab — list view
 - [x] Task 4: CoA tab — CRUD actions
 - [x] Task 5: Account picker widget
-- [ ] Task 6: Confirmation widget
+- [x] Task 6: Confirmation widget
 
 ### Phase 1: Foundation (complete)
 - [x] Task 1: Initialize Cargo project with dependencies
