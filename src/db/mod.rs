@@ -1,3 +1,4 @@
+pub mod fiscal_repo;
 pub mod schema;
 
 use std::path::Path;
@@ -5,6 +6,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 
+use crate::db::fiscal_repo::FiscalRepo;
 use crate::db::schema::{initialize_schema, seed_default_accounts};
 
 /// Holds the SQLite connection for one entity database.
@@ -45,13 +47,17 @@ impl EntityDb {
         &self.conn
     }
 
+    /// Returns a FiscalRepo borrowing this connection.
+    pub fn fiscal(&self) -> FiscalRepo<'_> {
+        FiscalRepo::new(&self.conn)
+    }
+
     // ── Stub repo accessors (filled in later phases) ──────────────────────────
     // TODO(Phase 2a): fn accounts(&self) -> AccountRepo<'_>
     // TODO(Phase 2a): fn audit(&self) -> AuditRepo<'_>
     // TODO(Phase 2b): fn journals(&self) -> JournalRepo<'_>
     // TODO(Phase 3):  fn ar(&self) -> ArRepo<'_>
     // TODO(Phase 3):  fn ap(&self) -> ApRepo<'_>
-    // TODO(Phase 3):  fn fiscal(&self) -> FiscalRepo<'_>  ← added in Task 11
     // TODO(Phase 4):  fn envelopes(&self) -> EnvelopeRepo<'_>
     // TODO(Phase 4):  fn assets(&self) -> AssetRepo<'_>
     // TODO(Phase 5):  fn recurring(&self) -> RecurringRepo<'_>
