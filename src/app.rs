@@ -52,7 +52,7 @@ impl EntityContext {
         je.set_entity_name(&name);
         let mut tabs: Vec<Box<dyn Tab>> = vec![
             Box::new(coa),
-            Box::new(GeneralLedgerTab),
+            Box::new(GeneralLedgerTab::new()),
             Box::new(je),
             Box::new(AccountsReceivableTab),
             Box::new(AccountsPayableTab),

@@ -73,6 +73,30 @@ pub struct JournalFilter {
     pub to_date: Option<NaiveDate>,
 }
 
+/// Date range filter used in ledger and reporting queries.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DateRange {
+    pub from: Option<NaiveDate>,
+    pub to: Option<NaiveDate>,
+}
+
+/// A single row in a per-account General Ledger view.
+/// Combines data from `journal_entries` and `journal_entry_lines`.
+#[derive(Debug, Clone)]
+pub struct LedgerRow {
+    pub je_id: JournalEntryId,
+    pub je_number: String,
+    pub entry_date: NaiveDate,
+    /// Line-level memo if set, otherwise falls back to the JE-level memo.
+    pub memo: Option<String>,
+    pub debit: Money,
+    pub credit: Money,
+    pub reconcile_state: ReconcileState,
+    /// Cumulative net balance (Σ debit − Σ credit) through this row, ordered
+    /// chronologically. Credit-normal account display logic should negate this.
+    pub running_balance: Money,
+}
+
 // ── Repository ────────────────────────────────────────────────────────────────
 
 /// Repository for the `journal_entries` and `journal_entry_lines` tables.
@@ -268,6 +292,101 @@ impl<'conn> JournalRepo<'conn> {
             )
             .with_context(|| format!("Failed to mark JE {} as reversed", i64::from(id)))?;
         Ok(())
+    }
+
+    /// Returns all posted lines for `account_id` in chronological order,
+    /// with a cumulative running balance (debit-basis) pre-computed on each row.
+    ///
+    /// If `date_range` is `Some`, only lines whose JE date falls within the
+    /// range are returned. The running balance starts at 0 from the first
+    /// returned row; it does not include any pre-filter balance.
+    pub fn list_lines_for_account(
+        &self,
+        account_id: AccountId,
+        date_range: Option<DateRange>,
+    ) -> Result<Vec<LedgerRow>> {
+        let from_str: Option<String> = date_range.and_then(|dr| dr.from).map(|d| d.to_string());
+        let to_str: Option<String> = date_range.and_then(|dr| dr.to).map(|d| d.to_string());
+
+        let mut stmt = self.conn.prepare(
+            "SELECT je.id, je.je_number, je.entry_date, je.memo,
+                    jel.line_memo, jel.debit_amount, jel.credit_amount, jel.reconcile_state
+             FROM journal_entry_lines jel
+             JOIN journal_entries je ON je.id = jel.journal_entry_id
+             WHERE jel.account_id = ?1
+               AND je.status = 'Posted'
+               AND (?2 IS NULL OR je.entry_date >= ?2)
+               AND (?3 IS NULL OR je.entry_date <= ?3)
+             ORDER BY je.entry_date ASC, je.je_number ASC, jel.sort_order ASC, jel.id ASC",
+        )?;
+
+        type RawRow = (
+            JournalEntryId,
+            String,
+            NaiveDate,
+            Option<String>,
+            Money,
+            Money,
+            ReconcileState,
+        );
+
+        let raw: Vec<RawRow> = stmt
+            .query_map(params![i64::from(account_id), from_str, to_str], |row| {
+                let date_str: String = row.get(2)?;
+                let entry_date = NaiveDate::parse_from_str(&date_str, "%Y-%m-%d").map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        2,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?;
+                let reconcile_str: String = row.get(7)?;
+                let reconcile_state = reconcile_str.parse::<ReconcileState>().map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        7,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?;
+                // Prefer line-level memo; fall back to JE-level memo.
+                let je_memo: Option<String> = row.get(3)?;
+                let line_memo: Option<String> = row.get(4)?;
+                let memo = line_memo.or(je_memo);
+                Ok((
+                    JournalEntryId::from(row.get::<_, i64>(0)?),
+                    row.get::<_, String>(1)?,
+                    entry_date,
+                    memo,
+                    Money(row.get::<_, i64>(5)?),
+                    Money(row.get::<_, i64>(6)?),
+                    reconcile_state,
+                ))
+            })?
+            .map(|r| r.map_err(anyhow::Error::from))
+            .collect::<Result<Vec<_>>>()?;
+
+        // Compute running balance (Σ debit − Σ credit), oldest-first.
+        let mut balance = Money(0);
+        let rows = raw
+            .into_iter()
+            .map(
+                |(je_id, je_number, entry_date, memo, debit, credit, reconcile_state)| {
+                    balance = Money(balance.0 + debit.0 - credit.0);
+                    LedgerRow {
+                        je_id,
+                        je_number,
+                        entry_date,
+                        memo,
+                        debit,
+                        credit,
+                        reconcile_state,
+                        running_balance: balance,
+                    }
+                },
+            )
+            .collect();
+
+        Ok(rows)
     }
 
     /// Updates the reconcile state of a single journal entry line.
@@ -888,6 +1007,234 @@ mod tests {
             msg.contains("Reconciled") && msg.contains("permanent"),
             "Error should mention Reconciled is permanent: {msg}"
         );
+    }
+
+    // ── list_lines_for_account ────────────────────────────────────────────────
+
+    #[test]
+    fn list_lines_for_account_omits_draft_entries() {
+        let (conn, period_id, acct1, acct2) = db_with_fiscal_year();
+        let repo = JournalRepo::new(&conn);
+
+        // Create a draft only — should NOT appear in GL.
+        repo.create_draft(&NewJournalEntry {
+            entry_date: NaiveDate::from_ymd_opt(2026, 1, 5).unwrap(),
+            memo: Some("Draft entry".to_string()),
+            fiscal_period_id: period_id,
+            reversal_of_je_id: None,
+            lines: vec![
+                NewJournalEntryLine {
+                    account_id: acct1,
+                    debit_amount: Money(10_000_000_000),
+                    credit_amount: Money(0),
+                    line_memo: None,
+                    sort_order: 0,
+                },
+                NewJournalEntryLine {
+                    account_id: acct2,
+                    debit_amount: Money(0),
+                    credit_amount: Money(10_000_000_000),
+                    line_memo: None,
+                    sort_order: 1,
+                },
+            ],
+        })
+        .expect("create draft");
+
+        let rows = repo
+            .list_lines_for_account(acct1, None)
+            .expect("list_lines_for_account");
+        assert!(rows.is_empty(), "Draft entries should not appear in GL");
+    }
+
+    #[test]
+    fn list_lines_for_account_running_balance_correct() {
+        let (conn, period_id, acct1, acct2) = db_with_fiscal_year();
+        let repo = JournalRepo::new(&conn);
+
+        let make_entry = |date: NaiveDate, debit1: Money, credit1: Money| NewJournalEntry {
+            entry_date: date,
+            memo: None,
+            fiscal_period_id: period_id,
+            reversal_of_je_id: None,
+            lines: vec![
+                NewJournalEntryLine {
+                    account_id: acct1,
+                    debit_amount: debit1,
+                    credit_amount: credit1,
+                    line_memo: None,
+                    sort_order: 0,
+                },
+                NewJournalEntryLine {
+                    account_id: acct2,
+                    debit_amount: credit1,
+                    credit_amount: debit1,
+                    line_memo: None,
+                    sort_order: 1,
+                },
+            ],
+        };
+
+        let d1 = NaiveDate::from_ymd_opt(2026, 1, 5).unwrap();
+        let d2 = NaiveDate::from_ymd_opt(2026, 1, 10).unwrap();
+        let d3 = NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
+
+        // JE1: debit acct1 $100, JE2: debit acct1 $50, JE3: credit acct1 $30.
+        let id1 = repo
+            .create_draft(&make_entry(d1, Money(10_000_000_000), Money(0)))
+            .unwrap();
+        let id2 = repo
+            .create_draft(&make_entry(d2, Money(5_000_000_000), Money(0)))
+            .unwrap();
+        let id3 = repo
+            .create_draft(&make_entry(d3, Money(0), Money(3_000_000_000)))
+            .unwrap();
+
+        repo.update_status(id1, JournalEntryStatus::Posted).unwrap();
+        repo.update_status(id2, JournalEntryStatus::Posted).unwrap();
+        repo.update_status(id3, JournalEntryStatus::Posted).unwrap();
+
+        let rows = repo
+            .list_lines_for_account(acct1, None)
+            .expect("list_lines_for_account");
+        assert_eq!(rows.len(), 3);
+
+        // After JE1: +$100 → balance = 10_000_000_000
+        assert_eq!(rows[0].debit, Money(10_000_000_000));
+        assert_eq!(rows[0].credit, Money(0));
+        assert_eq!(rows[0].running_balance, Money(10_000_000_000));
+        assert_eq!(rows[0].entry_date, d1);
+
+        // After JE2: +$50 → balance = 15_000_000_000
+        assert_eq!(rows[1].debit, Money(5_000_000_000));
+        assert_eq!(rows[1].running_balance, Money(15_000_000_000));
+
+        // After JE3: -$30 → balance = 12_000_000_000
+        assert_eq!(rows[2].credit, Money(3_000_000_000));
+        assert_eq!(rows[2].running_balance, Money(12_000_000_000));
+    }
+
+    #[test]
+    fn list_lines_for_account_date_filter_works() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        initialize_schema(&conn).expect("schema init");
+
+        let fiscal = FiscalRepo::new(&conn);
+        let fy_id = fiscal.create_fiscal_year(1, 2026).expect("create FY");
+        let periods = fiscal.list_periods(fy_id).expect("list periods");
+        let jan = periods[0].id;
+        let mar = periods[2].id;
+
+        let acct1 = make_account(&conn, "9001", "Test Asset A");
+        let acct2 = make_account(&conn, "9002", "Test Asset B");
+        let repo = JournalRepo::new(&conn);
+
+        let make_simple = |date: NaiveDate, period: FiscalPeriodId| NewJournalEntry {
+            entry_date: date,
+            memo: None,
+            fiscal_period_id: period,
+            reversal_of_je_id: None,
+            lines: vec![
+                NewJournalEntryLine {
+                    account_id: acct1,
+                    debit_amount: Money(10_000_000_000),
+                    credit_amount: Money(0),
+                    line_memo: None,
+                    sort_order: 0,
+                },
+                NewJournalEntryLine {
+                    account_id: acct2,
+                    debit_amount: Money(0),
+                    credit_amount: Money(10_000_000_000),
+                    line_memo: None,
+                    sort_order: 1,
+                },
+            ],
+        };
+
+        let jan15 = NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
+        let mar15 = NaiveDate::from_ymd_opt(2026, 3, 15).unwrap();
+
+        let id1 = repo.create_draft(&make_simple(jan15, jan)).unwrap();
+        let id2 = repo.create_draft(&make_simple(mar15, mar)).unwrap();
+        repo.update_status(id1, JournalEntryStatus::Posted).unwrap();
+        repo.update_status(id2, JournalEntryStatus::Posted).unwrap();
+
+        // No filter: both rows returned.
+        let all = repo.list_lines_for_account(acct1, None).unwrap();
+        assert_eq!(all.len(), 2);
+
+        // Filter from Feb 1: only March row.
+        let from_feb = repo
+            .list_lines_for_account(
+                acct1,
+                Some(DateRange {
+                    from: Some(NaiveDate::from_ymd_opt(2026, 2, 1).unwrap()),
+                    to: None,
+                }),
+            )
+            .unwrap();
+        assert_eq!(from_feb.len(), 1);
+        assert_eq!(from_feb[0].entry_date, mar15);
+
+        // Filter to Jan 31: only January row.
+        let to_jan = repo
+            .list_lines_for_account(
+                acct1,
+                Some(DateRange {
+                    from: None,
+                    to: Some(NaiveDate::from_ymd_opt(2026, 1, 31).unwrap()),
+                }),
+            )
+            .unwrap();
+        assert_eq!(to_jan.len(), 1);
+        assert_eq!(to_jan[0].entry_date, jan15);
+
+        // Running balance resets to 0 within the filtered window.
+        assert_eq!(from_feb[0].running_balance, Money(10_000_000_000));
+        assert_eq!(to_jan[0].running_balance, Money(10_000_000_000));
+    }
+
+    #[test]
+    fn list_lines_for_account_memo_prefers_line_memo() {
+        let (conn, period_id, acct1, acct2) = db_with_fiscal_year();
+        let repo = JournalRepo::new(&conn);
+
+        let je_id = repo
+            .create_draft(&NewJournalEntry {
+                entry_date: NaiveDate::from_ymd_opt(2026, 1, 5).unwrap(),
+                memo: Some("JE memo".to_string()),
+                fiscal_period_id: period_id,
+                reversal_of_je_id: None,
+                lines: vec![
+                    NewJournalEntryLine {
+                        account_id: acct1,
+                        debit_amount: Money(10_000_000_000),
+                        credit_amount: Money(0),
+                        line_memo: Some("Line memo".to_string()),
+                        sort_order: 0,
+                    },
+                    NewJournalEntryLine {
+                        account_id: acct2,
+                        debit_amount: Money(0),
+                        credit_amount: Money(10_000_000_000),
+                        line_memo: None,
+                        sort_order: 1,
+                    },
+                ],
+            })
+            .unwrap();
+        repo.update_status(je_id, JournalEntryStatus::Posted)
+            .unwrap();
+
+        let rows = repo.list_lines_for_account(acct1, None).unwrap();
+        assert_eq!(rows.len(), 1);
+        // Line memo takes priority over JE memo.
+        assert_eq!(rows[0].memo.as_deref(), Some("Line memo"));
+
+        // acct2 has no line memo, should fall back to JE memo.
+        let rows2 = repo.list_lines_for_account(acct2, None).unwrap();
+        assert_eq!(rows2[0].memo.as_deref(), Some("JE memo"));
     }
 
     #[test]
