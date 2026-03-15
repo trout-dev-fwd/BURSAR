@@ -51,7 +51,7 @@ impl EntityContext {
         let mut tabs: Vec<Box<dyn Tab>> = vec![
             Box::new(coa),
             Box::new(GeneralLedgerTab),
-            Box::new(JournalEntriesTab),
+            Box::new(JournalEntriesTab::new()),
             Box::new(AccountsReceivableTab),
             Box::new(AccountsPayableTab),
             Box::new(EnvelopesTab),
