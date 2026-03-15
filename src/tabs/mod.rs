@@ -1,3 +1,23 @@
+pub mod accounts_payable;
+pub mod accounts_receivable;
+pub mod audit_log;
+pub mod chart_of_accounts;
+pub mod envelopes;
+pub mod fixed_assets;
+pub mod general_ledger;
+pub mod journal_entries;
+pub mod reports;
+
+pub use accounts_payable::AccountsPayableTab;
+pub use accounts_receivable::AccountsReceivableTab;
+pub use audit_log::AuditLogTab;
+pub use chart_of_accounts::ChartOfAccountsTab;
+pub use envelopes::EnvelopesTab;
+pub use fixed_assets::FixedAssetsTab;
+pub use general_ledger::GeneralLedgerTab;
+pub use journal_entries::JournalEntriesTab;
+pub use reports::ReportsTab;
+
 use crossterm::event::KeyEvent;
 use ratatui::{Frame, layout::Rect};
 
