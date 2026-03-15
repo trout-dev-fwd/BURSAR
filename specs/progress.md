@@ -142,5 +142,19 @@ Applied 9 fixes from the end-of-phase developer review:
 8. **Edit form Enter behavior fixed** — now advances through fields before submit (consistent with Add)
 9. **AccountReactivated audit action added** — reactivations no longer logged as AccountDeactivated
 
+## Phase 2b Review Fixes (2026-03-15)
+
+Applied 3 fixes from the end-of-phase developer review:
+
+1. **`update_reconcile_state()` guard rails** (must-fix) — repo method now queries current
+   reconcile state and period `is_closed` before updating. Rejects Reconciled lines
+   ("permanent state") and lines in closed fiscal periods. Two tests added for both rejection
+   paths. Defense-in-depth: the tab layer already checked these, but the repo now enforces
+   the invariants independently for future callers.
+2. **Defensive tests for post/reverse edge cases** — added `post_already_posted_entry_returns_not_draft_error`
+   and `reverse_draft_entry_returns_not_posted_error` to `services/journal.rs` tests.
+3. **`get_next_je_number()` cleanup** — replaced chained `.unwrap_or("0").parse().unwrap_or(0)`
+   with `.and_then(|suffix| suffix.parse().ok()).unwrap_or(0)` for clarity.
+
 ## Known Issues
 - None currently.

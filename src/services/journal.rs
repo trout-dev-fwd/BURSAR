@@ -547,7 +547,51 @@ mod tests {
         );
     }
 
+    #[test]
+    fn post_already_posted_entry_returns_not_draft_error() {
+        let db = make_entity_db();
+        let (jan_period, _) = setup_fiscal_year(&db);
+        let (acct1, acct2) = get_two_postable_accounts(&db);
+        let date = NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
+
+        let entry = make_balanced_entry(jan_period, acct1, acct2, date);
+        let je_id = db.journals().create_draft(&entry).expect("create");
+        post_journal_entry(&db, je_id, "Test Entity").expect("first post");
+
+        let result = post_journal_entry(&db, je_id, "Test Entity");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("not a Draft"),
+            "Error should mention not a Draft: {msg}"
+        );
+    }
+
     // ── reverse_journal_entry ─────────────────────────────────────────────────
+
+    #[test]
+    fn reverse_draft_entry_returns_not_posted_error() {
+        let db = make_entity_db();
+        let (jan_period, _) = setup_fiscal_year(&db);
+        let (acct1, acct2) = get_two_postable_accounts(&db);
+        let date = NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
+
+        let entry = make_balanced_entry(jan_period, acct1, acct2, date);
+        let je_id = db.journals().create_draft(&entry).expect("create");
+
+        let result = reverse_journal_entry(
+            &db,
+            je_id,
+            NaiveDate::from_ymd_opt(2026, 1, 20).unwrap(),
+            "Test Entity",
+        );
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("not Posted"),
+            "Error should mention not Posted: {msg}"
+        );
+    }
 
     #[test]
     fn reverse_posted_entry_creates_mirror_and_marks_original() {

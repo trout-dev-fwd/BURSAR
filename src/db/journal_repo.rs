@@ -101,7 +101,10 @@ impl<'conn> JournalRepo<'conn> {
             None => 1,
             Some(s) => {
                 // Format: "JE-NNNN" — extract the numeric suffix after "JE-".
-                let num: u32 = s.strip_prefix("JE-").unwrap_or("0").parse().unwrap_or(0);
+                let num: u32 = s
+                    .strip_prefix("JE-")
+                    .and_then(|suffix| suffix.parse().ok())
+                    .unwrap_or(0);
                 num + 1
             }
         };
@@ -268,11 +271,57 @@ impl<'conn> JournalRepo<'conn> {
     }
 
     /// Updates the reconcile state of a single journal entry line.
+    ///
+    /// Rejects the update if the line is already `Reconciled` (terminal state)
+    /// or if the line's journal entry is in a closed fiscal period.
     pub fn update_reconcile_state(
         &self,
         line_id: JournalEntryLineId,
         new_state: ReconcileState,
     ) -> Result<()> {
+        // Fetch current reconcile state and the entry's period closure status in one query.
+        let (current_state_str, is_closed): (String, i32) = self
+            .conn
+            .query_row(
+                "SELECT jel.reconcile_state, fp.is_closed
+                 FROM journal_entry_lines jel
+                 JOIN journal_entries je ON je.id = jel.journal_entry_id
+                 JOIN fiscal_periods fp ON fp.id = je.fiscal_period_id
+                 WHERE jel.id = ?1",
+                params![i64::from(line_id)],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .with_context(|| {
+                format!(
+                    "Failed to look up reconcile state for line {}",
+                    i64::from(line_id)
+                )
+            })?;
+
+        let current_state = current_state_str
+            .parse::<ReconcileState>()
+            .with_context(|| {
+                format!(
+                    "Invalid reconcile_state '{}' for line {}",
+                    current_state_str,
+                    i64::from(line_id)
+                )
+            })?;
+
+        if current_state == ReconcileState::Reconciled {
+            anyhow::bail!(
+                "Cannot modify reconciled entries. Reconciled state is permanent. (line {})",
+                i64::from(line_id)
+            );
+        }
+
+        if is_closed != 0 {
+            anyhow::bail!(
+                "Cannot modify reconcile state for line {} — fiscal period is closed",
+                i64::from(line_id)
+            );
+        }
+
         self.conn
             .execute(
                 "UPDATE journal_entry_lines SET reconcile_state = ?1 WHERE id = ?2",
@@ -786,6 +835,111 @@ mod tests {
             original.reversed_by_je_id,
             Some(reversal_id),
             "reversed_by_je_id should point to reversal"
+        );
+    }
+
+    // ── update_reconcile_state guard rails ────────────────────────────────────
+
+    #[test]
+    fn update_reconcile_state_rejects_reconciled_line() {
+        let (conn, period_id, acct1, acct2) = db_with_fiscal_year();
+        let repo = JournalRepo::new(&conn);
+
+        let date = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+        let je_id = repo
+            .create_draft(&NewJournalEntry {
+                entry_date: date,
+                memo: None,
+                fiscal_period_id: period_id,
+                reversal_of_je_id: None,
+                lines: vec![
+                    NewJournalEntryLine {
+                        account_id: acct1,
+                        debit_amount: Money(10_000_000_000),
+                        credit_amount: Money(0),
+                        line_memo: None,
+                        sort_order: 0,
+                    },
+                    NewJournalEntryLine {
+                        account_id: acct2,
+                        debit_amount: Money(0),
+                        credit_amount: Money(10_000_000_000),
+                        line_memo: None,
+                        sort_order: 1,
+                    },
+                ],
+            })
+            .expect("create");
+
+        let (_, lines) = repo.get_with_lines(je_id).expect("get");
+        let line_id = lines[0].id;
+
+        // Force the line to Reconciled state directly in the DB.
+        conn.execute(
+            "UPDATE journal_entry_lines SET reconcile_state = 'Reconciled' WHERE id = ?1",
+            params![i64::from(line_id)],
+        )
+        .expect("force reconciled");
+
+        let result = repo.update_reconcile_state(line_id, ReconcileState::Cleared);
+        assert!(result.is_err(), "Should reject mutation on Reconciled line");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("Reconciled") && msg.contains("permanent"),
+            "Error should mention Reconciled is permanent: {msg}"
+        );
+    }
+
+    #[test]
+    fn update_reconcile_state_rejects_line_in_closed_period() {
+        let (conn, period_id, acct1, acct2) = db_with_fiscal_year();
+        let repo = JournalRepo::new(&conn);
+
+        let date = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+        let je_id = repo
+            .create_draft(&NewJournalEntry {
+                entry_date: date,
+                memo: None,
+                fiscal_period_id: period_id,
+                reversal_of_je_id: None,
+                lines: vec![
+                    NewJournalEntryLine {
+                        account_id: acct1,
+                        debit_amount: Money(10_000_000_000),
+                        credit_amount: Money(0),
+                        line_memo: None,
+                        sort_order: 0,
+                    },
+                    NewJournalEntryLine {
+                        account_id: acct2,
+                        debit_amount: Money(0),
+                        credit_amount: Money(10_000_000_000),
+                        line_memo: None,
+                        sort_order: 1,
+                    },
+                ],
+            })
+            .expect("create");
+
+        let (_, lines) = repo.get_with_lines(je_id).expect("get");
+        let line_id = lines[0].id;
+
+        // Close the fiscal period.
+        conn.execute(
+            "UPDATE fiscal_periods SET is_closed = 1 WHERE id = ?1",
+            params![i64::from(period_id)],
+        )
+        .expect("close period");
+
+        let result = repo.update_reconcile_state(line_id, ReconcileState::Cleared);
+        assert!(
+            result.is_err(),
+            "Should reject mutation on line in closed period"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("closed"),
+            "Error should mention closed period: {msg}"
         );
     }
 }
