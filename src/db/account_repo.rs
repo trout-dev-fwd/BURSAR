@@ -628,4 +628,99 @@ mod tests {
             "Balance should be zero with no posted JEs"
         );
     }
+
+    #[test]
+    fn get_balance_reflects_posted_journal_entries() {
+        use crate::db::{
+            entity_db_from_conn,
+            fiscal_repo::FiscalRepo,
+            journal_repo::{NewJournalEntry, NewJournalEntryLine},
+        };
+        use crate::services::journal::post_journal_entry;
+        use chrono::NaiveDate;
+        use rusqlite::Connection;
+
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        crate::db::schema::initialize_schema(&conn).expect("schema");
+        crate::db::schema::seed_default_accounts(&conn).expect("seed");
+        FiscalRepo::new(&conn)
+            .create_fiscal_year(1, 2026)
+            .expect("fiscal year");
+        let db = entity_db_from_conn(conn);
+
+        // Find two non-placeholder active accounts.
+        let accounts: Vec<_> = db
+            .accounts()
+            .list_all()
+            .unwrap()
+            .into_iter()
+            .filter(|a| !a.is_placeholder && a.is_active)
+            .collect();
+        let cash = &accounts[0];
+        let revenue = &accounts[1];
+
+        let period = db
+            .fiscal()
+            .get_period_for_date(NaiveDate::from_ymd_opt(2026, 1, 15).unwrap())
+            .unwrap();
+
+        // Before posting: balance is zero.
+        assert_eq!(db.accounts().get_balance(cash.id).unwrap(), Money(0));
+
+        // Create draft: debit Cash $100, credit Revenue $100.
+        let je_id = db
+            .journals()
+            .create_draft(&NewJournalEntry {
+                entry_date: NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                memo: None,
+                fiscal_period_id: period.id,
+                reversal_of_je_id: None,
+                lines: vec![
+                    NewJournalEntryLine {
+                        account_id: cash.id,
+                        debit_amount: Money(10_000_000_000), // $100
+                        credit_amount: Money(0),
+                        line_memo: None,
+                        sort_order: 0,
+                    },
+                    NewJournalEntryLine {
+                        account_id: revenue.id,
+                        debit_amount: Money(0),
+                        credit_amount: Money(10_000_000_000),
+                        line_memo: None,
+                        sort_order: 1,
+                    },
+                ],
+            })
+            .unwrap();
+
+        // Draft does NOT affect balance.
+        assert_eq!(db.accounts().get_balance(cash.id).unwrap(), Money(0));
+
+        // Post the entry.
+        post_journal_entry(&db, je_id, "Test Entity").unwrap();
+
+        // Now Cash has a net debit balance of $100.
+        let cash_balance = db.accounts().get_balance(cash.id).unwrap();
+        assert_eq!(
+            cash_balance,
+            Money(10_000_000_000),
+            "Cash should show $100 debit balance"
+        );
+
+        // Revenue has a net credit balance (negative net debit).
+        let rev_balance = db.accounts().get_balance(revenue.id).unwrap();
+        assert_eq!(
+            rev_balance,
+            Money(-10_000_000_000),
+            "Revenue should show $100 credit balance"
+        );
+
+        // get_all_balances should agree.
+        let all_balances = db.accounts().get_all_balances().unwrap();
+        assert_eq!(
+            all_balances.get(&cash.id).copied().unwrap_or(Money(0)),
+            Money(10_000_000_000)
+        );
+    }
 }
