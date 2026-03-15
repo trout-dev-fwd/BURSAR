@@ -68,6 +68,10 @@ pub enum AuditAction {
     EnvelopeTransfer,
     PlaceInService,
     InterEntityEntryPosted,
+    ArItemCreated,
+    ArPaymentRecorded,
+    ApItemCreated,
+    ApPaymentRecorded,
 }
 
 // ── AccountType ──────────────────────────────────────────────────────────────
@@ -297,6 +301,10 @@ impl fmt::Display for AuditAction {
             AuditAction::EnvelopeTransfer => write!(f, "EnvelopeTransfer"),
             AuditAction::PlaceInService => write!(f, "PlaceInService"),
             AuditAction::InterEntityEntryPosted => write!(f, "InterEntityEntryPosted"),
+            AuditAction::ArItemCreated => write!(f, "ArItemCreated"),
+            AuditAction::ArPaymentRecorded => write!(f, "ArPaymentRecorded"),
+            AuditAction::ApItemCreated => write!(f, "ApItemCreated"),
+            AuditAction::ApPaymentRecorded => write!(f, "ApPaymentRecorded"),
         }
     }
 }
@@ -323,6 +331,10 @@ impl FromStr for AuditAction {
             "EnvelopeTransfer" => Ok(AuditAction::EnvelopeTransfer),
             "PlaceInService" => Ok(AuditAction::PlaceInService),
             "InterEntityEntryPosted" => Ok(AuditAction::InterEntityEntryPosted),
+            "ArItemCreated" => Ok(AuditAction::ArItemCreated),
+            "ArPaymentRecorded" => Ok(AuditAction::ArPaymentRecorded),
+            "ApItemCreated" => Ok(AuditAction::ApItemCreated),
+            "ApPaymentRecorded" => Ok(AuditAction::ApPaymentRecorded),
             _ => Err(UnknownAuditAction(s.to_owned())),
         }
     }
@@ -396,7 +408,11 @@ mod tests {
             EnvelopeAllocationChanged,
             EnvelopeTransfer,
             PlaceInService,
-            InterEntityEntryPosted
+            InterEntityEntryPosted,
+            ArItemCreated,
+            ArPaymentRecorded,
+            ApItemCreated,
+            ApPaymentRecorded
         );
     }
 
