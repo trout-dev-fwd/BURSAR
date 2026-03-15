@@ -1,95 +1,66 @@
-# Rust Development Guidelines
+# CLAUDE.md — Double-Entry Bookkeeping TUI
 
-## MCP Tools — Use These First
+## Project
 
-Two MCP servers are available. Use them proactively:
+Rust TUI accounting application using Ratatui + SQLite. Single-user, synchronous, no async/tokio.
 
-- **rust-mcp-server**: Run `cargo check`, `cargo build`, `cargo test`, `cargo clippy`,
-  `cargo fmt`, and `cargo add` directly. After every code change, run
-  `cargo clippy --all-targets -- -D warnings` and fix all warnings before
-  presenting output. Never hand off code with clippy warnings.
-- **mcp-rust-docs** (or crates-mcp): Before using any external crate, look up its
-  current API via docs.rs. Do not rely on training-data memory for crate APIs —
-  they change. Fetch docs first, then write code.
+## Verification (run after every change, in this order)
 
-## Verification Loop (Always Follow This Order)
-
-```
-cargo fmt --all
+```bash
+cargo fmt
 cargo clippy --all-targets --all-features -- -D warnings   # zero warnings required
 cargo test
 ```
 
-If `rust-mcp-server` is available, run these commands through it rather than
-assuming correctness.
+All three must pass before committing. Git hooks enforce this: `git config core.hooksPath .githooks`
 
-## Code Philosophy
+## Rust Style
 
-- **Clarity over cleverness.** Prefer the simplest solution that correctly solves
-  the problem. Idiomatic Rust is the goal, not impressive Rust.
-- **Let the type system work.** Encode invariants in types, not comments or runtime
-  checks. Use newtypes to distinguish semantically different values.
-- **Immutability by default.** Only introduce `mut` when genuinely needed.
-- **Borrow before own.** Prefer `&T` and `&mut T` over taking ownership unless the
-  function semantically consumes the value.
+- **No `.unwrap()` in production code.** Use `?` for propagation. `thiserror` for domain errors, `anyhow` at the CLI boundary. `.expect("reason")` only in init code with a clear invariant.
+- **Iterators over loops** for transformation and aggregation.
+- **Immutability by default.** `mut` only when genuinely needed.
+- **Borrow before own.** Prefer `&T`/`&mut T` over taking ownership.
+- **No `unsafe`** without a `// SAFETY:` comment documenting every invariant.
+- **No `async` or `tokio`.** This is a synchronous application.
+- **Logging:** `tracing` crate. No `println!` in library code.
+- **SQL:** parameterized queries only (`params![]` / `named_params!{}`). Never string interpolation.
+- **Money:** always `Money(i64)` newtype. Never raw `i64` or `f64` in function signatures.
+- **Enums:** all state values are Rust enums with `FromStr`/`Display`. Never raw strings.
 
-## Error Handling
+## Specs (read before starting work)
 
-- **Never** use `.unwrap()` in production code. Use `.expect("reason")` only for
-  invariants that are genuinely impossible to violate, with a message explaining why.
-- Use `thiserror` for library/module error types; use `anyhow` for application-level
-  or CLI error handling.
-- Propagate with `?`. Add context with `.context("what was happening")` from `anyhow`.
-- Return `Result<T, E>` for all fallible operations; never panic for recoverable errors.
+Detailed specifications live in `specs/`. Read the relevant files for your current task:
 
-## Iterators and Data Transformation
+| File | Contents |
+|------|----------|
+| `specs/implementation-protocols.md` | **Read every session.** Session management, commit rules, rollback protocol, progress tracking. |
+| `specs/boundaries.md` | **Read every session.** Always Do / Ask First / Never Do guardrails. |
+| `specs/progress.md` | **Read every session.** Current state, completed tasks, next task, decisions log. |
+| `specs/data-model.md` | SQLite schema — all 14 tables, design decisions, integrity invariants. |
+| `specs/type-system.md` | Rust newtypes, enums, state machines, transition rules, algorithms. |
+| `specs/architecture.md` | Module structure, Tab trait, EntityDb, repos, event loop, data flow. |
+| `specs/phase-*.md` | Task-by-task implementation plans with context files, verification, and constraints. |
 
-- Prefer iterator combinators (`.map()`, `.filter()`, `.flat_map()`, `.fold()`,
-  `.collect()`) over manual `for` loops when the intent is transformation or
-  aggregation without side effects.
-- Use `for` loops when the body has meaningful side effects or early-return logic
-  that would obscure a chain.
-- Avoid collecting into a `Vec` just to iterate again — chain adapters lazily.
+**Do not duplicate spec content here.** This file stays lean. Specs are the source of truth.
 
-## Types and Traits
+## Key Decisions
 
-- Derive `Debug`, `Clone`, and `PartialEq` when appropriate. Do not derive what
-  you will not use.
-- Use the builder pattern for structs with more than 4 fields or complex
-  initialization.
-- Prefer `impl Trait` in function arguments for flexibility; use generics when
-  you need the concrete type for bounds or associated types.
-- `unsafe` is forbidden except in justified, documented blocks with a
-  `// SAFETY:` comment explaining every invariant being upheld.
+- **Money**: 8 decimal places internally (1 dollar = 100,000,000 units). Display rounds to 2.
+- **Percentages**: 6 decimal places (1% = 1,000,000 units).
+- **Enums in SQLite**: stored as TEXT for human readability.
+- **Event loop**: synchronous crossterm polling, 500ms tick rate. No tokio.
+- **Tabs**: each implements a `Tab` trait, one file per tab under `src/tabs/`.
+- **Repos**: one per domain under `src/db/`, borrowing `&Connection` from `EntityDb`.
+- **Single entity active**: second entity opens only in inter-entity modal.
 
-## Concurrency
+## Commit Messages
 
-- All async code uses `tokio`. Offload blocking work with
-  `tokio::task::spawn_blocking`.
-- Shared state: `Arc<RwLock<T>>` for read-heavy data; `Arc<Mutex<T>>` for
-  write-heavy. Prefer message-passing (channels) over shared state.
-- Never hold a lock across an `.await` point.
+```
+Phase N[x], Task M: [short description]
+```
 
-## Documentation
+One commit per task. See `specs/implementation-protocols.md` for full protocol.
 
-- All public functions, structs, enums, and traits need `///` doc comments with
-  a description, `# Errors` (if `Result`), and a `# Examples` block.
-- Private code does not need comments if the code is clear. Do not add comments
-  that restate what the code already says.
+## Gotchas
 
-## Dependencies
-
-- Check `Cargo.toml` before adding a crate — it may already be present.
-- Use `mcp-rust-docs` to verify the correct current API before writing code
-  against a dependency.
-- Use `thiserror`, `anyhow`, `tokio`, `serde`/`serde_json`, `tracing` as the
-  standard stack. Justify deviations.
-
-## What Not to Do
-
-- No `println!` in library code — use `tracing::debug!` / `tracing::error!`.
-- No `unwrap()` or unhandled `expect()` outside of tests.
-- No wildcard imports (`use module::*`) except in `#[cfg(test)]` modules
-  (`use super::*` is fine).
-- No commented-out code, no debug `dbg!` macros in commits.
-- No secrets or `.env` values in source — use `dotenvy` + `.gitignore`.
+_(Updated as the project evolves — add discoveries here)_
