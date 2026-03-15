@@ -26,30 +26,24 @@ fn main() -> Result<()> {
         .unwrap_or_else(default_config_path);
 
     // Load (or create) workspace config.
-    let config = accounting::config::load_config(&config_path)
+    let mut config = accounting::config::load_config(&config_path)
         .with_context(|| format!("Failed to load config from {}", config_path.display()))?;
 
-    // If no entities are configured, print a message and exit.
-    if config.entities.is_empty() {
-        println!(
-            "No entities configured in {}.\n\
-             Please create an entity first by running with the TUI (entity creation is in Task 18).",
-            config_path.display()
-        );
-        return Ok(());
-    }
+    // If no entities are configured, run the entity creation wizard.
+    let entity = if config.entities.is_empty() {
+        accounting::app::run_entity_creation_wizard(&config_path, &mut config)?
+    } else {
+        // TODO(Task 19): show entity picker if multiple entities exist.
+        let entity_cfg = &config.entities[0];
+        let db = accounting::db::EntityDb::open(&entity_cfg.db_path).with_context(|| {
+            format!(
+                "Failed to open entity database: {}",
+                entity_cfg.db_path.display()
+            )
+        })?;
+        accounting::app::EntityContext::new(db, entity_cfg.name.clone())
+    };
 
-    // Open the first entity.
-    // TODO(Task 19): show entity picker if multiple entities exist.
-    let entity_cfg = &config.entities[0];
-    let db = accounting::db::EntityDb::open(&entity_cfg.db_path).with_context(|| {
-        format!(
-            "Failed to open entity database: {}",
-            entity_cfg.db_path.display()
-        )
-    })?;
-
-    let entity = accounting::app::EntityContext::new(db, entity_cfg.name.clone());
     let mut app = accounting::app::App::new(entity, config);
     app.run()
 }
