@@ -38,12 +38,14 @@ impl<'conn> AuditRepo<'conn> {
     }
 
     /// Appends an audit log entry. Returns the new entry's ID.
+    /// `record_type` and `record_id` are optional (NULL in the schema) for events
+    /// that are entity-level rather than tied to a specific record.
     pub fn append(
         &self,
         action: AuditAction,
         entity_name: &str,
-        record_type: &str,
-        record_id: i64,
+        record_type: Option<&str>,
+        record_id: Option<i64>,
         description: &str,
     ) -> Result<AuditLogId> {
         let now = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string();
@@ -129,8 +131,8 @@ mod tests {
         repo.append(
             AuditAction::AccountCreated,
             "Test Entity",
-            "Account",
-            1,
+            Some("Account"),
+            Some(1),
             "Created account 1000 Assets",
         )
         .expect("append 1");
@@ -138,8 +140,8 @@ mod tests {
         repo.append(
             AuditAction::AccountModified,
             "Test Entity",
-            "Account",
-            1,
+            Some("Account"),
+            Some(1),
             "Renamed account 1000",
         )
         .expect("append 2");
@@ -147,8 +149,8 @@ mod tests {
         repo.append(
             AuditAction::AccountDeactivated,
             "Test Entity",
-            "Account",
-            2,
+            Some("Account"),
+            Some(2),
             "Deactivated account 2000 Liabilities",
         )
         .expect("append 3");
@@ -160,10 +162,22 @@ mod tests {
         let repo = AuditRepo::new(&conn);
 
         let id1 = repo
-            .append(AuditAction::AccountCreated, "Ent", "Account", 1, "first")
+            .append(
+                AuditAction::AccountCreated,
+                "Ent",
+                Some("Account"),
+                Some(1),
+                "first",
+            )
             .expect("append 1");
         let id2 = repo
-            .append(AuditAction::AccountModified, "Ent", "Account", 1, "second")
+            .append(
+                AuditAction::AccountModified,
+                "Ent",
+                Some("Account"),
+                Some(1),
+                "second",
+            )
             .expect("append 2");
 
         assert_ne!(id1, id2, "Each append should produce a unique ID");
@@ -288,8 +302,8 @@ mod tests {
         repo.append(
             AuditAction::YearEndClose,
             "My Entity",
-            "FiscalYear",
-            42,
+            Some("FiscalYear"),
+            Some(42),
             "Closed FY2025",
         )
         .expect("append");

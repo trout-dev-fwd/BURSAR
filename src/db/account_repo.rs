@@ -128,22 +128,22 @@ impl<'conn> AccountRepo<'conn> {
     }
 
     /// Updates name and/or number on an existing account. Type cannot change.
+    /// Both changes are applied in a single UPDATE for atomicity.
     pub fn update(&self, id: AccountId, changes: &AccountUpdate) -> Result<()> {
+        if changes.name.is_none() && changes.number.is_none() {
+            return Ok(());
+        }
         let now = now_str();
-        if let Some(ref name) = changes.name {
-            self.conn.execute(
-                "UPDATE accounts SET name = ?1, updated_at = ?2 WHERE id = ?3",
-                params![name, now, i64::from(id)],
-            )?;
-        }
-        if let Some(ref number) = changes.number {
-            self.conn
-                .execute(
-                    "UPDATE accounts SET number = ?1, updated_at = ?2 WHERE id = ?3",
-                    params![number, now, i64::from(id)],
-                )
-                .with_context(|| format!("Failed to update number to '{number}'"))?;
-        }
+        self.conn
+            .execute(
+                "UPDATE accounts
+                 SET name       = COALESCE(?1, name),
+                     number     = COALESCE(?2, number),
+                     updated_at = ?3
+                 WHERE id = ?4",
+                params![changes.name, changes.number, now, i64::from(id)],
+            )
+            .with_context(|| format!("Failed to update account {}", i64::from(id)))?;
         Ok(())
     }
 

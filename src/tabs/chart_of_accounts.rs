@@ -460,8 +460,8 @@ impl ChartOfAccountsTab {
                 if let Err(e) = db.audit().append(
                     crate::types::AuditAction::AccountCreated,
                     &self.entity_name,
-                    "Account",
-                    i64::from(new_id),
+                    Some("Account"),
+                    Some(i64::from(new_id)),
                     &desc,
                 ) {
                     tracing::error!("Failed to write audit log: {e}");
@@ -563,8 +563,8 @@ impl ChartOfAccountsTab {
                 if let Err(e) = db.audit().append(
                     crate::types::AuditAction::AccountModified,
                     &self.entity_name,
-                    "Account",
-                    i64::from(id),
+                    Some("Account"),
+                    Some(i64::from(id)),
                     &desc,
                 ) {
                     tracing::error!("Failed to write audit log: {e}");
@@ -604,8 +604,8 @@ impl ChartOfAccountsTab {
                         if let Err(e) = db.audit().append(
                             crate::types::AuditAction::AccountDeactivated,
                             &self.entity_name,
-                            "Account",
-                            i64::from(id),
+                            Some("Account"),
+                            Some(i64::from(id)),
                             &desc,
                         ) {
                             tracing::error!("Failed to write audit log: {e}");
