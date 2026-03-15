@@ -64,6 +64,8 @@ impl StatusFilter {
 
 struct DetailState {
     lines: Vec<JournalEntryLine>,
+    /// Index of the focused line (for reconcile toggle).
+    focused_line: usize,
 }
 
 // ── Modal state machine ───────────────────────────────────────────────────────
@@ -173,7 +175,12 @@ impl JournalEntriesTab {
         };
         let id = entry.id;
         match db.journals().get_with_lines(id) {
-            Ok((_, lines)) => self.detail = Some(DetailState { lines }),
+            Ok((_, lines)) => {
+                self.detail = Some(DetailState {
+                    lines,
+                    focused_line: 0,
+                })
+            }
             Err(e) => tracing::error!("Failed to load JE lines for {}: {e}", i64::from(id)),
         }
     }
@@ -186,6 +193,72 @@ impl JournalEntriesTab {
         if let Some(pos) = self.entries.iter().position(|e| e.id == id) {
             self.table_state.select(Some(pos));
             self.detail = None;
+        }
+    }
+
+    fn detail_line_up(&mut self) {
+        if let Some(ref mut d) = self.detail
+            && d.focused_line > 0
+        {
+            d.focused_line -= 1;
+        }
+    }
+
+    fn detail_line_down(&mut self) {
+        if let Some(ref mut d) = self.detail {
+            let max = d.lines.len().saturating_sub(1);
+            if d.focused_line < max {
+                d.focused_line += 1;
+            }
+        }
+    }
+
+    fn toggle_reconcile(&mut self, db: &EntityDb) -> TabAction {
+        let Some(d) = &self.detail else {
+            return TabAction::None;
+        };
+        let Some(line) = d.lines.get(d.focused_line) else {
+            return TabAction::None;
+        };
+        let Some(entry) = self.selected_entry() else {
+            return TabAction::None;
+        };
+
+        // Only allow on Posted entries.
+        if entry.status != JournalEntryStatus::Posted {
+            return TabAction::ShowMessage(
+                "Reconcile state can only be changed on Posted entries.".to_string(),
+            );
+        }
+
+        // Block changes to Reconciled lines.
+        if line.reconcile_state == ReconcileState::Reconciled {
+            return TabAction::ShowMessage("Cannot modify reconciled entries.".to_string());
+        }
+
+        // Block changes if fiscal period is closed.
+        match db.fiscal().get_period_by_id(entry.fiscal_period_id) {
+            Ok(period) if period.is_closed => {
+                return TabAction::ShowMessage(
+                    "Cannot modify entries in a closed fiscal period.".to_string(),
+                );
+            }
+            Err(e) => {
+                return TabAction::ShowMessage(format!("Failed to check fiscal period: {e}"));
+            }
+            Ok(_) => {}
+        }
+
+        let new_state = match line.reconcile_state {
+            ReconcileState::Uncleared => ReconcileState::Cleared,
+            ReconcileState::Cleared => ReconcileState::Uncleared,
+            ReconcileState::Reconciled => unreachable!("already checked above"),
+        };
+        let line_id = line.id;
+
+        match db.journals().update_reconcile_state(line_id, new_state) {
+            Ok(()) => TabAction::RefreshData,
+            Err(e) => TabAction::ShowMessage(format!("Failed to update reconcile state: {e}")),
         }
     }
 
@@ -407,7 +480,7 @@ impl JournalEntriesTab {
         };
 
         let title = format!(
-            " {} — {} line(s)  Esc: close ",
+            " {} — {} line(s)  ↑↓: line  [c] toggle Cleared  Esc: close ",
             entry.je_number,
             d.lines.len()
         );
@@ -461,6 +534,11 @@ impl JournalEntriesTab {
                     line.credit_amount.to_string()
                 };
                 let note = line.line_memo.as_deref().unwrap_or("").to_string();
+                let row_style = if i == d.focused_line {
+                    Style::default().add_modifier(Modifier::REVERSED)
+                } else {
+                    Style::default()
+                };
 
                 Row::new(vec![
                     Cell::from(format!("{}", i + 1)),
@@ -470,6 +548,7 @@ impl JournalEntriesTab {
                     Cell::from(note),
                     Cell::from(rec),
                 ])
+                .style(row_style)
             })
             .collect();
 
@@ -554,8 +633,20 @@ impl Tab for JournalEntriesTab {
         }
 
         match key.code {
-            KeyCode::Up => self.scroll_up(),
-            KeyCode::Down => self.scroll_down(),
+            KeyCode::Up => {
+                if self.detail.is_some() {
+                    self.detail_line_up();
+                } else {
+                    self.scroll_up();
+                }
+            }
+            KeyCode::Down => {
+                if self.detail.is_some() {
+                    self.detail_line_down();
+                } else {
+                    self.scroll_down();
+                }
+            }
             KeyCode::Enter => {
                 if self.detail.is_some() {
                     self.close_detail();
@@ -564,6 +655,9 @@ impl Tab for JournalEntriesTab {
                 }
             }
             KeyCode::Esc => self.close_detail(),
+            KeyCode::Char('c') | KeyCode::Char('C') => {
+                return self.toggle_reconcile(db);
+            }
             KeyCode::Char('f') | KeyCode::Char('F') => {
                 self.status_filter = self.status_filter.next();
                 self.close_detail();
@@ -657,7 +751,12 @@ impl Tab for JournalEntriesTab {
             && self.detail.is_some()
         {
             match db.journals().get_with_lines(id) {
-                Ok((_, lines)) => self.detail = Some(DetailState { lines }),
+                Ok((_, lines)) => {
+                    self.detail = Some(DetailState {
+                        lines,
+                        focused_line: 0,
+                    })
+                }
                 Err(e) => {
                     tracing::error!("Detail refresh failed: {e}");
                     self.detail = None;
@@ -962,5 +1061,91 @@ mod tests {
         // After refresh, there should be 2 entries.
         tab.refresh(&db);
         assert_eq!(tab.entries.len(), 2);
+    }
+
+    #[test]
+    fn c_key_toggles_uncleared_to_cleared_on_posted_line() {
+        let db = make_db();
+        let id = create_draft(&db);
+        crate::services::journal::post_journal_entry(&db, id, "Test Entity").unwrap();
+
+        let mut tab = JournalEntriesTab::new();
+        tab.refresh(&db);
+        // Open detail.
+        tab.open_detail(&db);
+        assert!(tab.detail.is_some());
+        // First line should be Uncleared.
+        assert_eq!(
+            tab.detail.as_ref().unwrap().lines[0].reconcile_state,
+            ReconcileState::Uncleared
+        );
+
+        let action = tab.handle_key(key(KeyCode::Char('c')), &db);
+        assert!(matches!(action, TabAction::RefreshData));
+
+        // Reload detail to see new state.
+        tab.refresh(&db);
+        tab.open_detail(&db);
+        assert_eq!(
+            tab.detail.as_ref().unwrap().lines[0].reconcile_state,
+            ReconcileState::Cleared
+        );
+    }
+
+    #[test]
+    fn c_key_toggles_cleared_back_to_uncleared() {
+        let db = make_db();
+        let id = create_draft(&db);
+        crate::services::journal::post_journal_entry(&db, id, "Test Entity").unwrap();
+        // Set first line to Cleared directly in DB.
+        let (_, lines) = db.journals().get_with_lines(id).unwrap();
+        db.journals()
+            .update_reconcile_state(lines[0].id, ReconcileState::Cleared)
+            .unwrap();
+
+        let mut tab = JournalEntriesTab::new();
+        tab.refresh(&db);
+        tab.open_detail(&db);
+
+        let action = tab.handle_key(key(KeyCode::Char('c')), &db);
+        assert!(matches!(action, TabAction::RefreshData));
+
+        tab.refresh(&db);
+        tab.open_detail(&db);
+        assert_eq!(
+            tab.detail.as_ref().unwrap().lines[0].reconcile_state,
+            ReconcileState::Uncleared
+        );
+    }
+
+    #[test]
+    fn c_key_rejects_reconciled_line() {
+        let db = make_db();
+        let id = create_draft(&db);
+        crate::services::journal::post_journal_entry(&db, id, "Test Entity").unwrap();
+        let (_, lines) = db.journals().get_with_lines(id).unwrap();
+        db.journals()
+            .update_reconcile_state(lines[0].id, ReconcileState::Reconciled)
+            .unwrap();
+
+        let mut tab = JournalEntriesTab::new();
+        tab.refresh(&db);
+        tab.open_detail(&db);
+
+        let action = tab.handle_key(key(KeyCode::Char('c')), &db);
+        assert!(matches!(action, TabAction::ShowMessage(_)));
+    }
+
+    #[test]
+    fn c_key_on_draft_line_shows_message() {
+        let db = make_db();
+        create_draft(&db);
+
+        let mut tab = JournalEntriesTab::new();
+        tab.refresh(&db);
+        tab.open_detail(&db);
+
+        let action = tab.handle_key(key(KeyCode::Char('c')), &db);
+        assert!(matches!(action, TabAction::ShowMessage(_)));
     }
 }

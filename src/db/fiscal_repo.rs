@@ -102,6 +102,37 @@ impl<'conn> FiscalRepo<'conn> {
         })
     }
 
+    /// Returns the fiscal period with the given ID, or an error if not found.
+    pub fn get_period_by_id(&self, id: FiscalPeriodId) -> Result<FiscalPeriod> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT id, fiscal_year_id, period_number, start_date, end_date, is_closed
+                 FROM fiscal_periods WHERE id = ?1",
+                params![i64::from(id)],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i32>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, i32>(5)?,
+                    ))
+                },
+            )
+            .map_err(|e| anyhow::anyhow!("Fiscal period {} not found: {e}", i64::from(id)))?;
+
+        Ok(FiscalPeriod {
+            id: FiscalPeriodId::from(row.0),
+            fiscal_year_id: FiscalYearId::from(row.1),
+            period_number: row.2,
+            start_date: NaiveDate::parse_from_str(&row.3, "%Y-%m-%d")?,
+            end_date: NaiveDate::parse_from_str(&row.4, "%Y-%m-%d")?,
+            is_closed: row.5 != 0,
+        })
+    }
+
     /// Returns all 12 periods for the given fiscal year, ordered by period number.
     pub fn list_periods(&self, fiscal_year_id: FiscalYearId) -> Result<Vec<FiscalPeriod>> {
         let mut stmt = self.conn.prepare(

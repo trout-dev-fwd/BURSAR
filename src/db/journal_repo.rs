@@ -266,6 +266,26 @@ impl<'conn> JournalRepo<'conn> {
             .with_context(|| format!("Failed to mark JE {} as reversed", i64::from(id)))?;
         Ok(())
     }
+
+    /// Updates the reconcile state of a single journal entry line.
+    pub fn update_reconcile_state(
+        &self,
+        line_id: JournalEntryLineId,
+        new_state: ReconcileState,
+    ) -> Result<()> {
+        self.conn
+            .execute(
+                "UPDATE journal_entry_lines SET reconcile_state = ?1 WHERE id = ?2",
+                params![new_state.to_string(), i64::from(line_id)],
+            )
+            .with_context(|| {
+                format!(
+                    "Failed to update reconcile state for line {}",
+                    i64::from(line_id)
+                )
+            })?;
+        Ok(())
+    }
 }
 
 // ── Row mappers ───────────────────────────────────────────────────────────────
