@@ -1,4 +1,6 @@
 pub mod account_repo;
+pub mod ap_repo;
+pub mod ar_repo;
 pub mod audit_repo;
 pub mod fiscal_repo;
 pub mod journal_repo;
@@ -11,6 +13,8 @@ use chrono::Datelike;
 use rusqlite::Connection;
 
 use crate::db::account_repo::AccountRepo;
+use crate::db::ap_repo::ApRepo;
+use crate::db::ar_repo::ArRepo;
 use crate::db::audit_repo::AuditRepo;
 use crate::db::fiscal_repo::FiscalRepo;
 use crate::db::journal_repo::JournalRepo;
@@ -77,9 +81,17 @@ impl EntityDb {
         JournalRepo::new(&self.conn)
     }
 
+    /// Returns an ArRepo borrowing this connection.
+    pub fn ar(&self) -> ArRepo<'_> {
+        ArRepo::new(&self.conn)
+    }
+
+    /// Returns an ApRepo borrowing this connection.
+    pub fn ap(&self) -> ApRepo<'_> {
+        ApRepo::new(&self.conn)
+    }
+
     // ── Stub repo accessors (filled in later phases) ──────────────────────────
-    // TODO(Phase 3):  fn ar(&self) -> ArRepo<'_>
-    // TODO(Phase 3):  fn ap(&self) -> ApRepo<'_>
     // TODO(Phase 4):  fn envelopes(&self) -> EnvelopeRepo<'_>
     // TODO(Phase 4):  fn assets(&self) -> AssetRepo<'_>
     // TODO(Phase 5):  fn recurring(&self) -> RecurringRepo<'_>
