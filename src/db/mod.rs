@@ -4,6 +4,7 @@ pub mod schema;
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use chrono::Datelike;
 use rusqlite::Connection;
 
 use crate::db::fiscal_repo::FiscalRepo;
@@ -27,7 +28,7 @@ impl EntityDb {
 
     /// Creates a new entity database: creates the file, runs schema init, seeds default accounts.
     /// `fiscal_year_start_month` and the initial fiscal year creation happen in Task 12.
-    pub fn create(path: &Path, _entity_name: &str, _fiscal_year_start_month: u32) -> Result<Self> {
+    pub fn create(path: &Path, _entity_name: &str, fiscal_year_start_month: u32) -> Result<Self> {
         // Create parent directories if needed.
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).with_context(|| {
@@ -38,8 +39,11 @@ impl EntityDb {
             .with_context(|| format!("Failed to create database: {}", path.display()))?;
         initialize_schema(&conn)?;
         seed_default_accounts(&conn)?;
-        // TODO(Task 12): call fiscal_repo.create_fiscal_year(fiscal_year_start_month, current_year)
-        Ok(Self { conn })
+        let db = Self { conn };
+        let current_year = chrono::Local::now().year();
+        db.fiscal()
+            .create_fiscal_year(fiscal_year_start_month, current_year)?;
+        Ok(db)
     }
 
     /// Direct connection access for transactions that span multiple repos.
@@ -99,6 +103,16 @@ mod tests {
             )
             .expect("query failed");
         assert_eq!(placeholders, 5);
+
+        // Fiscal year and 12 periods should exist.
+        let period_count: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM fiscal_periods", [], |row| row.get(0))
+            .expect("query failed");
+        assert_eq!(
+            period_count, 12,
+            "Should have 12 fiscal periods after create"
+        );
 
         // Cleanup.
         let _ = std::fs::remove_file(&path);
