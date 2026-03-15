@@ -2,8 +2,8 @@
 
 ## Current State
 - **Active Phase**: Phase 2a
-- **Last Completed Task**: Phase 2a, Task 3
-- **Next Task**: Phase 2a, Task 4
+- **Last Completed Task**: Phase 2a, Task 4
+- **Next Task**: Phase 2a, Task 5
 - **Blockers**: None
 
 ## Completed Phases
@@ -15,7 +15,7 @@
 - [x] Task 1: Create AccountRepo [TEST-FIRST]
 - [x] Task 2: Create AuditRepo [TEST-FIRST]
 - [x] Task 3: CoA tab — list view
-- [ ] Task 4: CoA tab — CRUD actions
+- [x] Task 4: CoA tab — CRUD actions
 - [ ] Task 5: Account picker widget
 - [ ] Task 6: Confirmation widget
 
@@ -42,6 +42,12 @@
 - [x] Task 20: Set up pre-commit hook
 
 ## Decisions & Discoveries
+
+- **[Phase 2a, Task 4]**: CRUD modals implemented as an inline `CoaModal` enum on the tab struct
+  (not as separate widget files — AccountPicker and Confirmation are Tasks 5 & 6). The Add form
+  uses a simple text field for parent account number (looked up at submit time); the full dropdown
+  AccountPicker widget integration is deferred to wherever it's first composed in Phase 2b. Entity
+  name is set on the tab via `set_entity_name()` called from `EntityContext::new`.
 
 - **[Phase 2a, Task 3]**: `EntityContext::new` now calls `tab.refresh(&db)` on all tabs after
   construction so data shows immediately on first render. `Table::highlight_style` is deprecated

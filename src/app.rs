@@ -46,8 +46,10 @@ impl EntityContext {
     /// Creates an entity context from an open EntityDb, building all 9 tabs and
     /// performing an initial data load so tabs render content immediately.
     pub fn new(db: EntityDb, name: String) -> Self {
+        let mut coa = ChartOfAccountsTab::new();
+        coa.set_entity_name(&name);
         let mut tabs: Vec<Box<dyn Tab>> = vec![
-            Box::new(ChartOfAccountsTab::new()),
+            Box::new(coa),
             Box::new(GeneralLedgerTab),
             Box::new(JournalEntriesTab),
             Box::new(AccountsReceivableTab),

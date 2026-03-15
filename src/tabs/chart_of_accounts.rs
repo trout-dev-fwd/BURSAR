@@ -6,12 +6,15 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState},
+    widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState},
 };
 
-use crate::db::{EntityDb, account_repo::Account};
+use crate::db::{
+    EntityDb,
+    account_repo::{Account, AccountUpdate, NewAccount},
+};
 use crate::tabs::{RecordId, Tab, TabAction};
-use crate::types::{AccountId, Money};
+use crate::types::{AccountId, AccountType, Money};
 
 // ── Data structures ───────────────────────────────────────────────────────────
 
@@ -23,9 +26,67 @@ struct VisibleRow {
     has_children: bool,
 }
 
+// ── Modal state machines ──────────────────────────────────────────────────────
+
+#[derive(Debug)]
+struct AddFormState {
+    number: String,
+    name: String,
+    account_type: AccountType,
+    parent_number: String,
+    is_contra: bool,
+    is_placeholder: bool,
+    focused_field: usize,
+    error: Option<String>,
+}
+
+impl AddFormState {
+    fn new() -> Self {
+        Self {
+            number: String::new(),
+            name: String::new(),
+            account_type: AccountType::Asset,
+            parent_number: String::new(),
+            is_contra: false,
+            is_placeholder: false,
+            focused_field: 0,
+            error: None,
+        }
+    }
+
+    fn field_count() -> usize {
+        6
+    }
+}
+
+#[derive(Debug)]
+struct EditFormState {
+    id: AccountId,
+    original_number: String,
+    name: String,
+    number: String,
+    focused_field: usize,
+    error: Option<String>,
+}
+
+#[derive(Debug)]
+struct ConfirmToggle {
+    id: AccountId,
+    name: String,
+    currently_active: bool,
+}
+
+#[derive(Debug)]
+enum CoaModal {
+    AddForm(AddFormState),
+    EditForm(EditFormState),
+    ConfirmToggle(ConfirmToggle),
+}
+
 // ── Tab struct ────────────────────────────────────────────────────────────────
 
 pub struct ChartOfAccountsTab {
+    entity_name: String,
     all_accounts: Vec<Account>,
     balances: HashMap<AccountId, Money>,
     /// Set of collapsed group accounts (has_children but currently folded).
@@ -39,6 +100,8 @@ pub struct ChartOfAccountsTab {
     /// Flattened, filtered view for search mode.
     filtered: Vec<VisibleRow>,
     filtered_state: TableState,
+    /// Active modal overlay (Add/Edit form, or confirmation prompt).
+    modal: Option<CoaModal>,
 }
 
 impl Default for ChartOfAccountsTab {
@@ -50,6 +113,7 @@ impl Default for ChartOfAccountsTab {
 impl ChartOfAccountsTab {
     pub fn new() -> Self {
         Self {
+            entity_name: String::new(),
             all_accounts: Vec::new(),
             balances: HashMap::new(),
             collapsed: HashSet::new(),
@@ -67,21 +131,24 @@ impl ChartOfAccountsTab {
                 s.select(Some(0));
                 s
             },
+            modal: None,
         }
     }
 
-    // ── Internal helpers ──────────────────────────────────────────────────────
+    /// Sets the entity name used in audit log entries.
+    pub fn set_entity_name(&mut self, name: &str) {
+        self.entity_name = name.to_string();
+    }
 
-    /// Rebuilds `visible` from `all_accounts` + `collapsed` set.
+    // ── Internal navigation helpers ───────────────────────────────────────────
+
     fn build_visible(&mut self) {
-        // Which accounts are parents?
         let is_parent: HashSet<AccountId> = self
             .all_accounts
             .iter()
             .filter_map(|a| a.parent_id)
             .collect();
 
-        // parent_id → sorted children
         let mut children_map: HashMap<Option<AccountId>, Vec<&Account>> = HashMap::new();
         for acc in &self.all_accounts {
             children_map.entry(acc.parent_id).or_default().push(acc);
@@ -101,7 +168,6 @@ impl ChartOfAccountsTab {
         );
         self.visible = rows;
 
-        // Clamp selection.
         let len = self.visible.len();
         match self.table_state.selected() {
             Some(i) if i >= len && len > 0 => self.table_state.select(Some(len - 1)),
@@ -110,7 +176,6 @@ impl ChartOfAccountsTab {
         }
     }
 
-    /// Rebuilds `filtered` from `all_accounts` using `search_query`.
     fn update_filter(&mut self) {
         let q = self.search_query.to_lowercase();
         self.filtered = self
@@ -123,7 +188,7 @@ impl ChartOfAccountsTab {
             })
             .map(|a| VisibleRow {
                 account: a.clone(),
-                depth: 0, // flat in search mode
+                depth: 0,
                 has_children: false,
             })
             .collect();
@@ -184,10 +249,9 @@ impl ChartOfAccountsTab {
         }
     }
 
-    /// Toggles collapsed state for the selected account (if it has children).
     fn toggle_expand(&mut self) {
         if self.search_active {
-            return; // no expand/collapse in search mode
+            return;
         }
         let idx = match self.table_state.selected() {
             Some(i) => i,
@@ -208,104 +272,508 @@ impl ChartOfAccountsTab {
         self.build_visible();
     }
 
+    fn selected_account(&self) -> Option<&Account> {
+        let idx = self.selected_idx()?;
+        let row = self.current_rows().get(idx)?;
+        Some(&row.account)
+    }
+
+    // ── Modal openers ─────────────────────────────────────────────────────────
+
+    fn open_add_form(&mut self) {
+        self.search_active = false;
+        self.modal = Some(CoaModal::AddForm(AddFormState::new()));
+    }
+
+    fn open_edit_form(&mut self) {
+        let acc = match self.selected_account() {
+            Some(a) => a.clone(),
+            None => return,
+        };
+        self.search_active = false;
+        self.modal = Some(CoaModal::EditForm(EditFormState {
+            id: acc.id,
+            original_number: acc.number.clone(),
+            name: acc.name.clone(),
+            number: acc.number,
+            focused_field: 0,
+            error: None,
+        }));
+    }
+
+    fn open_confirm_toggle(&mut self) {
+        let acc = match self.selected_account() {
+            Some(a) => a.clone(),
+            None => return,
+        };
+        self.search_active = false;
+        self.modal = Some(CoaModal::ConfirmToggle(ConfirmToggle {
+            id: acc.id,
+            name: acc.name.clone(),
+            currently_active: acc.is_active,
+        }));
+    }
+
+    // ── Modal key handlers ────────────────────────────────────────────────────
+
+    fn handle_add_form_key(&mut self, key: KeyEvent, db: &EntityDb) -> TabAction {
+        let form = match &mut self.modal {
+            Some(CoaModal::AddForm(f)) => f,
+            _ => return TabAction::None,
+        };
+
+        match key.code {
+            KeyCode::Esc => {
+                self.modal = None;
+                return TabAction::None;
+            }
+            KeyCode::Tab | KeyCode::Down => {
+                form.focused_field = (form.focused_field + 1) % AddFormState::field_count();
+                return TabAction::None;
+            }
+            KeyCode::BackTab | KeyCode::Up => {
+                form.focused_field = (form.focused_field + AddFormState::field_count() - 1)
+                    % AddFormState::field_count();
+                return TabAction::None;
+            }
+            KeyCode::Enter => {
+                // Move forward through fields or submit on last field.
+                if form.focused_field < AddFormState::field_count() - 1 {
+                    form.focused_field += 1;
+                    return TabAction::None;
+                }
+                // Submit the form.
+            }
+            KeyCode::Backspace => {
+                match form.focused_field {
+                    0 => {
+                        form.number.pop();
+                    }
+                    1 => {
+                        form.name.pop();
+                    }
+                    3 => {
+                        form.parent_number.pop();
+                    }
+                    _ => {}
+                }
+                return TabAction::None;
+            }
+            KeyCode::Char(c) => {
+                match form.focused_field {
+                    0 => form.number.push(c),
+                    1 => form.name.push(c),
+                    2 => {
+                        // Cycle account type on any char (or Space)
+                        form.account_type = cycle_account_type(form.account_type, true);
+                    }
+                    3 => form.parent_number.push(c),
+                    4 => form.is_contra = !form.is_contra,
+                    5 => form.is_placeholder = !form.is_placeholder,
+                    _ => {}
+                }
+                return TabAction::None;
+            }
+            KeyCode::Left => {
+                if form.focused_field == 2 {
+                    form.account_type = cycle_account_type(form.account_type, false);
+                }
+                return TabAction::None;
+            }
+            KeyCode::Right => {
+                if form.focused_field == 2 {
+                    form.account_type = cycle_account_type(form.account_type, true);
+                }
+                return TabAction::None;
+            }
+            _ => return TabAction::None,
+        }
+
+        // Clone the form data for submission (to avoid borrow conflict).
+        let (number, name, account_type, parent_number, is_contra, is_placeholder) = {
+            let f = match &self.modal {
+                Some(CoaModal::AddForm(f)) => f,
+                _ => return TabAction::None,
+            };
+            (
+                f.number.trim().to_string(),
+                f.name.trim().to_string(),
+                f.account_type,
+                f.parent_number.trim().to_string(),
+                f.is_contra,
+                f.is_placeholder,
+            )
+        };
+
+        // Validate.
+        if number.is_empty() {
+            if let Some(CoaModal::AddForm(f)) = &mut self.modal {
+                f.error = Some("Account number is required.".to_string());
+                f.focused_field = 0;
+            }
+            return TabAction::None;
+        }
+        if name.is_empty() {
+            if let Some(CoaModal::AddForm(f)) = &mut self.modal {
+                f.error = Some("Account name is required.".to_string());
+                f.focused_field = 1;
+            }
+            return TabAction::None;
+        }
+
+        // Resolve parent account.
+        let parent_id: Option<AccountId> = if parent_number.is_empty() {
+            None
+        } else {
+            match self.all_accounts.iter().find(|a| a.number == parent_number) {
+                Some(p) => Some(p.id),
+                None => {
+                    if let Some(CoaModal::AddForm(f)) = &mut self.modal {
+                        f.error = Some(format!("Parent account '{parent_number}' not found."));
+                        f.focused_field = 3;
+                    }
+                    return TabAction::None;
+                }
+            }
+        };
+
+        let new_account = NewAccount {
+            number: number.clone(),
+            name: name.clone(),
+            account_type,
+            parent_id,
+            is_contra,
+            is_placeholder,
+        };
+
+        match db.accounts().create(&new_account) {
+            Err(e) => {
+                let msg = format!("Failed to create account: {e}");
+                if let Some(CoaModal::AddForm(f)) = &mut self.modal {
+                    f.error = Some(msg);
+                    f.focused_field = 0;
+                }
+                TabAction::None
+            }
+            Ok(new_id) => {
+                let desc = format!("Created account {number} {name}");
+                if let Err(e) = db.audit().append(
+                    crate::types::AuditAction::AccountCreated,
+                    &self.entity_name,
+                    "Account",
+                    i64::from(new_id),
+                    &desc,
+                ) {
+                    tracing::error!("Failed to write audit log: {e}");
+                }
+                self.modal = None;
+                TabAction::RefreshData
+            }
+        }
+    }
+
+    fn handle_edit_form_key(&mut self, key: KeyEvent, db: &EntityDb) -> TabAction {
+        let form = match &mut self.modal {
+            Some(CoaModal::EditForm(f)) => f,
+            _ => return TabAction::None,
+        };
+
+        match key.code {
+            KeyCode::Esc => {
+                self.modal = None;
+                return TabAction::None;
+            }
+            KeyCode::Tab | KeyCode::Down => {
+                form.focused_field = (form.focused_field + 1) % 2;
+                return TabAction::None;
+            }
+            KeyCode::BackTab | KeyCode::Up => {
+                form.focused_field = (form.focused_field + 1) % 2;
+                return TabAction::None;
+            }
+            KeyCode::Backspace => {
+                match form.focused_field {
+                    0 => {
+                        form.name.pop();
+                    }
+                    1 => {
+                        form.number.pop();
+                    }
+                    _ => {}
+                }
+                return TabAction::None;
+            }
+            KeyCode::Char(c) => {
+                match form.focused_field {
+                    0 => form.name.push(c),
+                    1 => form.number.push(c),
+                    _ => {}
+                }
+                return TabAction::None;
+            }
+            KeyCode::Enter => { /* proceed to submit */ }
+            _ => return TabAction::None,
+        }
+
+        // Clone form data for submission.
+        let (id, original_number, name, number) = {
+            let f = match &self.modal {
+                Some(CoaModal::EditForm(f)) => f,
+                _ => return TabAction::None,
+            };
+            (
+                f.id,
+                f.original_number.clone(),
+                f.name.trim().to_string(),
+                f.number.trim().to_string(),
+            )
+        };
+
+        if name.is_empty() {
+            if let Some(CoaModal::EditForm(f)) = &mut self.modal {
+                f.error = Some("Account name is required.".to_string());
+                f.focused_field = 0;
+            }
+            return TabAction::None;
+        }
+        if number.is_empty() {
+            if let Some(CoaModal::EditForm(f)) = &mut self.modal {
+                f.error = Some("Account number is required.".to_string());
+                f.focused_field = 1;
+            }
+            return TabAction::None;
+        }
+
+        let changes = AccountUpdate {
+            name: Some(name.clone()),
+            number: Some(number.clone()),
+        };
+
+        match db.accounts().update(id, &changes) {
+            Err(e) => {
+                let msg = format!("Failed to update account: {e}");
+                if let Some(CoaModal::EditForm(f)) = &mut self.modal {
+                    f.error = Some(msg);
+                }
+                TabAction::None
+            }
+            Ok(()) => {
+                let desc =
+                    format!("Updated account {original_number}: name='{name}', number='{number}'");
+                if let Err(e) = db.audit().append(
+                    crate::types::AuditAction::AccountModified,
+                    &self.entity_name,
+                    "Account",
+                    i64::from(id),
+                    &desc,
+                ) {
+                    tracing::error!("Failed to write audit log: {e}");
+                }
+                self.modal = None;
+                TabAction::RefreshData
+            }
+        }
+    }
+
+    fn handle_confirm_toggle_key(&mut self, key: KeyEvent, db: &EntityDb) -> TabAction {
+        let (id, name, currently_active) = match &self.modal {
+            Some(CoaModal::ConfirmToggle(c)) => (c.id, c.name.clone(), c.currently_active),
+            _ => return TabAction::None,
+        };
+
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Enter => {
+                let result = if currently_active {
+                    db.accounts().deactivate(id)
+                } else {
+                    db.accounts().activate(id)
+                };
+                match result {
+                    Err(e) => {
+                        tracing::error!("Failed to toggle account active state: {e}");
+                        self.modal = None;
+                        TabAction::None
+                    }
+                    Ok(()) => {
+                        let action_word = if currently_active {
+                            "Deactivated"
+                        } else {
+                            "Reactivated"
+                        };
+                        let desc = format!("{action_word} account {}", name);
+                        if let Err(e) = db.audit().append(
+                            crate::types::AuditAction::AccountDeactivated,
+                            &self.entity_name,
+                            "Account",
+                            i64::from(id),
+                            &desc,
+                        ) {
+                            tracing::error!("Failed to write audit log: {e}");
+                        }
+                        self.modal = None;
+                        TabAction::RefreshData
+                    }
+                }
+            }
+            KeyCode::Char('n') | KeyCode::Esc => {
+                self.modal = None;
+                TabAction::None
+            }
+            _ => TabAction::None,
+        }
+    }
+
     // ── Render helpers ────────────────────────────────────────────────────────
 
-    fn make_table<'a>(
-        rows: &'a [VisibleRow],
-        balances: &'a HashMap<AccountId, Money>,
-        collapsed: &'a HashSet<AccountId>,
-    ) -> Table<'a> {
-        let header = Row::new(vec![
-            Cell::from("Number").style(Style::default().add_modifier(Modifier::BOLD)),
-            Cell::from("Name").style(Style::default().add_modifier(Modifier::BOLD)),
-            Cell::from("Type").style(Style::default().add_modifier(Modifier::BOLD)),
-            Cell::from("Balance").style(Style::default().add_modifier(Modifier::BOLD)),
-            Cell::from("Flags").style(Style::default().add_modifier(Modifier::BOLD)),
-        ])
-        .style(Style::default().bg(Color::DarkGray));
+    fn render_table(&self, frame: &mut Frame, area: Rect) {
+        let rows = self.current_rows();
+        let table = make_account_table(rows, &self.balances, &self.collapsed);
+        let mut state = if self.search_active {
+            self.filtered_state.clone()
+        } else {
+            self.table_state.clone()
+        };
+        frame.render_stateful_widget(table, area, &mut state);
+    }
 
-        let table_rows: Vec<Row> = rows
-            .iter()
-            .map(|vr| {
-                let acc = &vr.account;
+    fn render_add_form(&self, frame: &mut Frame, area: Rect, form: &AddFormState) {
+        let modal_area = centered_rect(60, 60, area);
+        frame.render_widget(Clear, modal_area);
 
-                // Expand/collapse indicator + indentation
-                let indent = "  ".repeat(vr.depth);
-                let indicator = if vr.has_children {
-                    if collapsed.contains(&acc.id) {
-                        "▶ "
-                    } else {
-                        "▼ "
-                    }
-                } else {
-                    "  "
-                };
-                let name_cell = format!("{}{}{}", indent, indicator, acc.name);
+        let field_labels = ["Number", "Name", "Type", "Parent#", "Contra", "Placeholder"];
+        let type_str = form.account_type.to_string();
+        let values: [&str; 6] = [
+            &form.number,
+            &form.name,
+            &type_str,
+            &form.parent_number,
+            if form.is_contra { "Yes" } else { "No" },
+            if form.is_placeholder { "Yes" } else { "No" },
+        ];
 
-                // Type abbreviation
-                let type_str = match acc.account_type {
-                    crate::types::AccountType::Asset => "Asset",
-                    crate::types::AccountType::Liability => "Liab",
-                    crate::types::AccountType::Equity => "Equity",
-                    crate::types::AccountType::Revenue => "Rev",
-                    crate::types::AccountType::Expense => "Exp",
-                };
-
-                // Balance
-                let balance = balances.get(&acc.id).copied().unwrap_or(Money(0));
-
-                // Flags: P = placeholder, C = contra, X = inactive
-                let mut flags = String::new();
-                if acc.is_placeholder {
-                    flags.push('P');
-                }
-                if acc.is_contra {
-                    flags.push('C');
-                }
-                if !acc.is_active {
-                    flags.push('x');
-                }
-
-                let row_style = if !acc.is_active {
-                    Style::default().fg(Color::DarkGray)
+        let lines: Vec<Line> = (0..AddFormState::field_count())
+            .map(|i| {
+                let label = field_labels[i];
+                let value = values[i];
+                let cursor = if i == form.focused_field { "█" } else { "" };
+                let style = if i == form.focused_field {
+                    Style::default().fg(Color::Yellow)
                 } else {
                     Style::default()
                 };
-
-                Row::new(vec![
-                    Cell::from(acc.number.clone()),
-                    Cell::from(name_cell),
-                    Cell::from(type_str),
-                    Cell::from(balance.to_string()),
-                    Cell::from(flags),
+                Line::from(vec![
+                    Span::styled(format!("  {:<12} ", label), style),
+                    Span::raw(value),
+                    Span::styled(cursor, Style::default().fg(Color::Yellow)),
                 ])
-                .style(row_style)
             })
             .collect();
 
-        Table::new(
-            table_rows,
-            [
-                Constraint::Length(8),
-                Constraint::Min(30),
-                Constraint::Length(7),
-                Constraint::Length(12),
-                Constraint::Length(5),
-            ],
-        )
-        .header(header)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Chart of Accounts "),
-        )
-        .row_highlight_style(
-            Style::default()
-                .bg(Color::Blue)
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("» ")
+        let mut all_lines = vec![Line::from(Span::raw(""))];
+        all_lines.extend(lines);
+        if let Some(err) = &form.error {
+            all_lines.push(Line::from(Span::raw("")));
+            all_lines.push(Line::from(Span::styled(
+                format!("  {err}"),
+                Style::default().fg(Color::Red),
+            )));
+        }
+        all_lines.push(Line::from(Span::raw("")));
+        all_lines.push(Line::from(vec![
+            Span::styled("  Tab/↑↓: navigate  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                "Space/←→: toggle/cycle  ",
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled("Enter: save  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Esc: cancel", Style::default().fg(Color::DarkGray)),
+        ]));
+
+        frame.render_widget(
+            Paragraph::new(all_lines).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Add Account ")
+                    .style(Style::default().fg(Color::Cyan)),
+            ),
+            modal_area,
+        );
+    }
+
+    fn render_edit_form(&self, frame: &mut Frame, area: Rect, form: &EditFormState) {
+        let modal_area = centered_rect(60, 40, area);
+        frame.render_widget(Clear, modal_area);
+
+        let fields = [
+            ("Name", form.name.as_str()),
+            ("Number", form.number.as_str()),
+        ];
+        let mut lines = vec![Line::from(Span::raw(""))];
+        for (i, (label, value)) in fields.iter().enumerate() {
+            let cursor = if i == form.focused_field { "█" } else { "" };
+            let style = if i == form.focused_field {
+                Style::default().fg(Color::Yellow)
+            } else {
+                Style::default()
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {:<12} ", label), style),
+                Span::raw(*value),
+                Span::styled(cursor, Style::default().fg(Color::Yellow)),
+            ]));
+        }
+        if let Some(err) = &form.error {
+            lines.push(Line::from(Span::raw("")));
+            lines.push(Line::from(Span::styled(
+                format!("  {err}"),
+                Style::default().fg(Color::Red),
+            )));
+        }
+        lines.push(Line::from(Span::raw("")));
+        lines.push(Line::from(Span::styled(
+            "  Tab: next field  Enter: save  Esc: cancel",
+            Style::default().fg(Color::DarkGray),
+        )));
+
+        frame.render_widget(
+            Paragraph::new(lines).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(format!(" Edit Account {} ", form.original_number))
+                    .style(Style::default().fg(Color::Cyan)),
+            ),
+            modal_area,
+        );
+    }
+
+    fn render_confirm_toggle(&self, frame: &mut Frame, area: Rect, confirm: &ConfirmToggle) {
+        let modal_area = centered_rect(50, 25, area);
+        frame.render_widget(Clear, modal_area);
+
+        let action = if confirm.currently_active {
+            "Deactivate"
+        } else {
+            "Reactivate"
+        };
+        let lines = vec![
+            Line::from(Span::raw("")),
+            Line::from(Span::raw(format!("  {} '{}'?", action, confirm.name))),
+            Line::from(Span::raw("")),
+            Line::from(Span::styled(
+                "  [y] Yes     [n / Esc] No",
+                Style::default().fg(Color::Yellow),
+            )),
+        ];
+
+        frame.render_widget(
+            Paragraph::new(lines).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(format!(" {} Account ", action))
+                    .style(Style::default().fg(Color::Yellow)),
+            ),
+            modal_area,
+        );
     }
 }
 
@@ -316,7 +784,21 @@ impl Tab for ChartOfAccountsTab {
         "Chart of Accounts"
     }
 
-    fn handle_key(&mut self, key: KeyEvent, _db: &EntityDb) -> TabAction {
+    fn handle_key(&mut self, key: KeyEvent, db: &EntityDb) -> TabAction {
+        // Modal takes priority.
+        match &self.modal {
+            Some(CoaModal::AddForm(_)) => {
+                return self.handle_add_form_key(key, db);
+            }
+            Some(CoaModal::EditForm(_)) => {
+                return self.handle_edit_form_key(key, db);
+            }
+            Some(CoaModal::ConfirmToggle(_)) => {
+                return self.handle_confirm_toggle_key(key, db);
+            }
+            None => {}
+        }
+
         if key.modifiers != KeyModifiers::NONE && key.modifiers != KeyModifiers::SHIFT {
             return TabAction::None;
         }
@@ -350,6 +832,9 @@ impl Tab for ChartOfAccountsTab {
                     self.search_query.clear();
                     self.update_filter();
                 }
+                KeyCode::Char('a') => self.open_add_form(),
+                KeyCode::Char('e') => self.open_edit_form(),
+                KeyCode::Char('d') => self.open_confirm_toggle(),
                 _ => {}
             }
         }
@@ -357,26 +842,16 @@ impl Tab for ChartOfAccountsTab {
     }
 
     fn render(&self, frame: &mut Frame, area: Rect) {
-        // Split area: table on top, hint bar at bottom (+ search bar if active).
         let hint_height = if self.search_active { 2 } else { 1 };
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(0), Constraint::Length(hint_height)])
             .split(area);
 
-        // ── Table ──────────────────────────────────────────────────────────────
-        let rows = self.current_rows();
-        let table = Self::make_table(rows, &self.balances, &self.collapsed);
+        // ── Account table ──────────────────────────────────────────────────────
+        self.render_table(frame, chunks[0]);
 
-        // Ratatui requires a mutable state for stateful render; we clone for immutable render.
-        let mut state = if self.search_active {
-            self.filtered_state.clone()
-        } else {
-            self.table_state.clone()
-        };
-        frame.render_stateful_widget(table, chunks[0], &mut state);
-
-        // ── Bottom bar ─────────────────────────────────────────────────────────
+        // ── Bottom hint bar ────────────────────────────────────────────────────
         if self.search_active {
             let bottom = Layout::default()
                 .direction(Direction::Vertical)
@@ -386,29 +861,42 @@ impl Tab for ChartOfAccountsTab {
             let search_line = Line::from(vec![
                 Span::styled(" Search: ", Style::default().fg(Color::Yellow)),
                 Span::raw(self.search_query.clone()),
-                Span::styled("█", Style::default().fg(Color::Yellow)), // cursor
+                Span::styled("█", Style::default().fg(Color::Yellow)),
             ]);
             frame.render_widget(Paragraph::new(search_line), bottom[0]);
 
-            let hint = Paragraph::new(Line::from(vec![Span::styled(
-                " Esc: cancel search  ↑↓: navigate",
-                Style::default().fg(Color::DarkGray),
-            )]));
-            frame.render_widget(hint, bottom[1]);
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    " Esc: cancel search  ↑↓: navigate",
+                    Style::default().fg(Color::DarkGray),
+                ))),
+                bottom[1],
+            );
         } else {
             let count = self.visible.len();
             let selected = self.selected_idx().map(|i| i + 1).unwrap_or(0);
-            let hint = Paragraph::new(Line::from(vec![
-                Span::styled(
-                    " ↑↓/jk: navigate  Enter: expand/collapse  /: search",
-                    Style::default().fg(Color::DarkGray),
-                ),
-                Span::styled(
-                    format!("  [{}/{}]", selected, count),
-                    Style::default().fg(Color::Gray),
-                ),
-            ]));
-            frame.render_widget(hint, chunks[1]);
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled(
+                        " ↑↓/jk: navigate  Enter: expand/collapse  /: search  a: add  e: edit  d: toggle active",
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                    Span::styled(
+                        format!("  [{}/{}]", selected, count),
+                        Style::default().fg(Color::Gray),
+                    ),
+                ])),
+                chunks[1],
+            );
+        }
+
+        // ── Modal overlay ──────────────────────────────────────────────────────
+        if let Some(ref modal) = self.modal {
+            match modal {
+                CoaModal::AddForm(f) => self.render_add_form(frame, area, f),
+                CoaModal::EditForm(f) => self.render_edit_form(frame, area, f),
+                CoaModal::ConfirmToggle(c) => self.render_confirm_toggle(frame, area, c),
+            }
         }
     }
 
@@ -424,7 +912,6 @@ impl Tab for ChartOfAccountsTab {
             }
         }
 
-        // Load balances for all accounts.
         self.balances.clear();
         for acc in &self.all_accounts {
             match repo.get_balance(acc.id) {
@@ -457,8 +944,6 @@ impl Tab for ChartOfAccountsTab {
 
 // ── Free functions ────────────────────────────────────────────────────────────
 
-/// Recursively flattens the account tree into a display list.
-/// Only recurses into children when the parent is not collapsed.
 fn flatten_tree(
     parent: Option<AccountId>,
     depth: usize,
@@ -488,4 +973,137 @@ fn flatten_tree(
             );
         }
     }
+}
+
+fn make_account_table<'a>(
+    rows: &'a [VisibleRow],
+    balances: &'a HashMap<AccountId, Money>,
+    collapsed: &'a HashSet<AccountId>,
+) -> Table<'a> {
+    let header = Row::new(vec![
+        Cell::from("Number").style(Style::default().add_modifier(Modifier::BOLD)),
+        Cell::from("Name").style(Style::default().add_modifier(Modifier::BOLD)),
+        Cell::from("Type").style(Style::default().add_modifier(Modifier::BOLD)),
+        Cell::from("Balance").style(Style::default().add_modifier(Modifier::BOLD)),
+        Cell::from("Flags").style(Style::default().add_modifier(Modifier::BOLD)),
+    ])
+    .style(Style::default().bg(Color::DarkGray));
+
+    let table_rows: Vec<Row> = rows
+        .iter()
+        .map(|vr| {
+            let acc = &vr.account;
+
+            let indent = "  ".repeat(vr.depth);
+            let indicator = if vr.has_children {
+                if collapsed.contains(&acc.id) {
+                    "▶ "
+                } else {
+                    "▼ "
+                }
+            } else {
+                "  "
+            };
+            let name_cell = format!("{}{}{}", indent, indicator, acc.name);
+
+            let type_str = match acc.account_type {
+                AccountType::Asset => "Asset",
+                AccountType::Liability => "Liab",
+                AccountType::Equity => "Equity",
+                AccountType::Revenue => "Rev",
+                AccountType::Expense => "Exp",
+            };
+
+            let balance = balances.get(&acc.id).copied().unwrap_or(Money(0));
+
+            let mut flags = String::new();
+            if acc.is_placeholder {
+                flags.push('P');
+            }
+            if acc.is_contra {
+                flags.push('C');
+            }
+            if !acc.is_active {
+                flags.push('x');
+            }
+
+            let row_style = if !acc.is_active {
+                Style::default().fg(Color::DarkGray)
+            } else {
+                Style::default()
+            };
+
+            Row::new(vec![
+                Cell::from(acc.number.clone()),
+                Cell::from(name_cell),
+                Cell::from(type_str),
+                Cell::from(balance.to_string()),
+                Cell::from(flags),
+            ])
+            .style(row_style)
+        })
+        .collect();
+
+    Table::new(
+        table_rows,
+        [
+            Constraint::Length(8),
+            Constraint::Min(30),
+            Constraint::Length(7),
+            Constraint::Length(12),
+            Constraint::Length(5),
+        ],
+    )
+    .header(header)
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Chart of Accounts "),
+    )
+    .row_highlight_style(
+        Style::default()
+            .bg(Color::Blue)
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
+    )
+    .highlight_symbol("» ")
+}
+
+fn cycle_account_type(current: AccountType, forward: bool) -> AccountType {
+    let types = [
+        AccountType::Asset,
+        AccountType::Liability,
+        AccountType::Equity,
+        AccountType::Revenue,
+        AccountType::Expense,
+    ];
+    let pos = types.iter().position(|t| *t == current).unwrap_or(0);
+    let next = if forward {
+        (pos + 1) % types.len()
+    } else {
+        (pos + types.len() - 1) % types.len()
+    };
+    types[next]
+}
+
+/// Returns a centered `Rect` within `area` at `percent_x`% width and `percent_y`% height.
+fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let margin_x = (100 - percent_x) / 2;
+    let margin_y = (100 - percent_y) / 2;
+    let horizontal = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(margin_x),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage(margin_x),
+        ])
+        .split(area);
+    Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage(margin_y),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage(margin_y),
+        ])
+        .split(horizontal[1])[1]
 }
