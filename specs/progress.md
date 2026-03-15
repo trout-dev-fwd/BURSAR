@@ -1,14 +1,15 @@
 # Progress Tracker
 
 ## Current State
-- **Active Phase**: Phase 2b (in progress)
-- **Last Completed Task**: Phase 2b, Task 3
-- **Next Task**: Phase 2b, Task 4
+- **Active Phase**: Phase 2b (complete — awaiting developer review)
+- **Last Completed Task**: Phase 2b, Task 8
+- **Next Task**: Phase 3 (after developer review)
 - **Blockers**: None
 
 ## Completed Phases
 - [x] Phase 1: Foundation (completed 2026-03-15)
 - [x] Phase 2a: Chart of Accounts (completed 2026-03-15, review fixes applied 2026-03-15)
+- [x] Phase 2b: Journal Entries (completed 2026-03-15 — awaiting developer review)
 
 ## Current Phase Progress
 
@@ -16,11 +17,11 @@
 - [x] Task 1: Create JournalRepo [TEST-FIRST]
 - [x] Task 2: Post/reverse orchestration (services/journal.rs)
 - [x] Task 3: Create JeForm widget
-- [ ] Task 4: JE tab — list view
-- [ ] Task 5: JE tab — actions (new, post, reverse)
-- [ ] Task 6: Reconciliation state changes
-- [ ] Task 7: Account balances reflect posted entries
-- [ ] Task 8: Cross-tab navigation (CoA → JE)
+- [x] Task 4: JE tab — list view
+- [x] Task 5: JE tab — actions (new, post, reverse)
+- [x] Task 6: Reconciliation state changes
+- [x] Task 7: Account balances reflect posted entries
+- [x] Task 8: Cross-tab navigation (CoA → JE)
 
 ### Phase 2a: Chart of Accounts
 - [x] Task 1: Create AccountRepo [TEST-FIRST]
@@ -53,6 +54,12 @@
 - [x] Task 20: Set up pre-commit hook
 
 ## Decisions & Discoveries
+
+- **[Phase 2b, Task 8]**: CoA tab `Enter` now differentiates: group accounts (has_children) toggle
+  expand/collapse as before; leaf accounts return `TabAction::ShowMessage("General Ledger not yet
+  available")`. This wires the hotkey path for Phase 3 without duplicating the expand key. Hint bar
+  updated to reflect both behaviors. JE tab `navigate_to(RecordId::JournalEntry(id))` was already
+  implemented in Task 4 and verified correct.
 
 - **[Phase 2b, Task 3]**: `JeForm` is self-contained — embeds `AccountPicker` directly and returns
   `JeFormAction::Submitted(JeFormOutput)` / `Cancelled` / `Pending`. `JeFormOutput` does not include

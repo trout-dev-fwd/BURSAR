@@ -877,7 +877,26 @@ impl Tab for ChartOfAccountsTab {
             match key.code {
                 KeyCode::Up | KeyCode::Char('k') => self.scroll_up(),
                 KeyCode::Down | KeyCode::Char('j') => self.scroll_down(),
-                KeyCode::Enter => self.toggle_expand(),
+                KeyCode::Enter => {
+                    // Group accounts (has children): toggle expand/collapse.
+                    // Leaf accounts: navigate to General Ledger (not yet implemented).
+                    let has_children = self
+                        .selected_account()
+                        .and_then(|acc| {
+                            self.current_rows()
+                                .iter()
+                                .find(|r| r.account.id == acc.id)
+                                .map(|r| r.has_children)
+                        })
+                        .unwrap_or(false);
+                    if has_children {
+                        self.toggle_expand();
+                    } else {
+                        return TabAction::ShowMessage(
+                            "General Ledger not yet available".to_string(),
+                        );
+                    }
+                }
                 KeyCode::Char('/') => {
                     self.search_active = true;
                     self.search_query.clear();
@@ -929,7 +948,7 @@ impl Tab for ChartOfAccountsTab {
             frame.render_widget(
                 Paragraph::new(Line::from(vec![
                     Span::styled(
-                        " ↑↓/jk: navigate  Enter: expand/collapse  /: search  a: add  e: edit  d: toggle active",
+                        " ↑↓/jk: navigate  Enter: expand/collapse or GL  /: search  a: add  e: edit  d: toggle active",
                         Style::default().fg(Color::DarkGray),
                     ),
                     Span::styled(
