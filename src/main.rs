@@ -33,15 +33,8 @@ fn main() -> Result<()> {
     let entity = if config.entities.is_empty() {
         accounting::app::run_entity_creation_wizard(&config_path, &mut config)?
     } else {
-        // TODO(Task 19): show entity picker if multiple entities exist.
-        let entity_cfg = &config.entities[0];
-        let db = accounting::db::EntityDb::open(&entity_cfg.db_path).with_context(|| {
-            format!(
-                "Failed to open entity database: {}",
-                entity_cfg.db_path.display()
-            )
-        })?;
-        accounting::app::EntityContext::new(db, entity_cfg.name.clone())
+        // If one entity: open directly. If multiple: show picker.
+        accounting::app::run_entity_picker(&config).with_context(|| "Failed to open entity")?
     };
 
     let mut app = accounting::app::App::new(entity, config);

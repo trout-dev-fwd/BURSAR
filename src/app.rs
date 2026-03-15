@@ -545,3 +545,92 @@ fn render_wizard(frame: &mut ratatui::Frame, form: &EntityCreationForm) {
         );
     }
 }
+
+// ── Entity Picker ─────────────────────────────────────────────────────────────
+
+/// Runs an entity picker modal when multiple entities are configured.
+/// If only one entity is configured, opens it directly without showing the picker.
+/// Returns the selected `EntityContext`.
+pub fn run_entity_picker(config: &WorkspaceConfig) -> Result<EntityContext> {
+    if config.entities.len() == 1 {
+        let entity_cfg = &config.entities[0];
+        let db = EntityDb::open(&entity_cfg.db_path)?;
+        return Ok(EntityContext::new(db, entity_cfg.name.clone()));
+    }
+
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+    let _guard = TerminalGuard;
+
+    let result = run_picker_loop(&mut terminal, config);
+    restore_terminal();
+    result
+}
+
+fn run_picker_loop<B: ratatui::backend::Backend>(
+    terminal: &mut Terminal<B>,
+    config: &WorkspaceConfig,
+) -> Result<EntityContext> {
+    let mut selected: usize = 0;
+    let count = config.entities.len();
+
+    loop {
+        terminal.draw(|frame| render_picker(frame, config, selected))?;
+
+        if event::poll(std::time::Duration::from_millis(500))?
+            && let Event::Key(key) = event::read()?
+        {
+            match key.code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    selected = selected.saturating_sub(1);
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if selected + 1 < count {
+                        selected += 1;
+                    }
+                }
+                KeyCode::Enter => {
+                    let entity_cfg = &config.entities[selected];
+                    let db = EntityDb::open(&entity_cfg.db_path)?;
+                    return Ok(EntityContext::new(db, entity_cfg.name.clone()));
+                }
+                KeyCode::Esc => {
+                    anyhow::bail!("Entity selection cancelled");
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn render_picker(frame: &mut ratatui::Frame, config: &WorkspaceConfig, selected: usize) {
+    let area = frame.area();
+    let block = Block::default()
+        .title(" Select Entity (↑↓ to move, Enter to open, Esc to quit) ")
+        .borders(Borders::ALL)
+        .style(Style::default().fg(Color::Cyan));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let lines: Vec<Line> = config
+        .entities
+        .iter()
+        .enumerate()
+        .map(|(i, entity)| {
+            if i == selected {
+                Line::from(vec![Span::styled(
+                    format!("  ▶ {}", entity.name),
+                    Style::default().fg(Color::Yellow).bg(Color::DarkGray),
+                )])
+            } else {
+                Line::from(vec![Span::raw(format!("    {}", entity.name))])
+            }
+        })
+        .collect();
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
