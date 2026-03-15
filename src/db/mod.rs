@@ -1,6 +1,7 @@
 pub mod account_repo;
 pub mod audit_repo;
 pub mod fiscal_repo;
+pub mod journal_repo;
 pub mod schema;
 
 use std::path::Path;
@@ -12,6 +13,7 @@ use rusqlite::Connection;
 use crate::db::account_repo::AccountRepo;
 use crate::db::audit_repo::AuditRepo;
 use crate::db::fiscal_repo::FiscalRepo;
+use crate::db::journal_repo::JournalRepo;
 use crate::db::schema::{initialize_schema, seed_default_accounts};
 
 /// Holds the SQLite connection for one entity database.
@@ -70,8 +72,12 @@ impl EntityDb {
         AuditRepo::new(&self.conn)
     }
 
+    /// Returns a JournalRepo borrowing this connection.
+    pub fn journals(&self) -> JournalRepo<'_> {
+        JournalRepo::new(&self.conn)
+    }
+
     // ── Stub repo accessors (filled in later phases) ──────────────────────────
-    // TODO(Phase 2b): fn journals(&self) -> JournalRepo<'_>
     // TODO(Phase 3):  fn ar(&self) -> ArRepo<'_>
     // TODO(Phase 3):  fn ap(&self) -> ApRepo<'_>
     // TODO(Phase 4):  fn envelopes(&self) -> EnvelopeRepo<'_>
