@@ -79,6 +79,12 @@ impl EntityDb {
     // TODO(Phase 5):  fn recurring(&self) -> RecurringRepo<'_>
 }
 
+/// Returns the current local timestamp as an ISO 8601 string (no timezone).
+/// Shared by all repos that store `created_at` / `updated_at` columns.
+pub(crate) fn now_str() -> String {
+    chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -5,11 +5,13 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
 };
+
+use super::centered_rect;
 
 /// Result of a key event handled by the confirmation widget.
 #[derive(Debug, Clone, PartialEq)]
@@ -79,7 +81,7 @@ impl Confirmation {
 
     /// Renders the confirmation modal centered within `area`.
     pub fn render(&self, frame: &mut Frame, area: Rect) {
-        let modal = centered_confirm_rect(area);
+        let modal = centered_rect(60, 30, area);
         frame.render_widget(Clear, modal);
 
         let yes_style = if self.focus == Focus::Yes {
@@ -126,25 +128,6 @@ impl Confirmation {
             modal,
         );
     }
-}
-
-fn centered_confirm_rect(area: Rect) -> Rect {
-    let h = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(20),
-            Constraint::Percentage(60),
-            Constraint::Percentage(20),
-        ])
-        .split(area);
-    Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage(35),
-            Constraint::Percentage(30),
-            Constraint::Percentage(35),
-        ])
-        .split(h[1])[1]
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

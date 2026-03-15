@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use rusqlite::{Connection, params};
 
+use super::now_str;
 use crate::types::{AuditAction, AuditLogId};
 
 /// A single row from the `audit_log` table.
@@ -48,7 +49,7 @@ impl<'conn> AuditRepo<'conn> {
         record_id: Option<i64>,
         description: &str,
     ) -> Result<AuditLogId> {
-        let now = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string();
+        let now = now_str();
         self.conn
             .execute(
                 "INSERT INTO audit_log

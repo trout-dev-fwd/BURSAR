@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, params};
 
+use super::now_str;
 use crate::types::{AccountId, AccountType, Money};
 
 /// A full account row loaded from the database.
@@ -214,10 +215,6 @@ impl<'conn> AccountRepo<'conn> {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-fn now_str() -> String {
-    chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string()
-}
 
 fn row_to_account(row: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
     let account_type_str: String = row.get(3)?;

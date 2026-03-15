@@ -15,6 +15,7 @@ use crate::db::{
 };
 use crate::tabs::{RecordId, Tab, TabAction};
 use crate::types::{AccountId, AccountType, Money};
+use crate::widgets::centered_rect;
 
 // ── Data structures ───────────────────────────────────────────────────────────
 
@@ -1084,26 +1085,4 @@ fn cycle_account_type(current: AccountType, forward: bool) -> AccountType {
         (pos + types.len() - 1) % types.len()
     };
     types[next]
-}
-
-/// Returns a centered `Rect` within `area` at `percent_x`% width and `percent_y`% height.
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let margin_x = (100 - percent_x) / 2;
-    let margin_y = (100 - percent_y) / 2;
-    let horizontal = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(margin_x),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage(margin_x),
-        ])
-        .split(area);
-    Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage(margin_y),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage(margin_y),
-        ])
-        .split(horizontal[1])[1]
 }

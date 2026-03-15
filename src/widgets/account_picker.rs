@@ -12,6 +12,8 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
 };
 
+use super::centered_rect;
+
 use crate::db::account_repo::Account;
 use crate::types::AccountId;
 
@@ -146,7 +148,7 @@ impl AccountPicker {
     /// Renders the picker popup centered within `area`.
     /// Pass the same `accounts` slice used for `refresh()` and `handle_key()`.
     pub fn render(&mut self, frame: &mut Frame, area: Rect, accounts: &[Account]) {
-        let popup = centered_picker_rect(area);
+        let popup = centered_rect(80, 60, area);
         frame.render_widget(Clear, popup);
 
         let chunks = Layout::default()
@@ -205,26 +207,6 @@ impl AccountPicker {
 
         frame.render_stateful_widget(list, chunks[1], &mut self.list_state);
     }
-}
-
-/// Returns a Rect suitable for the picker popup (80% wide, 60% tall, centered).
-fn centered_picker_rect(area: Rect) -> Rect {
-    let horizontal = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(10),
-            Constraint::Percentage(80),
-            Constraint::Percentage(10),
-        ])
-        .split(area);
-    Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage(20),
-            Constraint::Percentage(60),
-            Constraint::Percentage(20),
-        ])
-        .split(horizontal[1])[1]
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
