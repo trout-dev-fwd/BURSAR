@@ -179,7 +179,10 @@ pub fn initialize_schema(conn: &Connection) -> Result<()> {
 
 /// Seeds the default chart of accounts for a new entity.
 ///
-/// Hierarchy (all top-level are placeholders):
+/// Generic small-business hierarchy (all top-level are placeholders).
+/// Entity-specific accounts (e.g. Rental Income, Property Taxes) should be
+/// added manually after entity creation.
+///
 /// - 1000 Assets
 ///   - 1100 Cash & Bank Accounts (placeholder)
 ///     - 1110 Checking Account
@@ -191,31 +194,28 @@ pub fn initialize_schema(conn: &Connection) -> Result<()> {
 ///     - 1510 Land
 ///     - 1520 Buildings
 ///     - 1521 Accumulated Depreciation - Buildings (contra)
+///     - 1530 Equipment
+///     - 1531 Accumulated Depreciation - Equipment (contra)
 /// - 2000 Liabilities
 ///   - 2100 Accounts Payable
 ///   - 2200 Credit Cards
-///   - 2300 Mortgage Payable
-///   - 2400 Security Deposits Held
+///   - 2300 Accrued Liabilities
 /// - 3000 Equity
 ///   - 3100 Owner's Capital
 ///   - 3200 Owner's Draw (contra)
 ///   - 3300 Retained Earnings
 /// - 4000 Revenue
-///   - 4100 Rental Income
+///   - 4100 Service Revenue
 ///   - 4200 Other Income
 /// - 5000 Expenses
-///   - 5100 Repairs & Maintenance
-///   - 5200 Property Management Fees
+///   - 5100 Rent
+///   - 5200 Utilities
 ///   - 5300 Insurance
-///   - 5400 Property Taxes
-///   - 5500 Utilities
-///   - 5600 Depreciation Expense
-///   - 5700 Interest Expense
-///   - 5800 Professional Fees
-///
-/// NOTE: "feature spec Section 2.2 (Standard Built-in Account Categories)" referenced in
-/// phase-1.md is not present in the current spec files. This hierarchy is a judgment call
-/// appropriate for a small real estate LLC. Documented in progress.md.
+///   - 5400 Repairs & Maintenance
+///   - 5500 Office Supplies
+///   - 5600 Professional Fees
+///   - 5700 Depreciation Expense
+///   - 5800 Interest Expense
 pub fn seed_default_accounts(conn: &Connection) -> Result<()> {
     let now = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string();
 
@@ -252,7 +252,7 @@ pub fn seed_default_accounts(conn: &Connection) -> Result<()> {
     let revenue = insert("4000", "Revenue", "Revenue", None, 1, 0)?;
     let expenses = insert("5000", "Expenses", "Expense", None, 1, 0)?;
 
-    // Assets sub-accounts
+    // Assets
     let cash_bank = insert("1100", "Cash & Bank Accounts", "Asset", Some(assets), 1, 0)?;
     insert("1110", "Checking Account", "Asset", Some(cash_bank), 0, 0)?;
     insert("1120", "Savings Account", "Asset", Some(cash_bank), 0, 0)?;
@@ -275,10 +275,19 @@ pub fn seed_default_accounts(conn: &Connection) -> Result<()> {
         "Asset",
         Some(fixed_assets),
         0,
-        1, // contra
+        1,
+    )?;
+    insert("1530", "Equipment", "Asset", Some(fixed_assets), 0, 0)?;
+    insert(
+        "1531",
+        "Accumulated Depreciation - Equipment",
+        "Asset",
+        Some(fixed_assets),
+        0,
+        1,
     )?;
 
-    // Liabilities sub-accounts
+    // Liabilities
     insert(
         "2100",
         "Accounts Payable",
@@ -290,67 +299,45 @@ pub fn seed_default_accounts(conn: &Connection) -> Result<()> {
     insert("2200", "Credit Cards", "Liability", Some(liabilities), 0, 0)?;
     insert(
         "2300",
-        "Mortgage Payable",
-        "Liability",
-        Some(liabilities),
-        0,
-        0,
-    )?;
-    insert(
-        "2400",
-        "Security Deposits Held",
+        "Accrued Liabilities",
         "Liability",
         Some(liabilities),
         0,
         0,
     )?;
 
-    // Equity sub-accounts
+    // Equity
     insert("3100", "Owner's Capital", "Equity", Some(equity), 0, 0)?;
-    insert(
-        "3200",
-        "Owner's Draw",
-        "Equity",
-        Some(equity),
-        0,
-        1, // contra
-    )?;
+    insert("3200", "Owner's Draw", "Equity", Some(equity), 0, 1)?;
     insert("3300", "Retained Earnings", "Equity", Some(equity), 0, 0)?;
 
-    // Revenue sub-accounts
-    insert("4100", "Rental Income", "Revenue", Some(revenue), 0, 0)?;
+    // Revenue
+    insert("4100", "Service Revenue", "Revenue", Some(revenue), 0, 0)?;
     insert("4200", "Other Income", "Revenue", Some(revenue), 0, 0)?;
 
-    // Expense sub-accounts
+    // Expenses
+    insert("5100", "Rent", "Expense", Some(expenses), 0, 0)?;
+    insert("5200", "Utilities", "Expense", Some(expenses), 0, 0)?;
+    insert("5300", "Insurance", "Expense", Some(expenses), 0, 0)?;
     insert(
-        "5100",
+        "5400",
         "Repairs & Maintenance",
         "Expense",
         Some(expenses),
         0,
         0,
     )?;
+    insert("5500", "Office Supplies", "Expense", Some(expenses), 0, 0)?;
+    insert("5600", "Professional Fees", "Expense", Some(expenses), 0, 0)?;
     insert(
-        "5200",
-        "Property Management Fees",
-        "Expense",
-        Some(expenses),
-        0,
-        0,
-    )?;
-    insert("5300", "Insurance", "Expense", Some(expenses), 0, 0)?;
-    insert("5400", "Property Taxes", "Expense", Some(expenses), 0, 0)?;
-    insert("5500", "Utilities", "Expense", Some(expenses), 0, 0)?;
-    insert(
-        "5600",
+        "5700",
         "Depreciation Expense",
         "Expense",
         Some(expenses),
         0,
         0,
     )?;
-    insert("5700", "Interest Expense", "Expense", Some(expenses), 0, 0)?;
-    insert("5800", "Professional Fees", "Expense", Some(expenses), 0, 0)?;
+    insert("5800", "Interest Expense", "Expense", Some(expenses), 0, 0)?;
 
     Ok(())
 }
