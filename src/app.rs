@@ -43,10 +43,11 @@ pub struct EntityContext {
 }
 
 impl EntityContext {
-    /// Creates an entity context from an open EntityDb, building all 9 stub tabs.
+    /// Creates an entity context from an open EntityDb, building all 9 tabs and
+    /// performing an initial data load so tabs render content immediately.
     pub fn new(db: EntityDb, name: String) -> Self {
-        let tabs: Vec<Box<dyn Tab>> = vec![
-            Box::new(ChartOfAccountsTab),
+        let mut tabs: Vec<Box<dyn Tab>> = vec![
+            Box::new(ChartOfAccountsTab::new()),
             Box::new(GeneralLedgerTab),
             Box::new(JournalEntriesTab),
             Box::new(AccountsReceivableTab),
@@ -56,6 +57,10 @@ impl EntityContext {
             Box::new(ReportsTab),
             Box::new(AuditLogTab),
         ];
+        // Initial data load so tabs show content on first render.
+        for tab in &mut tabs {
+            tab.refresh(&db);
+        }
         Self { db, name, tabs }
     }
 }

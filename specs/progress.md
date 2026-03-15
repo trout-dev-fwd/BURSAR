@@ -2,8 +2,8 @@
 
 ## Current State
 - **Active Phase**: Phase 2a
-- **Last Completed Task**: Phase 2a, Task 2
-- **Next Task**: Phase 2a, Task 3
+- **Last Completed Task**: Phase 2a, Task 3
+- **Next Task**: Phase 2a, Task 4
 - **Blockers**: None
 
 ## Completed Phases
@@ -14,7 +14,7 @@
 ### Phase 2a: Chart of Accounts
 - [x] Task 1: Create AccountRepo [TEST-FIRST]
 - [x] Task 2: Create AuditRepo [TEST-FIRST]
-- [ ] Task 3: CoA tab — list view
+- [x] Task 3: CoA tab — list view
 - [ ] Task 4: CoA tab — CRUD actions
 - [ ] Task 5: Account picker widget
 - [ ] Task 6: Confirmation widget
@@ -42,6 +42,11 @@
 - [x] Task 20: Set up pre-commit hook
 
 ## Decisions & Discoveries
+
+- **[Phase 2a, Task 3]**: `EntityContext::new` now calls `tab.refresh(&db)` on all tabs after
+  construction so data shows immediately on first render. `Table::highlight_style` is deprecated
+  in ratatui 0.29 — use `row_highlight_style` instead. `TableState` must be cloned for immutable
+  `render()` since `render_stateful_widget` requires `&mut TableState`.
 
 - **[Phase 2a, Task 2]**: `AuditRepo::list` uses empty-string sentinels (`?1 = '' OR ...`)
   so the query always takes exactly 3 positional params regardless of which filters are set.
