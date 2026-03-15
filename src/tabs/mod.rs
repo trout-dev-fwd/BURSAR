@@ -100,6 +100,12 @@ pub trait Tab {
     /// The tab re-queries whatever data it displays.
     fn refresh(&mut self, db: &EntityDb);
 
+    /// Returns true when the tab has an active form, modal, or search field
+    /// that should capture all keypresses (suppressing global hotkeys like 1-9).
+    fn wants_input(&self) -> bool {
+        false
+    }
+
     /// Called when navigating to this tab with a specific record to focus.
     /// Default implementation is a no-op; tabs that support it override this.
     fn navigate_to(&mut self, record_id: RecordId, db: &EntityDb) {

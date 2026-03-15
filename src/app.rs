@@ -185,6 +185,14 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
+        // When the active tab has a form, modal, or search field open,
+        // delegate all input directly — suppress global hotkeys.
+        if self.entity.tabs[self.active_tab].wants_input() {
+            let action = self.entity.tabs[self.active_tab].handle_key(key, &self.entity.db);
+            self.process_action(action);
+            return;
+        }
+
         // Global hotkeys.
         match key.code {
             KeyCode::Char('q') if key.modifiers == KeyModifiers::NONE => {

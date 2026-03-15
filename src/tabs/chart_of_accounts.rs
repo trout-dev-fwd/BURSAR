@@ -973,6 +973,10 @@ impl Tab for ChartOfAccountsTab {
         }
     }
 
+    fn wants_input(&self) -> bool {
+        self.modal.is_some() || self.search_active
+    }
+
     fn refresh(&mut self, db: &EntityDb) {
         let repo = db.accounts();
         match repo.list_all() {

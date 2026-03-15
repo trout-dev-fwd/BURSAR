@@ -728,6 +728,10 @@ impl Tab for JournalEntriesTab {
         self.render_modal(frame, area);
     }
 
+    fn wants_input(&self) -> bool {
+        self.modal.is_some()
+    }
+
     fn refresh(&mut self, db: &EntityDb) {
         let filter = self.status_filter.to_filter();
         match db.journals().list(&filter) {
