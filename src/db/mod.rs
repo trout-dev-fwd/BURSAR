@@ -1,3 +1,4 @@
+pub mod account_repo;
 pub mod fiscal_repo;
 pub mod schema;
 
@@ -7,6 +8,7 @@ use anyhow::{Context, Result};
 use chrono::Datelike;
 use rusqlite::Connection;
 
+use crate::db::account_repo::AccountRepo;
 use crate::db::fiscal_repo::FiscalRepo;
 use crate::db::schema::{initialize_schema, seed_default_accounts};
 
@@ -56,8 +58,12 @@ impl EntityDb {
         FiscalRepo::new(&self.conn)
     }
 
+    /// Returns an AccountRepo borrowing this connection.
+    pub fn accounts(&self) -> AccountRepo<'_> {
+        AccountRepo::new(&self.conn)
+    }
+
     // ── Stub repo accessors (filled in later phases) ──────────────────────────
-    // TODO(Phase 2a): fn accounts(&self) -> AccountRepo<'_>
     // TODO(Phase 2a): fn audit(&self) -> AuditRepo<'_>
     // TODO(Phase 2b): fn journals(&self) -> JournalRepo<'_>
     // TODO(Phase 3):  fn ar(&self) -> ArRepo<'_>

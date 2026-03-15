@@ -1,17 +1,25 @@
 # Progress Tracker
 
 ## Current State
-- **Active Phase**: Phase 1 (complete — awaiting developer review)
-- **Last Completed Task**: Phase 1, Task 20
-- **Next Task**: Phase 2a, Task 1 (after developer sign-off)
+- **Active Phase**: Phase 2a
+- **Last Completed Task**: Phase 2a, Task 1
+- **Next Task**: Phase 2a, Task 2
 - **Blockers**: None
 
 ## Completed Phases
-_(Phase 1 complete — awaiting developer review before marking done)_
+- [x] Phase 1: Foundation (completed 2026-03-15)
 
 ## Current Phase Progress
 
-### Phase 1: Foundation
+### Phase 2a: Chart of Accounts
+- [x] Task 1: Create AccountRepo [TEST-FIRST]
+- [ ] Task 2: Create AuditRepo [TEST-FIRST]
+- [ ] Task 3: CoA tab — list view
+- [ ] Task 4: CoA tab — CRUD actions
+- [ ] Task 5: Account picker widget
+- [ ] Task 6: Confirmation widget
+
+### Phase 1: Foundation (complete)
 - [x] Task 1: Initialize Cargo project with dependencies
 - [x] Task 2: Create Money(i64) newtype
 - [x] Task 3: Create Percentage(i64) newtype
@@ -34,6 +42,14 @@ _(Phase 1 complete — awaiting developer review before marking done)_
 - [x] Task 20: Set up pre-commit hook
 
 ## Decisions & Discoveries
+
+- **[Phase 2a, Task 1]**: `row_to_account` is a free function (not a method) to satisfy rusqlite's
+  `FnMut(&Row) -> Result<T>` callback signature — closures borrowing `self` cause lifetime conflicts
+  with `query_map`. Parent-existence check is done app-side with a COUNT query before INSERT
+  (belt-and-suspenders, as SQLite FK constraints also enforce this with PRAGMA foreign_keys=ON).
+  `get_balance` returns raw `SUM(debit_amount - credit_amount)` across posted JE lines; direction
+  interpretation (normal vs. contra) is deferred to Phase 3 display logic.
+
 
 - **[Phase 1, Task 2]**: Introduced `src/lib.rs` to avoid dead_code warnings in the binary crate.
   In a pure binary, all types are considered dead until reachable from `main()`. With a lib.rs,
