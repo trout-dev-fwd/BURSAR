@@ -879,7 +879,7 @@ impl Tab for ChartOfAccountsTab {
                 KeyCode::Down | KeyCode::Char('j') => self.scroll_down(),
                 KeyCode::Enter => {
                     // Group accounts (has children): toggle expand/collapse.
-                    // Leaf accounts: navigate to General Ledger (not yet implemented).
+                    // Leaf accounts: navigate to the General Ledger for that account.
                     let has_children = self
                         .selected_account()
                         .and_then(|acc| {
@@ -891,9 +891,10 @@ impl Tab for ChartOfAccountsTab {
                         .unwrap_or(false);
                     if has_children {
                         self.toggle_expand();
-                    } else {
-                        return TabAction::ShowMessage(
-                            "General Ledger not yet available".to_string(),
+                    } else if let Some(acc) = self.selected_account() {
+                        return TabAction::NavigateTo(
+                            crate::tabs::TabId::GeneralLedger,
+                            crate::tabs::RecordId::Account(acc.id),
                         );
                     }
                 }
@@ -948,7 +949,7 @@ impl Tab for ChartOfAccountsTab {
             frame.render_widget(
                 Paragraph::new(Line::from(vec![
                     Span::styled(
-                        " ↑↓/jk: navigate  Enter: expand/collapse or GL  /: search  a: add  e: edit  d: toggle active",
+                        " ↑↓/jk: navigate  Enter: expand/GL  /: search  a: add  e: edit  d: toggle active",
                         Style::default().fg(Color::DarkGray),
                     ),
                     Span::styled(
