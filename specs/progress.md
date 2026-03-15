@@ -2,8 +2,8 @@
 
 ## Current State
 - **Active Phase**: Phase 2a
-- **Last Completed Task**: Phase 2a, Task 1
-- **Next Task**: Phase 2a, Task 2
+- **Last Completed Task**: Phase 2a, Task 2
+- **Next Task**: Phase 2a, Task 3
 - **Blockers**: None
 
 ## Completed Phases
@@ -13,7 +13,7 @@
 
 ### Phase 2a: Chart of Accounts
 - [x] Task 1: Create AccountRepo [TEST-FIRST]
-- [ ] Task 2: Create AuditRepo [TEST-FIRST]
+- [x] Task 2: Create AuditRepo [TEST-FIRST]
 - [ ] Task 3: CoA tab — list view
 - [ ] Task 4: CoA tab — CRUD actions
 - [ ] Task 5: Account picker widget
@@ -42,6 +42,12 @@
 - [x] Task 20: Set up pre-commit hook
 
 ## Decisions & Discoveries
+
+- **[Phase 2a, Task 2]**: `AuditRepo::list` uses empty-string sentinels (`?1 = '' OR ...`)
+  so the query always takes exactly 3 positional params regardless of which filters are set.
+  This avoids rusqlite param-count mismatches that arise with dynamically built WHERE clauses.
+  The `append` method always stores `record_type` as a non-null TEXT (per the schema the column
+  allows NULL, but the API enforces a value for all known callers).
 
 - **[Phase 2a, Task 1]**: `row_to_account` is a free function (not a method) to satisfy rusqlite's
   `FnMut(&Row) -> Result<T>` callback signature — closures borrowing `self` cause lifetime conflicts
