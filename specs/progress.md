@@ -1,15 +1,14 @@
 # Progress Tracker
 
 ## Current State
-- **Active Phase**: Phase 2a (complete — awaiting developer review)
-- **Last Completed Task**: Phase 2a, Task 6
-- **Next Task**: Phase 2b, Task 1 (after developer sign-off)
-- **Blockers**: None
+- **Active Phase**: Phase 2a (complete — review fixes applied)
+- **Last Completed Task**: Phase 2a review fixes
+- **Next Task**: Phase 2b, Task 1
 - **Blockers**: None
 
 ## Completed Phases
 - [x] Phase 1: Foundation (completed 2026-03-15)
-_(Phase 2a complete — awaiting developer review before marking done)_
+- [x] Phase 2a: Chart of Accounts (completed 2026-03-15, review fixes applied 2026-03-15)
 
 ## Current Phase Progress
 
@@ -45,22 +44,23 @@ _(Phase 2a complete — awaiting developer review before marking done)_
 
 ## Decisions & Discoveries
 
-- **[Phase 2a, Task 4]**: CRUD modals implemented as an inline `CoaModal` enum on the tab struct
-  (not as separate widget files — AccountPicker and Confirmation are Tasks 5 & 6). The Add form
-  uses a simple text field for parent account number (looked up at submit time); the full dropdown
-  AccountPicker widget integration is deferred to wherever it's first composed in Phase 2b. Entity
-  name is set on the tab via `set_entity_name()` called from `EntityContext::new`.
+- **[Phase 2a, Task 4 + review fix]**: CRUD modals implemented as a `CoaModal` enum on the tab struct.
+  After review, the Add form's parent field was wired to use the AccountPicker widget (opens as a
+  sub-overlay popup), and the deactivate/activate confirmation was wired to use the Confirmation
+  widget. This establishes the integration pattern for Phase 2b's JE form. Entity name is set on
+  the tab via `set_entity_name()` called from `EntityContext::new`.
 
 - **[Phase 2a, Task 3]**: `EntityContext::new` now calls `tab.refresh(&db)` on all tabs after
   construction so data shows immediately on first render. `Table::highlight_style` is deprecated
   in ratatui 0.29 — use `row_highlight_style` instead. `TableState` must be cloned for immutable
   `render()` since `render_stateful_widget` requires `&mut TableState`.
 
-- **[Phase 2a, Task 2]**: `AuditRepo::list` uses empty-string sentinels (`?1 = '' OR ...`)
-  so the query always takes exactly 3 positional params regardless of which filters are set.
-  This avoids rusqlite param-count mismatches that arise with dynamically built WHERE clauses.
-  The `append` method always stores `record_type` as a non-null TEXT (per the schema the column
-  allows NULL, but the API enforces a value for all known callers).
+- **[Phase 2a, Task 2 + review fix]**: `AuditRepo::list` uses empty-string sentinels
+  (`?1 = '' OR ...`) — acceptable for the small audit_log table but NOT to be propagated to
+  high-volume repos like JournalRepo (use dynamic SQL building instead). After review,
+  `append()` was changed to accept `Option<&str>` / `Option<i64>` for `record_type` /
+  `record_id`, matching the nullable schema columns. Entity-level events (e.g., YearEndClose)
+  can now pass None.
 
 - **[Phase 2a, Task 1]**: `row_to_account` is a free function (not a method) to satisfy rusqlite's
   `FnMut(&Row) -> Result<T>` callback signature — closures borrowing `self` cause lifetime conflicts
@@ -90,6 +90,20 @@ _(Phase 2a complete — awaiting developer review before marking done)_
 
 - **[Phase 1, Task 20]**: Pre-commit hook sources `~/.cargo/env` before running cargo commands,
   which is necessary because git hooks run in a minimal shell environment without the user's PATH.
+
+## Phase 2a Review Fixes (2026-03-15)
+
+Applied 9 fixes from the end-of-phase developer review:
+
+1. **CoA tab wired to use AccountPicker + Confirmation widgets** (was inline reimplementations)
+2. **AccountRepo::update() made atomic** — single COALESCE-based UPDATE instead of two statements
+3. **AuditRepo::append() signature fixed** — record_type/record_id now Option to match nullable schema
+4. **AuditRepo::list() sentinel pattern documented** — doc comment warns against propagation
+5. **N+1 balance queries replaced** — new get_all_balances() bulk query, CoA refresh uses 1 query
+6. **Duplicated now_str() consolidated** — shared helper in db/mod.rs
+7. **Duplicated centered_rect() consolidated** — shared helper in widgets/mod.rs
+8. **Edit form Enter behavior fixed** — now advances through fields before submit (consistent with Add)
+9. **AccountReactivated audit action added** — reactivations no longer logged as AccountDeactivated
 
 ## Known Issues
 - None currently.
