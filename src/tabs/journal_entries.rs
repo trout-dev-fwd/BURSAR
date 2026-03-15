@@ -1,18 +1,25 @@
-use crossterm::event::{KeyCode, KeyEvent};
+use chrono::NaiveDate;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState},
+    widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState},
 };
 
 use crate::db::{
     EntityDb,
     account_repo::Account,
-    journal_repo::{JournalEntry, JournalEntryLine, JournalFilter},
+    journal_repo::{JournalEntry, JournalEntryLine, JournalFilter, NewJournalEntry},
 };
+use crate::services::journal::{post_journal_entry, reverse_journal_entry};
 use crate::tabs::{RecordId, Tab, TabAction};
 use crate::types::{AccountId, JournalEntryId, JournalEntryStatus, ReconcileState};
+use crate::widgets::{
+    JeForm, centered_rect,
+    confirmation::{ConfirmAction, Confirmation},
+    je_form::JeFormAction,
+};
 
 // ── Status filter cycle ───────────────────────────────────────────────────────
 
@@ -59,6 +66,31 @@ struct DetailState {
     lines: Vec<JournalEntryLine>,
 }
 
+// ── Modal state machine ───────────────────────────────────────────────────────
+
+enum Modal {
+    /// JE form for creating new draft entries.
+    NewEntry(JeForm),
+    /// Confirmation to post a Draft entry.
+    ConfirmPost {
+        confirm: Confirmation,
+        je_id: JournalEntryId,
+    },
+    /// Date input for the reversal entry date.
+    ReverseDate {
+        date_input: String,
+        je_id: JournalEntryId,
+        je_number: String,
+        error: Option<String>,
+    },
+    /// Confirmation to proceed with reversal.
+    ConfirmReverse {
+        confirm: Confirmation,
+        je_id: JournalEntryId,
+        reversal_date: NaiveDate,
+    },
+}
+
 // ── Tab ───────────────────────────────────────────────────────────────────────
 
 pub struct JournalEntriesTab {
@@ -68,6 +100,8 @@ pub struct JournalEntriesTab {
     detail: Option<DetailState>,
     /// Full account list (including inactive) for name resolution in detail view.
     accounts: Vec<Account>,
+    modal: Option<Modal>,
+    entity_name: String,
 }
 
 impl Default for JournalEntriesTab {
@@ -78,6 +112,8 @@ impl Default for JournalEntriesTab {
             status_filter: StatusFilter::All,
             detail: None,
             accounts: Vec::new(),
+            modal: None,
+            entity_name: String::new(),
         }
     }
 }
@@ -85,6 +121,11 @@ impl Default for JournalEntriesTab {
 impl JournalEntriesTab {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Called from `EntityContext::new` to give this tab the entity name for audit logging.
+    pub fn set_entity_name(&mut self, name: &str) {
+        self.entity_name = name.to_string();
     }
 
     fn selected_entry(&self) -> Option<&JournalEntry> {
@@ -148,11 +189,166 @@ impl JournalEntriesTab {
         }
     }
 
+    // ── Modal key handlers ────────────────────────────────────────────────────
+
+    fn handle_new_entry_key(&mut self, key: KeyEvent, db: &EntityDb) -> TabAction {
+        // Take the modal out so we can borrow self.accounts freely.
+        let Some(Modal::NewEntry(mut form)) = self.modal.take() else {
+            return TabAction::None;
+        };
+        let action = form.handle_key(key, &self.accounts);
+        match action {
+            JeFormAction::Cancelled => {
+                // modal stays None (already taken)
+            }
+            JeFormAction::Submitted(output) => {
+                match db.fiscal().get_period_for_date(output.entry_date) {
+                    Err(e) => {
+                        return TabAction::ShowMessage(format!("No fiscal period for date: {e}"));
+                    }
+                    Ok(period) => {
+                        let new_je = NewJournalEntry {
+                            entry_date: output.entry_date,
+                            memo: output.memo,
+                            fiscal_period_id: period.id,
+                            reversal_of_je_id: None,
+                            lines: output.lines,
+                        };
+                        return match db.journals().create_draft(&new_je) {
+                            Ok(_) => TabAction::RefreshData,
+                            Err(e) => TabAction::ShowMessage(format!("Failed to save draft: {e}")),
+                        };
+                    }
+                }
+            }
+            JeFormAction::Pending => {
+                // Restore modal.
+                self.modal = Some(Modal::NewEntry(form));
+            }
+        }
+        TabAction::None
+    }
+
+    fn handle_confirm_post_key(&mut self, key: KeyEvent, db: &EntityDb) -> TabAction {
+        let Some(Modal::ConfirmPost { mut confirm, je_id }) = self.modal.take() else {
+            return TabAction::None;
+        };
+        match confirm.handle_key(key) {
+            ConfirmAction::Confirmed => {
+                let entity_name = self.entity_name.clone();
+                match post_journal_entry(db, je_id, &entity_name) {
+                    Ok(()) => TabAction::RefreshData,
+                    Err(e) => TabAction::ShowMessage(format!("Post failed: {e}")),
+                }
+            }
+            ConfirmAction::Cancelled => TabAction::None,
+            ConfirmAction::Pending => {
+                self.modal = Some(Modal::ConfirmPost { confirm, je_id });
+                TabAction::None
+            }
+        }
+    }
+
+    fn handle_reverse_date_key(&mut self, key: KeyEvent) -> TabAction {
+        let Some(Modal::ReverseDate {
+            mut date_input,
+            je_id,
+            je_number,
+            mut error,
+        }) = self.modal.take()
+        else {
+            return TabAction::None;
+        };
+
+        match key.code {
+            KeyCode::Esc => {
+                // modal stays None
+            }
+            KeyCode::Backspace => {
+                date_input.pop();
+                error = None;
+                self.modal = Some(Modal::ReverseDate {
+                    date_input,
+                    je_id,
+                    je_number,
+                    error,
+                });
+            }
+            KeyCode::Char(c) if date_input.len() < 10 => {
+                date_input.push(c);
+                error = None;
+                self.modal = Some(Modal::ReverseDate {
+                    date_input,
+                    je_id,
+                    je_number,
+                    error,
+                });
+            }
+            KeyCode::Enter => match NaiveDate::parse_from_str(&date_input, "%Y-%m-%d") {
+                Err(_) => {
+                    error = Some(format!("Invalid date '{}'. Use YYYY-MM-DD.", date_input));
+                    self.modal = Some(Modal::ReverseDate {
+                        date_input,
+                        je_id,
+                        je_number,
+                        error,
+                    });
+                }
+                Ok(reversal_date) => {
+                    let msg = format!("Reverse {} on {}?", je_number, reversal_date);
+                    self.modal = Some(Modal::ConfirmReverse {
+                        confirm: Confirmation::new(msg),
+                        je_id,
+                        reversal_date,
+                    });
+                }
+            },
+            _ => {
+                self.modal = Some(Modal::ReverseDate {
+                    date_input,
+                    je_id,
+                    je_number,
+                    error,
+                });
+            }
+        }
+        TabAction::None
+    }
+
+    fn handle_confirm_reverse_key(&mut self, key: KeyEvent, db: &EntityDb) -> TabAction {
+        let Some(Modal::ConfirmReverse {
+            mut confirm,
+            je_id,
+            reversal_date,
+        }) = self.modal.take()
+        else {
+            return TabAction::None;
+        };
+        match confirm.handle_key(key) {
+            ConfirmAction::Confirmed => {
+                let entity_name = self.entity_name.clone();
+                match reverse_journal_entry(db, je_id, reversal_date, &entity_name) {
+                    Ok(_new_id) => TabAction::RefreshData,
+                    Err(e) => TabAction::ShowMessage(format!("Reverse failed: {e}")),
+                }
+            }
+            ConfirmAction::Cancelled => TabAction::None,
+            ConfirmAction::Pending => {
+                self.modal = Some(Modal::ConfirmReverse {
+                    confirm,
+                    je_id,
+                    reversal_date,
+                });
+                TabAction::None
+            }
+        }
+    }
+
     // ── Render helpers ────────────────────────────────────────────────────────
 
     fn render_list(&self, frame: &mut Frame, area: Rect) {
         let title = format!(
-            " Journal Entries  [f] filter: {}  ↑↓: scroll  Enter: detail ",
+            " Journal Entries  [n] new  [p] post  [r] reverse  [f] filter: {}  ↑↓: scroll  Enter: detail ",
             self.status_filter.label()
         );
 
@@ -217,7 +413,6 @@ impl JournalEntriesTab {
         );
 
         if let Some(memo) = &entry.memo {
-            // Reserve top line for memo when present
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Length(1), Constraint::Min(3)])
@@ -293,6 +488,52 @@ impl JournalEntriesTab {
 
         frame.render_widget(table, area);
     }
+
+    fn render_modal(&self, frame: &mut Frame, area: Rect) {
+        let Some(modal) = &self.modal else {
+            return;
+        };
+        match modal {
+            Modal::NewEntry(form) => {
+                let popup = centered_rect(90, 80, area);
+                frame.render_widget(Clear, popup);
+                form.render(frame, popup, &self.accounts);
+            }
+            Modal::ConfirmPost { confirm, .. } => {
+                let popup = centered_rect(50, 25, area);
+                frame.render_widget(Clear, popup);
+                confirm.render(frame, popup);
+            }
+            Modal::ReverseDate {
+                date_input,
+                je_number,
+                error,
+                ..
+            } => {
+                let popup = centered_rect(44, 20, area);
+                frame.render_widget(Clear, popup);
+                let title = format!(" Reversal date for {} ", je_number);
+                let error_line = error.as_deref().unwrap_or("");
+                let content = format!(
+                    "  Date (YYYY-MM-DD): {date_input}_\n\n  {error_line}\n  Enter: continue  Esc: cancel"
+                );
+                frame.render_widget(
+                    Paragraph::new(content).block(
+                        Block::default()
+                            .title(title)
+                            .borders(Borders::ALL)
+                            .style(Style::default().fg(Color::White)),
+                    ),
+                    popup,
+                );
+            }
+            Modal::ConfirmReverse { confirm, .. } => {
+                let popup = centered_rect(55, 25, area);
+                frame.render_widget(Clear, popup);
+                confirm.render(frame, popup);
+            }
+        }
+    }
 }
 
 impl Tab for JournalEntriesTab {
@@ -301,6 +542,17 @@ impl Tab for JournalEntriesTab {
     }
 
     fn handle_key(&mut self, key: KeyEvent, db: &EntityDb) -> TabAction {
+        // Route all keys to the active modal first.
+        if self.modal.is_some() {
+            return match &self.modal {
+                Some(Modal::NewEntry(_)) => self.handle_new_entry_key(key, db),
+                Some(Modal::ConfirmPost { .. }) => self.handle_confirm_post_key(key, db),
+                Some(Modal::ReverseDate { .. }) => self.handle_reverse_date_key(key),
+                Some(Modal::ConfirmReverse { .. }) => self.handle_confirm_reverse_key(key, db),
+                None => TabAction::None,
+            };
+        }
+
         match key.code {
             KeyCode::Up => self.scroll_up(),
             KeyCode::Down => self.scroll_down(),
@@ -316,6 +568,52 @@ impl Tab for JournalEntriesTab {
                 self.status_filter = self.status_filter.next();
                 self.close_detail();
                 self.refresh(db);
+            }
+
+            // ── Actions ───────────────────────────────────────────────────────
+            KeyCode::Char('n') | KeyCode::Char('N') => {
+                self.modal = Some(Modal::NewEntry(JeForm::new()));
+            }
+            KeyCode::Char('p') | KeyCode::Char('P')
+                if !key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                if let Some(entry) = self.selected_entry() {
+                    if entry.status == JournalEntryStatus::Draft {
+                        let je_id = entry.id;
+                        let je_number = entry.je_number.clone();
+                        self.modal = Some(Modal::ConfirmPost {
+                            confirm: Confirmation::new(format!("Post {}?", je_number)),
+                            je_id,
+                        });
+                    } else {
+                        return TabAction::ShowMessage(
+                            "Only Draft entries can be posted.".to_string(),
+                        );
+                    }
+                }
+            }
+            KeyCode::Char('r') | KeyCode::Char('R') => {
+                if let Some(entry) = self.selected_entry() {
+                    if entry.status == JournalEntryStatus::Posted && !entry.is_reversed {
+                        let je_id = entry.id;
+                        let je_number = entry.je_number.clone();
+                        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+                        self.modal = Some(Modal::ReverseDate {
+                            date_input: today,
+                            je_id,
+                            je_number,
+                            error: None,
+                        });
+                    } else if entry.is_reversed {
+                        return TabAction::ShowMessage(
+                            "This entry has already been reversed.".to_string(),
+                        );
+                    } else {
+                        return TabAction::ShowMessage(
+                            "Only Posted entries can be reversed.".to_string(),
+                        );
+                    }
+                }
             }
             _ => {}
         }
@@ -333,6 +631,7 @@ impl Tab for JournalEntriesTab {
         } else {
             self.render_list(frame, area);
         }
+        self.render_modal(frame, area);
     }
 
     fn refresh(&mut self, db: &EntityDb) {
@@ -393,7 +692,7 @@ mod tests {
     use crate::db::schema::{initialize_schema, seed_default_accounts};
     use crate::db::{entity_db_from_conn, fiscal_repo::FiscalRepo, journal_repo::NewJournalEntry};
     use crate::types::FiscalPeriodId;
-    use chrono::NaiveDate;
+    use crossterm::event::KeyModifiers;
     use rusqlite::Connection;
 
     fn make_db() -> EntityDb {
@@ -404,7 +703,7 @@ mod tests {
         entity_db_from_conn(conn)
     }
 
-    fn non_placeholder_accounts(db: &EntityDb) -> Vec<crate::types::AccountId> {
+    fn non_placeholder_accounts(db: &EntityDb) -> Vec<AccountId> {
         db.accounts()
             .list_all()
             .unwrap()
@@ -452,6 +751,10 @@ mod tests {
             .unwrap()
     }
 
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
     #[test]
     fn refresh_loads_entries() {
         let db = make_db();
@@ -481,7 +784,6 @@ mod tests {
     fn filter_draft_excludes_posted() {
         let db = make_db();
         let id = create_draft(&db);
-        // Post the entry so we have both Draft (second) and Posted (first).
         crate::services::journal::post_journal_entry(&db, id, "Test Entity").unwrap();
         create_draft(&db);
 
@@ -536,5 +838,129 @@ mod tests {
         tab.open_detail(&db);
         assert!(tab.detail.is_some());
         assert_eq!(tab.detail.as_ref().unwrap().lines.len(), 2);
+    }
+
+    #[test]
+    fn n_key_opens_new_entry_modal() {
+        let db = make_db();
+        let mut tab = JournalEntriesTab::new();
+        tab.refresh(&db);
+
+        tab.handle_key(key(KeyCode::Char('n')), &db);
+        assert!(matches!(tab.modal, Some(Modal::NewEntry(_))));
+    }
+
+    #[test]
+    fn p_on_draft_opens_confirm_post_modal() {
+        let db = make_db();
+        create_draft(&db);
+        let mut tab = JournalEntriesTab::new();
+        tab.refresh(&db);
+
+        tab.handle_key(key(KeyCode::Char('p')), &db);
+        assert!(matches!(tab.modal, Some(Modal::ConfirmPost { .. })));
+    }
+
+    #[test]
+    fn p_on_posted_shows_message() {
+        let db = make_db();
+        let id = create_draft(&db);
+        crate::services::journal::post_journal_entry(&db, id, "Test Entity").unwrap();
+
+        let mut tab = JournalEntriesTab::new();
+        tab.refresh(&db);
+
+        let action = tab.handle_key(key(KeyCode::Char('p')), &db);
+        assert!(matches!(action, TabAction::ShowMessage(_)));
+        assert!(tab.modal.is_none());
+    }
+
+    #[test]
+    fn confirm_post_triggers_refresh() {
+        let db = make_db();
+        create_draft(&db);
+        let mut tab = JournalEntriesTab::new();
+        tab.set_entity_name("Test Entity");
+        tab.refresh(&db);
+
+        // Open confirm post modal.
+        tab.handle_key(key(KeyCode::Char('p')), &db);
+        assert!(matches!(tab.modal, Some(Modal::ConfirmPost { .. })));
+
+        // Confirm (y key).
+        let action = tab.handle_key(key(KeyCode::Char('y')), &db);
+        assert!(matches!(action, TabAction::RefreshData));
+        assert!(tab.modal.is_none());
+
+        // Verify posted.
+        let (je, _) = db
+            .journals()
+            .get_with_lines(
+                db.journals()
+                    .list(&JournalFilter {
+                        status: None,
+                        from_date: None,
+                        to_date: None,
+                    })
+                    .unwrap()[0]
+                    .id,
+            )
+            .unwrap();
+        assert_eq!(je.status, JournalEntryStatus::Posted);
+    }
+
+    #[test]
+    fn r_on_posted_opens_reverse_date_modal() {
+        let db = make_db();
+        let id = create_draft(&db);
+        crate::services::journal::post_journal_entry(&db, id, "Test Entity").unwrap();
+
+        let mut tab = JournalEntriesTab::new();
+        tab.refresh(&db);
+
+        tab.handle_key(key(KeyCode::Char('r')), &db);
+        assert!(matches!(tab.modal, Some(Modal::ReverseDate { .. })));
+    }
+
+    #[test]
+    fn r_on_draft_shows_message() {
+        let db = make_db();
+        create_draft(&db);
+        let mut tab = JournalEntriesTab::new();
+        tab.refresh(&db);
+
+        let action = tab.handle_key(key(KeyCode::Char('r')), &db);
+        assert!(matches!(action, TabAction::ShowMessage(_)));
+    }
+
+    #[test]
+    fn full_reverse_workflow_creates_reversal_entry() {
+        let db = make_db();
+        let id = create_draft(&db);
+        crate::services::journal::post_journal_entry(&db, id, "Test Entity").unwrap();
+
+        let mut tab = JournalEntriesTab::new();
+        tab.set_entity_name("Test Entity");
+        tab.refresh(&db);
+        assert_eq!(tab.entries.len(), 1);
+
+        // Open reverse date modal.
+        tab.handle_key(key(KeyCode::Char('r')), &db);
+
+        // Type a valid reversal date.
+        for c in "2026-01-31".chars() {
+            tab.handle_key(key(KeyCode::Char(c)), &db);
+        }
+        // Advance to ConfirmReverse.
+        tab.handle_key(key(KeyCode::Enter), &db);
+        assert!(matches!(tab.modal, Some(Modal::ConfirmReverse { .. })));
+
+        // Confirm.
+        let action = tab.handle_key(key(KeyCode::Char('y')), &db);
+        assert!(matches!(action, TabAction::RefreshData));
+
+        // After refresh, there should be 2 entries.
+        tab.refresh(&db);
+        assert_eq!(tab.entries.len(), 2);
     }
 }

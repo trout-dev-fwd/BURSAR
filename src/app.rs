@@ -48,10 +48,12 @@ impl EntityContext {
     pub fn new(db: EntityDb, name: String) -> Self {
         let mut coa = ChartOfAccountsTab::new();
         coa.set_entity_name(&name);
+        let mut je = JournalEntriesTab::new();
+        je.set_entity_name(&name);
         let mut tabs: Vec<Box<dyn Tab>> = vec![
             Box::new(coa),
             Box::new(GeneralLedgerTab),
-            Box::new(JournalEntriesTab::new()),
+            Box::new(je),
             Box::new(AccountsReceivableTab),
             Box::new(AccountsPayableTab),
             Box::new(EnvelopesTab),
