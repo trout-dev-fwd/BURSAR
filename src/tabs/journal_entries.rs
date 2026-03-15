@@ -579,9 +579,7 @@ impl JournalEntriesTab {
                 form.render(frame, popup, &self.accounts);
             }
             Modal::ConfirmPost { confirm, .. } => {
-                let popup = centered_rect(50, 25, area);
-                frame.render_widget(Clear, popup);
-                confirm.render(frame, popup);
+                confirm.render(frame, area);
             }
             Modal::ReverseDate {
                 date_input,
@@ -607,9 +605,7 @@ impl JournalEntriesTab {
                 );
             }
             Modal::ConfirmReverse { confirm, .. } => {
-                let popup = centered_rect(55, 25, area);
-                frame.render_widget(Clear, popup);
-                confirm.render(frame, popup);
+                confirm.render(frame, area);
             }
         }
     }
