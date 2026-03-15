@@ -147,7 +147,7 @@ impl AccountPicker {
 
     /// Renders the picker popup centered within `area`.
     /// Pass the same `accounts` slice used for `refresh()` and `handle_key()`.
-    pub fn render(&mut self, frame: &mut Frame, area: Rect, accounts: &[Account]) {
+    pub fn render(&self, frame: &mut Frame, area: Rect, accounts: &[Account]) {
         let popup = centered_rect(80, 60, area);
         frame.render_widget(Clear, popup);
 
@@ -205,7 +205,8 @@ impl AccountPicker {
             )
             .highlight_symbol("» ");
 
-        frame.render_stateful_widget(list, chunks[1], &mut self.list_state);
+        let mut state = self.list_state.clone();
+        frame.render_stateful_widget(list, chunks[1], &mut state);
     }
 }
 

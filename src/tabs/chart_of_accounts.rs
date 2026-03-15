@@ -15,7 +15,9 @@ use crate::db::{
 };
 use crate::tabs::{RecordId, Tab, TabAction};
 use crate::types::{AccountId, AccountType, Money};
+use crate::widgets::account_picker::{AccountPicker, PickerAction};
 use crate::widgets::centered_rect;
+use crate::widgets::confirmation::{ConfirmAction, Confirmation};
 
 // ── Data structures ───────────────────────────────────────────────────────────
 
@@ -29,12 +31,14 @@ struct VisibleRow {
 
 // ── Modal state machines ──────────────────────────────────────────────────────
 
-#[derive(Debug)]
 struct AddFormState {
     number: String,
     name: String,
     account_type: AccountType,
-    parent_number: String,
+    /// Display text for the parent field (set by AccountPicker on selection).
+    parent_display: String,
+    /// Resolved parent account ID (set by AccountPicker on selection).
+    parent_id: Option<AccountId>,
     is_contra: bool,
     is_placeholder: bool,
     focused_field: usize,
@@ -47,7 +51,8 @@ impl AddFormState {
             number: String::new(),
             name: String::new(),
             account_type: AccountType::Asset,
-            parent_number: String::new(),
+            parent_display: String::new(),
+            parent_id: None,
             is_contra: false,
             is_placeholder: false,
             focused_field: 0,
@@ -70,18 +75,20 @@ struct EditFormState {
     error: Option<String>,
 }
 
-#[derive(Debug)]
-struct ConfirmToggle {
+/// State for the deactivate/reactivate confirmation dialog.
+struct ConfirmToggleState {
     id: AccountId,
     name: String,
     currently_active: bool,
+    confirm: Confirmation,
 }
 
-#[derive(Debug)]
 enum CoaModal {
     AddForm(AddFormState),
+    /// The AccountPicker is open as a sub-overlay of the Add form.
+    AddFormPickingParent(AddFormState, AccountPicker),
     EditForm(EditFormState),
-    ConfirmToggle(ConfirmToggle),
+    ConfirmToggle(ConfirmToggleState),
 }
 
 // ── Tab struct ────────────────────────────────────────────────────────────────
@@ -307,11 +314,18 @@ impl ChartOfAccountsTab {
             Some(a) => a.clone(),
             None => return,
         };
+        let action = if acc.is_active {
+            "Deactivate"
+        } else {
+            "Reactivate"
+        };
+        let msg = format!("{} '{}'?", action, acc.name);
         self.search_active = false;
-        self.modal = Some(CoaModal::ConfirmToggle(ConfirmToggle {
+        self.modal = Some(CoaModal::ConfirmToggle(ConfirmToggleState {
             id: acc.id,
             name: acc.name.clone(),
             currently_active: acc.is_active,
+            confirm: Confirmation::new(msg),
         }));
     }
 
@@ -338,6 +352,18 @@ impl ChartOfAccountsTab {
                 return TabAction::None;
             }
             KeyCode::Enter => {
+                // Field 3 (Parent): open AccountPicker instead of advancing.
+                if form.focused_field == 3 {
+                    let mut picker = AccountPicker::new();
+                    picker.refresh(&self.all_accounts);
+                    // Transition: move the form into the AddFormPickingParent variant.
+                    let form_state = match self.modal.take() {
+                        Some(CoaModal::AddForm(f)) => f,
+                        _ => return TabAction::None,
+                    };
+                    self.modal = Some(CoaModal::AddFormPickingParent(form_state, picker));
+                    return TabAction::None;
+                }
                 // Move forward through fields or submit on last field.
                 if form.focused_field < AddFormState::field_count() - 1 {
                     form.focused_field += 1;
@@ -354,7 +380,9 @@ impl ChartOfAccountsTab {
                         form.name.pop();
                     }
                     3 => {
-                        form.parent_number.pop();
+                        // Clear parent selection.
+                        form.parent_display.clear();
+                        form.parent_id = None;
                     }
                     _ => {}
                 }
@@ -368,7 +396,20 @@ impl ChartOfAccountsTab {
                         // Cycle account type on any char (or Space)
                         form.account_type = cycle_account_type(form.account_type, true);
                     }
-                    3 => form.parent_number.push(c),
+                    3 => {
+                        // Any char on parent field opens the picker.
+                        let mut picker = AccountPicker::new();
+                        picker.refresh(&self.all_accounts);
+                        // Pre-seed the picker with the typed character.
+                        let seed_key =
+                            KeyEvent::new(KeyCode::Char(c), crossterm::event::KeyModifiers::NONE);
+                        picker.handle_key(seed_key, &self.all_accounts);
+                        let form_state = match self.modal.take() {
+                            Some(CoaModal::AddForm(f)) => f,
+                            _ => return TabAction::None,
+                        };
+                        self.modal = Some(CoaModal::AddFormPickingParent(form_state, picker));
+                    }
                     4 => form.is_contra = !form.is_contra,
                     5 => form.is_placeholder = !form.is_placeholder,
                     _ => {}
@@ -391,7 +432,7 @@ impl ChartOfAccountsTab {
         }
 
         // Clone the form data for submission (to avoid borrow conflict).
-        let (number, name, account_type, parent_number, is_contra, is_placeholder) = {
+        let (number, name, account_type, parent_id, is_contra, is_placeholder) = {
             let f = match &self.modal {
                 Some(CoaModal::AddForm(f)) => f,
                 _ => return TabAction::None,
@@ -400,7 +441,7 @@ impl ChartOfAccountsTab {
                 f.number.trim().to_string(),
                 f.name.trim().to_string(),
                 f.account_type,
-                f.parent_number.trim().to_string(),
+                f.parent_id,
                 f.is_contra,
                 f.is_placeholder,
             )
@@ -421,22 +462,6 @@ impl ChartOfAccountsTab {
             }
             return TabAction::None;
         }
-
-        // Resolve parent account.
-        let parent_id: Option<AccountId> = if parent_number.is_empty() {
-            None
-        } else {
-            match self.all_accounts.iter().find(|a| a.number == parent_number) {
-                Some(p) => Some(p.id),
-                None => {
-                    if let Some(CoaModal::AddForm(f)) = &mut self.modal {
-                        f.error = Some(format!("Parent account '{parent_number}' not found."));
-                        f.focused_field = 3;
-                    }
-                    return TabAction::None;
-                }
-            }
-        };
 
         let new_account = NewAccount {
             number: number.clone(),
@@ -471,6 +496,39 @@ impl ChartOfAccountsTab {
                 TabAction::RefreshData
             }
         }
+    }
+
+    fn handle_add_form_picker_key(&mut self, key: KeyEvent) -> TabAction {
+        let (form, picker) = match &mut self.modal {
+            Some(CoaModal::AddFormPickingParent(f, p)) => (f, p),
+            _ => return TabAction::None,
+        };
+
+        match picker.handle_key(key, &self.all_accounts) {
+            PickerAction::Selected(id) => {
+                // Look up the account to get its display number.
+                if let Some(acc) = self.all_accounts.iter().find(|a| a.id == id) {
+                    form.parent_display = format!("{} {}", acc.number, acc.name);
+                    form.parent_id = Some(id);
+                }
+                // Transition back to AddForm.
+                let form_state = match self.modal.take() {
+                    Some(CoaModal::AddFormPickingParent(f, _)) => f,
+                    _ => return TabAction::None,
+                };
+                self.modal = Some(CoaModal::AddForm(form_state));
+            }
+            PickerAction::Cancelled => {
+                // Return to the add form without changing parent.
+                let form_state = match self.modal.take() {
+                    Some(CoaModal::AddFormPickingParent(f, _)) => f,
+                    _ => return TabAction::None,
+                };
+                self.modal = Some(CoaModal::AddForm(form_state));
+            }
+            PickerAction::Pending => {}
+        }
+        TabAction::None
     }
 
     fn handle_edit_form_key(&mut self, key: KeyEvent, db: &EntityDb) -> TabAction {
@@ -583,13 +641,17 @@ impl ChartOfAccountsTab {
     }
 
     fn handle_confirm_toggle_key(&mut self, key: KeyEvent, db: &EntityDb) -> TabAction {
-        let (id, name, currently_active) = match &self.modal {
-            Some(CoaModal::ConfirmToggle(c)) => (c.id, c.name.clone(), c.currently_active),
+        let state = match &mut self.modal {
+            Some(CoaModal::ConfirmToggle(s)) => s,
             _ => return TabAction::None,
         };
 
-        match key.code {
-            KeyCode::Char('y') | KeyCode::Enter => {
+        match state.confirm.handle_key(key) {
+            ConfirmAction::Confirmed => {
+                let id = state.id;
+                let name = state.name.clone();
+                let currently_active = state.currently_active;
+
                 let result = if currently_active {
                     db.accounts().deactivate(id)
                 } else {
@@ -622,11 +684,11 @@ impl ChartOfAccountsTab {
                     }
                 }
             }
-            KeyCode::Char('n') | KeyCode::Esc => {
+            ConfirmAction::Cancelled => {
                 self.modal = None;
                 TabAction::None
             }
-            _ => TabAction::None,
+            ConfirmAction::Pending => TabAction::None,
         }
     }
 
@@ -647,13 +709,18 @@ impl ChartOfAccountsTab {
         let modal_area = centered_rect(60, 60, area);
         frame.render_widget(Clear, modal_area);
 
-        let field_labels = ["Number", "Name", "Type", "Parent#", "Contra", "Placeholder"];
+        let field_labels = ["Number", "Name", "Type", "Parent", "Contra", "Placeholder"];
         let type_str = form.account_type.to_string();
+        let parent_str = if form.parent_display.is_empty() {
+            "(none — Enter to pick)".to_string()
+        } else {
+            form.parent_display.clone()
+        };
         let values: [&str; 6] = [
             &form.number,
             &form.name,
             &type_str,
-            &form.parent_number,
+            &parent_str,
             if form.is_contra { "Yes" } else { "No" },
             if form.is_placeholder { "Yes" } else { "No" },
         ];
@@ -753,34 +820,8 @@ impl ChartOfAccountsTab {
         );
     }
 
-    fn render_confirm_toggle(&self, frame: &mut Frame, area: Rect, confirm: &ConfirmToggle) {
-        let modal_area = centered_rect(50, 25, area);
-        frame.render_widget(Clear, modal_area);
-
-        let action = if confirm.currently_active {
-            "Deactivate"
-        } else {
-            "Reactivate"
-        };
-        let lines = vec![
-            Line::from(Span::raw("")),
-            Line::from(Span::raw(format!("  {} '{}'?", action, confirm.name))),
-            Line::from(Span::raw("")),
-            Line::from(Span::styled(
-                "  [y] Yes     [n / Esc] No",
-                Style::default().fg(Color::Yellow),
-            )),
-        ];
-
-        frame.render_widget(
-            Paragraph::new(lines).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(format!(" {} Account ", action))
-                    .style(Style::default().fg(Color::Yellow)),
-            ),
-            modal_area,
-        );
+    fn render_confirm_toggle(&self, frame: &mut Frame, area: Rect, state: &ConfirmToggleState) {
+        state.confirm.render(frame, area);
     }
 }
 
@@ -796,6 +837,9 @@ impl Tab for ChartOfAccountsTab {
         match &self.modal {
             Some(CoaModal::AddForm(_)) => {
                 return self.handle_add_form_key(key, db);
+            }
+            Some(CoaModal::AddFormPickingParent(_, _)) => {
+                return self.handle_add_form_picker_key(key);
             }
             Some(CoaModal::EditForm(_)) => {
                 return self.handle_edit_form_key(key, db);
@@ -901,8 +945,11 @@ impl Tab for ChartOfAccountsTab {
         if let Some(ref modal) = self.modal {
             match modal {
                 CoaModal::AddForm(f) => self.render_add_form(frame, area, f),
+                CoaModal::AddFormPickingParent(_, picker) => {
+                    picker.render(frame, area, &self.all_accounts);
+                }
                 CoaModal::EditForm(f) => self.render_edit_form(frame, area, f),
-                CoaModal::ConfirmToggle(c) => self.render_confirm_toggle(frame, area, c),
+                CoaModal::ConfirmToggle(s) => self.render_confirm_toggle(frame, area, s),
             }
         }
     }
