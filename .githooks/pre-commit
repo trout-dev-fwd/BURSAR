@@ -1,0 +1,8 @@
+#!/bin/sh
+# Source cargo environment so that cargo is on PATH in hook context.
+if [ -f "$HOME/.cargo/env" ]; then
+    . "$HOME/.cargo/env"
+fi
+
+set -e
+cargo fmt -- --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test
