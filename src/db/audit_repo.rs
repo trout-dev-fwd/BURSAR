@@ -73,6 +73,10 @@ impl<'conn> AuditRepo<'conn> {
     ///
     /// Uses empty-string sentinels for optional params so the query always takes exactly
     /// 3 positional parameters, avoiding rusqlite param-count mismatches with dynamic SQL.
+    ///
+    /// NOTE: This sentinel approach is acceptable for the audit log (small table, rare queries)
+    /// but should NOT be used as a template for high-volume repos (e.g., JournalRepo). Those
+    /// should use dynamic SQL building instead, which allows proper index usage.
     pub fn list(&self, filter: &AuditFilter) -> Result<Vec<AuditEntry>> {
         // Empty string sentinels: condition is skipped when the value is "".
         let from_str = filter.from.as_deref().unwrap_or("").to_string();

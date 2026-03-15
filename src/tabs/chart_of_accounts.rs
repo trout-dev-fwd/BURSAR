@@ -512,7 +512,13 @@ impl ChartOfAccountsTab {
                 }
                 return TabAction::None;
             }
-            KeyCode::Enter => { /* proceed to submit */ }
+            KeyCode::Enter => {
+                // Advance through fields; submit only on the last field.
+                if form.focused_field < 1 {
+                    form.focused_field += 1;
+                    return TabAction::None;
+                }
+            }
             _ => return TabAction::None,
         }
 
@@ -596,14 +602,14 @@ impl ChartOfAccountsTab {
                         TabAction::None
                     }
                     Ok(()) => {
-                        let action_word = if currently_active {
-                            "Deactivated"
+                        let (audit_action, action_word) = if currently_active {
+                            (crate::types::AuditAction::AccountDeactivated, "Deactivated")
                         } else {
-                            "Reactivated"
+                            (crate::types::AuditAction::AccountReactivated, "Reactivated")
                         };
                         let desc = format!("{action_word} account {}", name);
                         if let Err(e) = db.audit().append(
-                            crate::types::AuditAction::AccountDeactivated,
+                            audit_action,
                             &self.entity_name,
                             Some("Account"),
                             Some(i64::from(id)),
@@ -913,18 +919,11 @@ impl Tab for ChartOfAccountsTab {
             }
         }
 
-        self.balances.clear();
-        for acc in &self.all_accounts {
-            match repo.get_balance(acc.id) {
-                Ok(bal) => {
-                    self.balances.insert(acc.id, bal);
-                }
-                Err(e) => {
-                    tracing::error!(
-                        "CoA tab: failed to load balance for {}: {e}",
-                        i64::from(acc.id)
-                    );
-                }
+        match repo.get_all_balances() {
+            Ok(balances) => self.balances = balances,
+            Err(e) => {
+                tracing::error!("CoA tab: failed to load balances: {e}");
+                self.balances.clear();
             }
         }
 
