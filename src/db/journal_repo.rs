@@ -49,6 +49,8 @@ pub struct NewJournalEntry {
     pub memo: Option<String>,
     /// Must reference an existing open fiscal period.
     pub fiscal_period_id: FiscalPeriodId,
+    /// Set when this entry is a reversal of another. `None` for normal entries.
+    pub reversal_of_je_id: Option<JournalEntryId>,
     pub lines: Vec<NewJournalEntryLine>,
 }
 
@@ -118,12 +120,13 @@ impl<'conn> JournalRepo<'conn> {
             .execute(
                 "INSERT INTO journal_entries
                     (je_number, entry_date, memo, status, is_reversed,
-                     fiscal_period_id, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, 'Draft', 0, ?4, ?5, ?6)",
+                     reversal_of_je_id, fiscal_period_id, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, 'Draft', 0, ?4, ?5, ?6, ?7)",
                 params![
                     je_number,
                     date_str,
                     entry.memo,
+                    entry.reversal_of_je_id.map(i64::from),
                     i64::from(entry.fiscal_period_id),
                     now,
                     now,
@@ -374,6 +377,7 @@ mod tests {
             entry_date,
             memo: Some("Test entry".to_string()),
             fiscal_period_id: period_id,
+            reversal_of_je_id: None,
             lines: vec![
                 NewJournalEntryLine {
                     account_id: acct1,
@@ -439,6 +443,7 @@ mod tests {
             entry_date: date,
             memo: None,
             fiscal_period_id: period_id,
+            reversal_of_je_id: None,
             lines: vec![
                 NewJournalEntryLine {
                     account_id: acct1,
@@ -499,6 +504,7 @@ mod tests {
             entry_date: d1,
             memo: None,
             fiscal_period_id: period_id,
+            reversal_of_je_id: None,
             lines: vec![line1.clone(), line2.clone()],
         })
         .expect("create 1");
@@ -507,6 +513,7 @@ mod tests {
             entry_date: d2,
             memo: None,
             fiscal_period_id: period_id,
+            reversal_of_je_id: None,
             lines: vec![line1, line2],
         })
         .expect("create 2");
@@ -546,6 +553,7 @@ mod tests {
                 entry_date: date,
                 memo: None,
                 fiscal_period_id: period_id,
+                reversal_of_je_id: None,
                 lines: make_lines(),
             })
             .expect("create draft 1");
@@ -554,6 +562,7 @@ mod tests {
             entry_date: date,
             memo: None,
             fiscal_period_id: period_id,
+            reversal_of_je_id: None,
             lines: make_lines(),
         })
         .expect("create draft 2");
@@ -602,6 +611,7 @@ mod tests {
             entry_date: date,
             memo: None,
             fiscal_period_id: period,
+            reversal_of_je_id: None,
             lines: vec![
                 NewJournalEntryLine {
                     account_id: acct1,
@@ -673,6 +683,7 @@ mod tests {
                 entry_date: date,
                 memo: None,
                 fiscal_period_id: period_id,
+                reversal_of_je_id: None,
                 lines: vec![
                     NewJournalEntryLine {
                         account_id: acct1,
@@ -731,6 +742,7 @@ mod tests {
                 entry_date: date,
                 memo: None,
                 fiscal_period_id: period_id,
+                reversal_of_je_id: None,
                 lines: make_lines(),
             })
             .expect("create original");
@@ -740,6 +752,7 @@ mod tests {
                 entry_date: date,
                 memo: Some("Reversal".to_string()),
                 fiscal_period_id: period_id,
+                reversal_of_je_id: None,
                 lines: make_lines(),
             })
             .expect("create reversal");

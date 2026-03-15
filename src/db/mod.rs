@@ -91,6 +91,13 @@ pub(crate) fn now_str() -> String {
     chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string()
 }
 
+/// Test-only constructor that wraps an in-memory `Connection` inside an `EntityDb`.
+/// This avoids the need for a temp file in unit tests that require cross-repo operations.
+#[cfg(test)]
+pub fn entity_db_from_conn(conn: Connection) -> EntityDb {
+    EntityDb { conn }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
