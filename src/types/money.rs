@@ -36,9 +36,6 @@ impl Money {
     pub fn abs(&self) -> Self {
         Self(self.0.abs())
     }
-
-    // TODO(Task 3): apply_percentage(pct: Percentage) -> Money
-    // Will be added when Percentage type is defined.
 }
 
 fn format_with_commas(n: u64) -> String {
