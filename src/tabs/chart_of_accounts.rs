@@ -1718,3 +1718,77 @@ fn cycle_account_type(current: AccountType, forward: bool) -> AccountType {
     };
     types[next]
 }
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::schema::{initialize_schema, seed_default_accounts};
+    use crate::db::{entity_db_from_conn, fiscal_repo::FiscalRepo};
+    use crate::tabs::{RecordId, TabAction, TabId};
+    use crossterm::event::{KeyCode, KeyModifiers};
+    use rusqlite::Connection;
+
+    fn make_db() -> EntityDb {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize_schema(&conn).unwrap();
+        seed_default_accounts(&conn).unwrap();
+        FiscalRepo::new(&conn).create_fiscal_year(1, 2026).unwrap();
+        entity_db_from_conn(conn)
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    /// CoA → GL: pressing Enter on a leaf account returns NavigateTo(GeneralLedger, Account).
+    #[test]
+    fn coa_enter_on_leaf_navigates_to_gl() {
+        let db = make_db();
+        let mut tab = ChartOfAccountsTab::new();
+        tab.refresh(&db);
+
+        // Find the first leaf account (not a placeholder/parent).
+        let leaf_idx = tab
+            .visible
+            .iter()
+            .position(|r| !r.has_children)
+            .expect("at least one leaf account in seeded data");
+        tab.table_state.select(Some(leaf_idx));
+        let leaf_id = tab.visible[leaf_idx].account.id;
+
+        let action = tab.handle_key(key(KeyCode::Enter), &db);
+        match action {
+            TabAction::NavigateTo(TabId::GeneralLedger, RecordId::Account(id)) => {
+                assert_eq!(
+                    id, leaf_id,
+                    "NavigateTo should carry the selected account ID"
+                );
+            }
+            other => panic!("expected NavigateTo(GeneralLedger, Account), got {other:?}"),
+        }
+    }
+
+    /// CoA Enter on a parent account toggles expand/collapse instead of navigating.
+    #[test]
+    fn coa_enter_on_parent_toggles_expand() {
+        let db = make_db();
+        let mut tab = ChartOfAccountsTab::new();
+        tab.refresh(&db);
+
+        // Find the first parent account (has children).
+        let parent_idx = tab
+            .visible
+            .iter()
+            .position(|r| r.has_children)
+            .expect("at least one parent account in seeded data");
+        tab.table_state.select(Some(parent_idx));
+
+        let action = tab.handle_key(key(KeyCode::Enter), &db);
+        assert!(
+            matches!(action, TabAction::None),
+            "Enter on parent should not navigate, got {action:?}"
+        );
+    }
+}

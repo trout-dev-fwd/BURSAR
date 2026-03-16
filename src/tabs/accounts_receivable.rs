@@ -1271,4 +1271,26 @@ mod tests {
         tab.refresh(&db);
         assert_eq!(tab.items[0].status, ArApStatus::Paid);
     }
+
+    /// AR → JE: pressing 'o' on a selected item returns NavigateTo(JournalEntries, JournalEntry)
+    /// with the item's originating JE ID.
+    #[test]
+    fn o_key_navigates_to_originating_je() {
+        let db = make_db();
+        create_ar_item(&db);
+
+        let mut tab = AccountsReceivableTab::new();
+        tab.refresh(&db);
+
+        // Get the originating JE ID from the loaded item.
+        let orig_je_id = tab.items[0].originating_je_id;
+
+        let action = tab.handle_key(key(crossterm::event::KeyCode::Char('o')), &db);
+        match action {
+            TabAction::NavigateTo(TabId::JournalEntries, RecordId::JournalEntry(id)) => {
+                assert_eq!(id, orig_je_id, "should navigate to the originating JE");
+            }
+            other => panic!("expected NavigateTo(JournalEntries, JournalEntry), got {other:?}"),
+        }
+    }
 }

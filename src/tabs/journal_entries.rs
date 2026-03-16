@@ -1450,4 +1450,32 @@ mod tests {
         let action = tab.handle_key(key(KeyCode::Char('c')), &db);
         assert!(matches!(action, TabAction::ShowMessage(_)));
     }
+
+    /// JE detail → GL: pressing 'g' on a focused line returns NavigateTo(GeneralLedger, Account).
+    #[test]
+    fn g_key_in_detail_navigates_to_gl() {
+        let db = make_db();
+        let accts = non_placeholder_accounts(&db);
+        let a1 = accts[0];
+
+        // Post the JE so we can open detail.
+        let id = create_draft(&db);
+        crate::services::journal::post_journal_entry(&db, id, "Test Entity").unwrap();
+
+        let mut tab = JournalEntriesTab::new();
+        tab.refresh(&db);
+        tab.open_detail(&db);
+        // focused_line starts at 0 — first line is a1.
+
+        let action = tab.handle_key(key(KeyCode::Char('g')), &db);
+        match action {
+            TabAction::NavigateTo(TabId::GeneralLedger, RecordId::Account(account_id)) => {
+                assert_eq!(
+                    account_id, a1,
+                    "should navigate to the account on the focused line"
+                );
+            }
+            other => panic!("expected NavigateTo(GeneralLedger, Account), got {other:?}"),
+        }
+    }
 }

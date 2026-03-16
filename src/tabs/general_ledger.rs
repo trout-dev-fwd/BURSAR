@@ -549,3 +549,125 @@ fn natural_balance(balance: Money, account_type: AccountType) -> Money {
         BalanceDirection::Credit => Money(-balance.0),
     }
 }
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::schema::{initialize_schema, seed_default_accounts};
+    use crate::db::{entity_db_from_conn, fiscal_repo::FiscalRepo, journal_repo::NewJournalEntry};
+    use crate::tabs::{RecordId, TabAction, TabId};
+    use crate::types::{FiscalPeriodId, JournalEntryStatus};
+    use chrono::NaiveDate;
+    use crossterm::event::{KeyCode, KeyModifiers};
+    use rusqlite::Connection;
+
+    fn make_db() -> EntityDb {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize_schema(&conn).unwrap();
+        seed_default_accounts(&conn).unwrap();
+        FiscalRepo::new(&conn).create_fiscal_year(1, 2026).unwrap();
+        entity_db_from_conn(conn)
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn non_placeholder_accounts(db: &EntityDb) -> Vec<AccountId> {
+        db.accounts()
+            .list_all()
+            .unwrap()
+            .into_iter()
+            .filter(|a| !a.is_placeholder && a.is_active)
+            .map(|a| a.id)
+            .collect()
+    }
+
+    fn post_je(db: &EntityDb, a1: AccountId, a2: AccountId) -> crate::types::JournalEntryId {
+        let period: FiscalPeriodId = db
+            .fiscal()
+            .get_period_for_date(NaiveDate::from_ymd_opt(2026, 1, 15).unwrap())
+            .unwrap()
+            .id;
+        let je_id = db
+            .journals()
+            .create_draft(&NewJournalEntry {
+                entry_date: NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                memo: Some("Nav audit".to_string()),
+                fiscal_period_id: period,
+                reversal_of_je_id: None,
+                lines: vec![
+                    crate::db::journal_repo::NewJournalEntryLine {
+                        account_id: a1,
+                        debit_amount: Money(10_000_000_000),
+                        credit_amount: Money(0),
+                        line_memo: None,
+                        sort_order: 0,
+                    },
+                    crate::db::journal_repo::NewJournalEntryLine {
+                        account_id: a2,
+                        debit_amount: Money(0),
+                        credit_amount: Money(10_000_000_000),
+                        line_memo: None,
+                        sort_order: 1,
+                    },
+                ],
+            })
+            .unwrap();
+        db.journals()
+            .update_status(je_id, JournalEntryStatus::Posted)
+            .unwrap();
+        je_id
+    }
+
+    /// GL navigate_to(Account) loads the correct account and its ledger rows.
+    #[test]
+    fn gl_navigate_to_selects_account() {
+        let db = make_db();
+        let accts = non_placeholder_accounts(&db);
+        let a1 = accts[0];
+        let a2 = accts[1];
+        post_je(&db, a1, a2);
+
+        let mut tab = GeneralLedgerTab::new();
+        tab.refresh(&db);
+
+        tab.navigate_to(RecordId::Account(a1), &db);
+        assert_eq!(
+            tab.account.as_ref().map(|a| a.id),
+            Some(a1),
+            "navigate_to should load the target account"
+        );
+        assert!(
+            !tab.rows.is_empty(),
+            "ledger rows should be loaded after navigate_to"
+        );
+    }
+
+    /// GL Enter on a row returns NavigateTo(JournalEntries, JournalEntry).
+    #[test]
+    fn gl_enter_navigates_to_je() {
+        let db = make_db();
+        let accts = non_placeholder_accounts(&db);
+        let a1 = accts[0];
+        let a2 = accts[1];
+        let je_id = post_je(&db, a1, a2);
+
+        let mut tab = GeneralLedgerTab::new();
+        tab.refresh(&db);
+        tab.navigate_to(RecordId::Account(a1), &db);
+
+        // Select the first row (the JE we just posted).
+        tab.table_state.select(Some(0));
+
+        let action = tab.handle_key(key(KeyCode::Enter), &db);
+        match action {
+            TabAction::NavigateTo(TabId::JournalEntries, RecordId::JournalEntry(id)) => {
+                assert_eq!(id, je_id, "NavigateTo should carry the correct JE ID");
+            }
+            other => panic!("expected NavigateTo(JournalEntries, JournalEntry), got {other:?}"),
+        }
+    }
+}

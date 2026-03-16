@@ -1047,3 +1047,159 @@ impl Tab for AccountsPayableTab {
         let _ = record_id;
     }
 }
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::ap_repo::NewApItem;
+    use crate::db::schema::{initialize_schema, seed_default_accounts};
+    use crate::db::{entity_db_from_conn, fiscal_repo::FiscalRepo};
+    use crate::tabs::{RecordId, TabAction, TabId};
+    use crate::types::{ArApStatus, Money};
+    use chrono::NaiveDate;
+    use crossterm::event::{KeyCode, KeyModifiers};
+    use rusqlite::Connection;
+
+    fn make_db() -> EntityDb {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize_schema(&conn).unwrap();
+        seed_default_accounts(&conn).unwrap();
+        FiscalRepo::new(&conn).create_fiscal_year(1, 2026).unwrap();
+        entity_db_from_conn(conn)
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    /// Creates a real originating JE and an AP item linked to it.
+    fn create_ap_item(db: &EntityDb) -> ApItemId {
+        let accounts = db.accounts().list_active().unwrap();
+        let postable: Vec<_> = accounts.iter().filter(|a| !a.is_placeholder).collect();
+        let a1 = postable[0].id;
+        let a2 = postable[1].id;
+        let period = db
+            .fiscal()
+            .get_period_for_date(NaiveDate::from_ymd_opt(2026, 1, 15).unwrap())
+            .unwrap();
+        let orig_je = db
+            .journals()
+            .create_draft(&crate::db::journal_repo::NewJournalEntry {
+                entry_date: NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                memo: None,
+                fiscal_period_id: period.id,
+                reversal_of_je_id: None,
+                lines: vec![
+                    crate::db::journal_repo::NewJournalEntryLine {
+                        account_id: a1,
+                        debit_amount: Money(10_000_000_000),
+                        credit_amount: Money(0),
+                        line_memo: None,
+                        sort_order: 0,
+                    },
+                    crate::db::journal_repo::NewJournalEntryLine {
+                        account_id: a2,
+                        debit_amount: Money(0),
+                        credit_amount: Money(10_000_000_000),
+                        line_memo: None,
+                        sort_order: 1,
+                    },
+                ],
+            })
+            .unwrap();
+        crate::services::journal::post_journal_entry(db, orig_je, "Test Entity").unwrap();
+        db.ap()
+            .create_item(&NewApItem {
+                account_id: a1,
+                vendor_name: "Vendor Inc".to_string(),
+                description: None,
+                amount: Money(10_000_000_000),
+                due_date: NaiveDate::from_ymd_opt(2026, 2, 1).unwrap(),
+                originating_je_id: orig_je,
+            })
+            .unwrap()
+    }
+
+    /// AP → JE: pressing 'o' on a selected item returns NavigateTo(JournalEntries, JournalEntry)
+    /// with the item's originating JE ID.
+    #[test]
+    fn o_key_navigates_to_originating_je() {
+        let db = make_db();
+        create_ap_item(&db);
+
+        let mut tab = AccountsPayableTab::new();
+        tab.refresh(&db);
+
+        let orig_je_id = tab.items[0].originating_je_id;
+
+        let action = tab.handle_key(key(KeyCode::Char('o')), &db);
+        match action {
+            TabAction::NavigateTo(TabId::JournalEntries, RecordId::JournalEntry(id)) => {
+                assert_eq!(id, orig_je_id, "should navigate to the originating JE");
+            }
+            other => panic!("expected NavigateTo(JournalEntries, JournalEntry), got {other:?}"),
+        }
+    }
+
+    /// AP auto-JE payment creates JE and updates AP status.
+    #[test]
+    fn auto_je_payment_creates_je_and_updates_ap_status() {
+        let db = make_db();
+        create_ap_item(&db);
+
+        let mut tab = AccountsPayableTab::new();
+        tab.set_entity_name("Test Entity");
+        tab.refresh(&db);
+
+        // Find a postable asset account number for the cash side.
+        let accounts = db.accounts().list_active().unwrap();
+        let cash_acct = accounts
+            .iter()
+            .find(|a| {
+                a.account_type == crate::types::AccountType::Asset
+                    && !a.is_placeholder
+                    && !a.is_contra
+            })
+            .unwrap();
+        let cash_number = cash_acct.number.clone();
+
+        // Open payment modal.
+        tab.handle_key(key(KeyCode::Char('p')), &db);
+        assert!(matches!(tab.modal, Some(ApModal::Payment(_))));
+
+        // Field 0: amount.
+        for c in "100".chars() {
+            tab.handle_key(key(KeyCode::Char(c)), &db);
+        }
+        // Tab to field 1: date.
+        tab.handle_key(key(KeyCode::Tab), &db);
+        for c in "2026-01-20".chars() {
+            tab.handle_key(key(KeyCode::Char(c)), &db);
+        }
+        // Tab to field 2: cash account.
+        tab.handle_key(key(KeyCode::Tab), &db);
+        for c in cash_number.chars() {
+            tab.handle_key(key(KeyCode::Char(c)), &db);
+        }
+        // Tab to field 3: JE ID (leave blank).
+        tab.handle_key(key(KeyCode::Tab), &db);
+        // Submit from last field.
+        tab.handle_key(key(KeyCode::Enter), &db);
+
+        // Should now be in ConfirmAutoJe modal.
+        assert!(
+            matches!(tab.modal, Some(ApModal::ConfirmAutoJe(_))),
+            "expected ConfirmAutoJe modal"
+        );
+
+        // Confirm.
+        let action = tab.handle_key(key(KeyCode::Char('y')), &db);
+        assert!(matches!(action, TabAction::ShowMessage(_)));
+        assert!(tab.modal.is_none());
+
+        tab.refresh(&db);
+        assert_eq!(tab.items[0].status, ArApStatus::Paid);
+    }
+}
