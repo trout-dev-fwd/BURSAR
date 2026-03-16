@@ -17,14 +17,14 @@
 
 ### Phase 5: Reports, Recurring Entries, Startup Checks
 - [x] Task 1: Create report formatting utilities [TEST-FIRST]
-- [ ] Task 2: Implement Trial Balance report
-- [ ] Task 3: Implement Balance Sheet report
-- [ ] Task 4: Implement Income Statement report
-- [ ] Task 5: Implement Cash Flow Statement report
-- [ ] Task 6: Implement Account Detail report
-- [ ] Task 7: Implement AR Aging report
-- [ ] Task 8: Implement AP Aging report
-- [ ] Task 9: Implement Fixed Asset Schedule report
+- [x] Task 2: Implement Trial Balance report
+- [x] Task 3: Implement Balance Sheet report
+- [x] Task 4: Implement Income Statement report
+- [x] Task 5: Implement Cash Flow Statement report
+- [x] Task 6: Implement Account Detail report
+- [x] Task 7: Implement AR Aging report
+- [x] Task 8: Implement AP Aging report
+- [x] Task 9: Implement Fixed Asset Schedule report
 - [ ] Task 10: Implement Reports tab
 - [ ] Task 11: Create RecurringRepo and wire into JE tab
 - [ ] Task 12: Create startup sequence
