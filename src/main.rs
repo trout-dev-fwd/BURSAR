@@ -37,6 +37,10 @@ fn main() -> Result<()> {
         accounting::app::run_entity_picker(&config).with_context(|| "Failed to open entity")?
     };
 
+    // Run startup checks (recurring entries due, pending depreciation, orphaned drafts).
+    let entity_name = entity.name.clone();
+    accounting::startup::run_startup_checks(&entity.db, &entity_name)?;
+
     let mut app = accounting::app::App::new(entity, config);
     app.run()
 }

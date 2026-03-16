@@ -3,6 +3,7 @@ pub mod config;
 pub mod db;
 pub mod reports;
 pub mod services;
+pub mod startup;
 pub mod tabs;
 pub mod types;
 pub mod widgets;

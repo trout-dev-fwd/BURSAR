@@ -2,8 +2,8 @@
 
 ## Current State
 - **Active Phase**: Phase 5
-- **Last Completed Task**: Phase 5, Task 11
-- **Next Task**: Phase 5, Task 12
+- **Last Completed Task**: Phase 5, Task 12
+- **Next Task**: Phase 5, Task 13
 - **Blockers**: None
 
 ## Completed Phases
@@ -27,7 +27,7 @@
 - [x] Task 9: Implement Fixed Asset Schedule report
 - [x] Task 10: Implement Reports tab
 - [x] Task 11: Create RecurringRepo and wire into JE tab
-- [ ] Task 12: Create startup sequence
+- [x] Task 12: Create startup sequence
 - [ ] Task 13: Implement Audit Log tab
 - [ ] Task 14: Implement `?` help overlay
 
