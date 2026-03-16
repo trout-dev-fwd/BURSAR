@@ -77,6 +77,20 @@ impl<'conn> AccountRepo<'conn> {
     }
 
     /// Returns the account with the given ID, or an error if not found.
+    /// Returns the account with the exact given number, or `None` if not found.
+    pub fn get_by_number(&self, number: &str) -> Result<Option<Account>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, number, name, account_type, parent_id,
+                     is_active, is_contra, is_placeholder, created_at, updated_at
+              FROM accounts WHERE number = ?1 LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map(params![number], row_to_account)?;
+        match rows.next() {
+            Some(row) => Ok(Some(row?)),
+            None => Ok(None),
+        }
+    }
+
     pub fn get_by_id(&self, id: AccountId) -> Result<Account> {
         self.conn
             .query_row(

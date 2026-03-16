@@ -12,9 +12,11 @@ use crate::db::{
     EntityDb,
     ap_repo::{ApFilter, ApItem, ApPayment, NewApItem},
 };
+use crate::services::journal::create_payment_je;
 use crate::tabs::{RecordId, Tab, TabAction, TabId};
-use crate::types::{ApItemId, ArApStatus, AuditAction, JournalEntryId, Money};
+use crate::types::{AccountId, ApItemId, ArApStatus, AuditAction, JournalEntryId, Money};
 use crate::widgets::centered_rect;
+use crate::widgets::confirmation::{ConfirmAction, Confirmation};
 use crate::widgets::je_form::parse_money;
 
 // ── Status filter cycle ───────────────────────────────────────────────────────
@@ -89,23 +91,38 @@ struct PaymentForm {
     item_id: ApItemId,
     amount_str: String,
     date_str: String,
+    /// Optional: account number of the Cash account. When non-empty, the JE is
+    /// auto-created (Debit AP / Credit Cash) instead of linking an existing JE.
+    cash_acct_str: String,
+    /// Required only when `cash_acct_str` is empty — manual link to existing JE.
     je_id_str: String,
     focused: usize,
     error: Option<String>,
 }
 
 impl PaymentForm {
-    const FIELD_COUNT: usize = 3;
+    const FIELD_COUNT: usize = 4;
     fn new(item_id: ApItemId) -> Self {
         Self {
             item_id,
             amount_str: String::new(),
             date_str: String::new(),
+            cash_acct_str: String::new(),
             je_id_str: String::new(),
             focused: 0,
             error: None,
         }
     }
+}
+
+struct ConfirmAutoJeData {
+    item_id: ApItemId,
+    amount: Money,
+    payment_date: NaiveDate,
+    ap_account_id: AccountId,
+    ap_account_name: String,
+    cash_account_id: AccountId,
+    confirm: Confirmation,
 }
 
 struct PaymentHistoryView {
@@ -118,6 +135,7 @@ enum ApModal {
     NewItem(NewItemForm),
     Payment(PaymentForm),
     PaymentHistory(PaymentHistoryView),
+    ConfirmAutoJe(Box<ConfirmAutoJeData>),
 }
 
 // ── Tab struct ────────────────────────────────────────────────────────────────
@@ -402,6 +420,9 @@ impl AccountsPayableTab {
                         form.date_str.pop();
                     }
                     2 => {
+                        form.cash_acct_str.pop();
+                    }
+                    3 => {
                         form.je_id_str.pop();
                     }
                     _ => {}
@@ -412,7 +433,8 @@ impl AccountsPayableTab {
                 match form.focused {
                     0 => form.amount_str.push(c),
                     1 => form.date_str.push(c),
-                    2 => form.je_id_str.push(c),
+                    2 => form.cash_acct_str.push(c),
+                    3 => form.je_id_str.push(c),
                     _ => {}
                 }
                 return TabAction::None;
@@ -428,11 +450,12 @@ impl AccountsPayableTab {
         }
 
         // Collect values before submitting.
-        let (item_id, amount_str, date_str, je_id_str) = match &self.modal {
+        let (item_id, amount_str, date_str, cash_acct_str, je_id_str) = match &self.modal {
             Some(ApModal::Payment(f)) => (
                 f.item_id,
                 f.amount_str.clone(),
                 f.date_str.clone(),
+                f.cash_acct_str.trim().to_string(),
                 f.je_id_str.clone(),
             ),
             _ => return TabAction::None,
@@ -460,17 +483,86 @@ impl AccountsPayableTab {
             }
         };
 
+        // Determine which path: auto-create JE or manual JE link.
+        if !cash_acct_str.is_empty() {
+            // Auto-create path: look up Cash account, look up AP account, show confirmation.
+            let cash_acct = match db.accounts().get_by_number(&cash_acct_str) {
+                Ok(Some(a)) if a.is_active && !a.is_placeholder => a,
+                Ok(Some(_)) => {
+                    if let Some(ApModal::Payment(f)) = &mut self.modal {
+                        f.error = Some(format!(
+                            "Account '{}' is inactive or a placeholder",
+                            cash_acct_str
+                        ));
+                        f.focused = 2;
+                    }
+                    return TabAction::None;
+                }
+                Ok(None) => {
+                    if let Some(ApModal::Payment(f)) = &mut self.modal {
+                        f.error = Some(format!("Account '{}' not found", cash_acct_str));
+                        f.focused = 2;
+                    }
+                    return TabAction::None;
+                }
+                Err(e) => {
+                    if let Some(ApModal::Payment(f)) = &mut self.modal {
+                        f.error = Some(format!("Account lookup failed: {e}"));
+                    }
+                    return TabAction::None;
+                }
+            };
+
+            let ap_item = match self.items.iter().find(|i| i.id == item_id) {
+                Some(i) => i.clone(),
+                None => return TabAction::ShowMessage("AP item not found".to_string()),
+            };
+            let ap_account_name = match db.accounts().get_by_id(ap_item.account_id) {
+                Ok(a) => format!("{} {}", a.number, a.name),
+                Err(_) => format!("Account #{}", i64::from(ap_item.account_id)),
+            };
+
+            let msg = format!(
+                "Create payment JE?\n  Debit  {} ${}\n  Credit {} {}  ${}",
+                ap_account_name, amount, cash_acct.number, cash_acct.name, amount,
+            );
+            self.modal = Some(ApModal::ConfirmAutoJe(Box::new(ConfirmAutoJeData {
+                item_id,
+                amount,
+                payment_date,
+                ap_account_id: ap_item.account_id,
+                ap_account_name,
+                cash_account_id: cash_acct.id,
+                confirm: Confirmation::new(msg),
+            })));
+            return TabAction::None;
+        }
+
+        // Manual JE link path.
         let je_id = match je_id_str.trim().parse::<i64>() {
             Ok(n) if n > 0 => JournalEntryId::from(n),
             _ => {
                 if let Some(ApModal::Payment(f)) = &mut self.modal {
-                    f.error = Some("Enter the payment JE ID (positive integer)".to_string());
-                    f.focused = 2;
+                    f.error = Some(
+                        "Enter either a Cash Account # (field 3) or a JE ID (field 4)".to_string(),
+                    );
+                    f.focused = 3;
                 }
                 return TabAction::None;
             }
         };
 
+        self.record_ap_payment(db, item_id, je_id, amount, payment_date)
+    }
+
+    fn record_ap_payment(
+        &mut self,
+        db: &EntityDb,
+        item_id: ApItemId,
+        je_id: JournalEntryId,
+        amount: Money,
+        payment_date: NaiveDate,
+    ) -> TabAction {
         match db.ap().record_payment(item_id, je_id, amount, payment_date) {
             Ok(()) => {
                 let entity_name = self.entity_name.clone();
@@ -493,6 +585,42 @@ impl AccountsPayableTab {
                 }
                 TabAction::None
             }
+        }
+    }
+
+    fn handle_confirm_auto_je_key(&mut self, key: KeyEvent, db: &EntityDb) -> TabAction {
+        let data = match &mut self.modal {
+            Some(ApModal::ConfirmAutoJe(d)) => d,
+            _ => return TabAction::None,
+        };
+
+        match data.confirm.handle_key(key) {
+            ConfirmAction::Confirmed => {
+                let d = match self.modal.take() {
+                    Some(ApModal::ConfirmAutoJe(d)) => d,
+                    _ => return TabAction::None,
+                };
+                let entity_name = self.entity_name.clone();
+                // Create and post the payment JE: Debit AP, Credit Cash.
+                let je_id = match create_payment_je(
+                    db,
+                    &entity_name,
+                    d.ap_account_id,
+                    d.cash_account_id,
+                    d.amount,
+                    d.payment_date,
+                    Some(format!("Payment made — {}", d.ap_account_name)),
+                ) {
+                    Ok(id) => id,
+                    Err(e) => return TabAction::ShowMessage(format!("Failed to create JE: {e}")),
+                };
+                self.record_ap_payment(db, d.item_id, je_id, d.amount, d.payment_date)
+            }
+            ConfirmAction::Cancelled => {
+                self.modal = None;
+                TabAction::None
+            }
+            ConfirmAction::Pending => TabAction::None,
         }
     }
 
@@ -665,13 +793,19 @@ impl AccountsPayableTab {
     }
 
     fn render_payment_modal(&self, frame: &mut Frame, area: Rect, form: &PaymentForm) {
-        let modal_area = centered_rect(56, 50, area);
+        let modal_area = centered_rect(60, 55, area);
         frame.render_widget(Clear, modal_area);
 
-        let labels = ["Amount *       ", "Payment Date * ", "Payment JE ID *"];
+        let labels = [
+            "Amount *              ",
+            "Payment Date *        ",
+            "Cash Acct # (auto-JE) ",
+            "JE ID (manual link)   ",
+        ];
         let values = [
             form.amount_str.as_str(),
             form.date_str.as_str(),
+            form.cash_acct_str.as_str(),
             form.je_id_str.as_str(),
         ];
 
@@ -689,6 +823,11 @@ impl AccountsPayableTab {
                 Span::styled(cursor, Style::default().fg(Color::Yellow)),
             ]));
         }
+        lines.push(Line::from(Span::raw("")));
+        lines.push(Line::from(Span::styled(
+            "  Fill Cash Acct # OR JE ID (not both)",
+            Style::default().fg(Color::DarkGray),
+        )));
         if let Some(err) = &form.error {
             lines.push(Line::from(Span::raw("")));
             lines.push(Line::from(Span::styled(
@@ -803,6 +942,7 @@ impl Tab for AccountsPayableTab {
             Some(ApModal::NewItem(_)) => return self.handle_new_item_key(key, db),
             Some(ApModal::Payment(_)) => return self.handle_payment_key(key, db),
             Some(ApModal::PaymentHistory(_)) => return self.handle_history_key(key),
+            Some(ApModal::ConfirmAutoJe(_)) => return self.handle_confirm_auto_je_key(key, db),
             None => {}
         }
 
@@ -890,6 +1030,7 @@ impl Tab for AccountsPayableTab {
                 ApModal::NewItem(form) => self.render_new_item_modal(frame, area, form),
                 ApModal::Payment(form) => self.render_payment_modal(frame, area, form),
                 ApModal::PaymentHistory(hist) => self.render_payment_history(frame, area, hist),
+                ApModal::ConfirmAutoJe(data) => data.confirm.render(frame, area),
             }
         }
     }

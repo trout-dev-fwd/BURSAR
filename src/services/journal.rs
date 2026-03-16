@@ -326,6 +326,59 @@ pub fn reverse_journal_entry(
     Ok(reversal_id)
 }
 
+// ── create_payment_je ─────────────────────────────────────────────────────────
+
+/// Creates and immediately posts a two-line payment journal entry.
+///
+/// - `debit_account_id` receives the debit line.
+/// - `credit_account_id` receives the credit line.
+///
+/// Caller decides the direction:
+/// - AR payment received: debit = cash account, credit = AR account.
+/// - AP payment made:     debit = AP account,   credit = cash account.
+///
+/// Returns the `JournalEntryId` of the posted entry.
+pub fn create_payment_je(
+    db: &EntityDb,
+    entity_name: &str,
+    debit_account_id: AccountId,
+    credit_account_id: AccountId,
+    amount: Money,
+    payment_date: NaiveDate,
+    memo: Option<String>,
+) -> Result<JournalEntryId> {
+    let period = db
+        .fiscal()
+        .get_period_for_date(payment_date)
+        .map_err(|_| JournalError::NoPeriodForDate(payment_date))?;
+
+    let je_id = db.journals().create_draft(&NewJournalEntry {
+        entry_date: payment_date,
+        memo,
+        fiscal_period_id: period.id,
+        reversal_of_je_id: None,
+        lines: vec![
+            NewJournalEntryLine {
+                account_id: debit_account_id,
+                debit_amount: amount,
+                credit_amount: Money(0),
+                line_memo: None,
+                sort_order: 0,
+            },
+            NewJournalEntryLine {
+                account_id: credit_account_id,
+                debit_amount: Money(0),
+                credit_amount: amount,
+                line_memo: None,
+                sort_order: 1,
+            },
+        ],
+    })?;
+
+    post_journal_entry(db, je_id, entity_name)?;
+    Ok(je_id)
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Builds a human-readable description for the post audit log entry.
@@ -1195,5 +1248,65 @@ mod tests {
 
         let fills = db.envelopes().get_fills_for_je(je_id).expect("fills");
         assert_eq!(fills.len(), 0, "No allocations → no fills");
+    }
+
+    // ── create_payment_je ─────────────────────────────────────────────────────
+
+    #[test]
+    fn create_payment_je_posts_and_returns_id() {
+        let db = make_entity_db();
+        setup_fiscal_year(&db);
+
+        let all = db.accounts().list_active().expect("list");
+        let postable: Vec<_> = all.iter().filter(|a| !a.is_placeholder).collect();
+        let cash_id = postable[0].id;
+        let ar_id = postable[1].id;
+
+        let payment_date = NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
+        let amount = Money(10_000_000_000); // $100
+        let je_id = create_payment_je(
+            &db,
+            "Test Entity",
+            cash_id,
+            ar_id,
+            amount,
+            payment_date,
+            Some("Test payment".to_string()),
+        )
+        .expect("create_payment_je");
+
+        let (je, lines) = db.journals().get_with_lines(je_id).expect("get");
+        assert_eq!(je.status, JournalEntryStatus::Posted);
+        assert_eq!(lines.len(), 2);
+        // First line: debit cash.
+        assert_eq!(lines[0].account_id, cash_id);
+        assert_eq!(lines[0].debit_amount, amount);
+        assert!(lines[0].credit_amount.is_zero());
+        // Second line: credit AR.
+        assert_eq!(lines[1].account_id, ar_id);
+        assert!(lines[1].debit_amount.is_zero());
+        assert_eq!(lines[1].credit_amount, amount);
+    }
+
+    #[test]
+    fn create_payment_je_fails_without_fiscal_period() {
+        let db = make_entity_db();
+        // No fiscal year created.
+
+        let all = db.accounts().list_active().expect("list");
+        let postable: Vec<_> = all.iter().filter(|a| !a.is_placeholder).collect();
+        let cash_id = postable[0].id;
+        let ar_id = postable[1].id;
+
+        let result = create_payment_je(
+            &db,
+            "Test Entity",
+            cash_id,
+            ar_id,
+            Money(10_000_000_000),
+            NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+            None,
+        );
+        assert!(result.is_err(), "Should fail without a fiscal period");
     }
 }

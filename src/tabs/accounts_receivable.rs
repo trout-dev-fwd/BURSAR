@@ -12,9 +12,11 @@ use crate::db::{
     EntityDb,
     ar_repo::{ArFilter, ArItem, ArPayment, NewArItem},
 };
+use crate::services::journal::create_payment_je;
 use crate::tabs::{RecordId, Tab, TabAction, TabId};
-use crate::types::{ArApStatus, ArItemId, AuditAction, JournalEntryId, Money};
+use crate::types::{AccountId, ArApStatus, ArItemId, AuditAction, JournalEntryId, Money};
 use crate::widgets::centered_rect;
+use crate::widgets::confirmation::{ConfirmAction, Confirmation};
 use crate::widgets::je_form::parse_money;
 
 // ── Status filter cycle ───────────────────────────────────────────────────────
@@ -89,23 +91,39 @@ struct PaymentForm {
     item_id: ArItemId,
     amount_str: String,
     date_str: String,
+    /// Optional: account number of the Cash account. When non-empty, the JE is
+    /// auto-created (Debit Cash / Credit AR) instead of linking an existing JE.
+    cash_acct_str: String,
+    /// Required only when `cash_acct_str` is empty — manual link to existing JE.
     je_id_str: String,
     focused: usize,
     error: Option<String>,
 }
 
 impl PaymentForm {
-    const FIELD_COUNT: usize = 3;
+    const FIELD_COUNT: usize = 4;
     fn new(item_id: ArItemId) -> Self {
         Self {
             item_id,
             amount_str: String::new(),
             date_str: String::new(),
+            cash_acct_str: String::new(),
             je_id_str: String::new(),
             focused: 0,
             error: None,
         }
     }
+}
+
+/// Holds the data needed to show a JE preview before committing an auto-created payment JE.
+struct ConfirmAutoJeData {
+    item_id: ArItemId,
+    amount: Money,
+    payment_date: NaiveDate,
+    ar_account_id: AccountId,
+    ar_account_name: String,
+    cash_account_id: AccountId,
+    confirm: Confirmation,
 }
 
 struct PaymentHistoryView {
@@ -118,6 +136,7 @@ enum ArModal {
     NewItem(NewItemForm),
     Payment(PaymentForm),
     PaymentHistory(PaymentHistoryView),
+    ConfirmAutoJe(Box<ConfirmAutoJeData>),
 }
 
 // ── Tab struct ────────────────────────────────────────────────────────────────
@@ -402,6 +421,9 @@ impl AccountsReceivableTab {
                         form.date_str.pop();
                     }
                     2 => {
+                        form.cash_acct_str.pop();
+                    }
+                    3 => {
                         form.je_id_str.pop();
                     }
                     _ => {}
@@ -412,7 +434,8 @@ impl AccountsReceivableTab {
                 match form.focused {
                     0 => form.amount_str.push(c),
                     1 => form.date_str.push(c),
-                    2 => form.je_id_str.push(c),
+                    2 => form.cash_acct_str.push(c),
+                    3 => form.je_id_str.push(c),
                     _ => {}
                 }
                 return TabAction::None;
@@ -428,11 +451,12 @@ impl AccountsReceivableTab {
         }
 
         // Collect values before submitting.
-        let (item_id, amount_str, date_str, je_id_str) = match &self.modal {
+        let (item_id, amount_str, date_str, cash_acct_str, je_id_str) = match &self.modal {
             Some(ArModal::Payment(f)) => (
                 f.item_id,
                 f.amount_str.clone(),
                 f.date_str.clone(),
+                f.cash_acct_str.trim().to_string(),
                 f.je_id_str.clone(),
             ),
             _ => return TabAction::None,
@@ -460,17 +484,87 @@ impl AccountsReceivableTab {
             }
         };
 
+        // Determine which path: auto-create JE or manual JE link.
+        if !cash_acct_str.is_empty() {
+            // Auto-create path: look up Cash account, look up AR account, show confirmation.
+            let cash_acct = match db.accounts().get_by_number(&cash_acct_str) {
+                Ok(Some(a)) if a.is_active && !a.is_placeholder => a,
+                Ok(Some(_)) => {
+                    if let Some(ArModal::Payment(f)) = &mut self.modal {
+                        f.error = Some(format!(
+                            "Account '{}' is inactive or a placeholder",
+                            cash_acct_str
+                        ));
+                        f.focused = 2;
+                    }
+                    return TabAction::None;
+                }
+                Ok(None) => {
+                    if let Some(ArModal::Payment(f)) = &mut self.modal {
+                        f.error = Some(format!("Account '{}' not found", cash_acct_str));
+                        f.focused = 2;
+                    }
+                    return TabAction::None;
+                }
+                Err(e) => {
+                    if let Some(ArModal::Payment(f)) = &mut self.modal {
+                        f.error = Some(format!("Account lookup failed: {e}"));
+                    }
+                    return TabAction::None;
+                }
+            };
+
+            // Look up the AR account to show in the confirmation.
+            let ar_item = match self.items.iter().find(|i| i.id == item_id) {
+                Some(i) => i.clone(),
+                None => return TabAction::ShowMessage("AR item not found".to_string()),
+            };
+            let ar_account_name = match db.accounts().get_by_id(ar_item.account_id) {
+                Ok(a) => format!("{} {}", a.number, a.name),
+                Err(_) => format!("Account #{}", i64::from(ar_item.account_id)),
+            };
+
+            let msg = format!(
+                "Create payment JE?\n  Debit  {} {}  ${}\n  Credit {} ${}",
+                cash_acct.number, cash_acct.name, amount, ar_account_name, amount,
+            );
+            self.modal = Some(ArModal::ConfirmAutoJe(Box::new(ConfirmAutoJeData {
+                item_id,
+                amount,
+                payment_date,
+                ar_account_id: ar_item.account_id,
+                ar_account_name,
+                cash_account_id: cash_acct.id,
+                confirm: Confirmation::new(msg),
+            })));
+            return TabAction::None;
+        }
+
+        // Manual JE link path.
         let je_id = match je_id_str.trim().parse::<i64>() {
             Ok(n) if n > 0 => JournalEntryId::from(n),
             _ => {
                 if let Some(ArModal::Payment(f)) = &mut self.modal {
-                    f.error = Some("Enter the payment JE ID (positive integer)".to_string());
-                    f.focused = 2;
+                    f.error = Some(
+                        "Enter either a Cash Account # (field 3) or a JE ID (field 4)".to_string(),
+                    );
+                    f.focused = 3;
                 }
                 return TabAction::None;
             }
         };
 
+        self.record_ar_payment(db, item_id, je_id, amount, payment_date)
+    }
+
+    fn record_ar_payment(
+        &mut self,
+        db: &EntityDb,
+        item_id: ArItemId,
+        je_id: JournalEntryId,
+        amount: Money,
+        payment_date: NaiveDate,
+    ) -> TabAction {
         match db.ar().record_payment(item_id, je_id, amount, payment_date) {
             Ok(()) => {
                 let entity_name = self.entity_name.clone();
@@ -493,6 +587,42 @@ impl AccountsReceivableTab {
                 }
                 TabAction::None
             }
+        }
+    }
+
+    fn handle_confirm_auto_je_key(&mut self, key: KeyEvent, db: &EntityDb) -> TabAction {
+        let data = match &mut self.modal {
+            Some(ArModal::ConfirmAutoJe(d)) => d,
+            _ => return TabAction::None,
+        };
+
+        match data.confirm.handle_key(key) {
+            ConfirmAction::Confirmed => {
+                let d = match self.modal.take() {
+                    Some(ArModal::ConfirmAutoJe(d)) => d,
+                    _ => return TabAction::None,
+                };
+                let entity_name = self.entity_name.clone();
+                // Create and post the payment JE: Debit Cash, Credit AR.
+                let je_id = match create_payment_je(
+                    db,
+                    &entity_name,
+                    d.cash_account_id,
+                    d.ar_account_id,
+                    d.amount,
+                    d.payment_date,
+                    Some(format!("Payment received — {}", d.ar_account_name)),
+                ) {
+                    Ok(id) => id,
+                    Err(e) => return TabAction::ShowMessage(format!("Failed to create JE: {e}")),
+                };
+                self.record_ar_payment(db, d.item_id, je_id, d.amount, d.payment_date)
+            }
+            ConfirmAction::Cancelled => {
+                self.modal = None;
+                TabAction::None
+            }
+            ConfirmAction::Pending => TabAction::None,
         }
     }
 
@@ -665,13 +795,19 @@ impl AccountsReceivableTab {
     }
 
     fn render_payment_modal(&self, frame: &mut Frame, area: Rect, form: &PaymentForm) {
-        let modal_area = centered_rect(56, 50, area);
+        let modal_area = centered_rect(60, 55, area);
         frame.render_widget(Clear, modal_area);
 
-        let labels = ["Amount *       ", "Payment Date * ", "Payment JE ID *"];
+        let labels = [
+            "Amount *              ",
+            "Payment Date *        ",
+            "Cash Acct # (auto-JE) ",
+            "JE ID (manual link)   ",
+        ];
         let values = [
             form.amount_str.as_str(),
             form.date_str.as_str(),
+            form.cash_acct_str.as_str(),
             form.je_id_str.as_str(),
         ];
 
@@ -689,6 +825,11 @@ impl AccountsReceivableTab {
                 Span::styled(cursor, Style::default().fg(Color::Yellow)),
             ]));
         }
+        lines.push(Line::from(Span::raw("")));
+        lines.push(Line::from(Span::styled(
+            "  Fill Cash Acct # OR JE ID (not both)",
+            Style::default().fg(Color::DarkGray),
+        )));
         if let Some(err) = &form.error {
             lines.push(Line::from(Span::raw("")));
             lines.push(Line::from(Span::styled(
@@ -711,6 +852,10 @@ impl AccountsReceivableTab {
             ),
             modal_area,
         );
+    }
+
+    fn render_confirm_auto_je(&self, frame: &mut Frame, area: Rect, data: &ConfirmAutoJeData) {
+        data.confirm.render(frame, area);
     }
 
     fn render_payment_history(&self, frame: &mut Frame, area: Rect, hist: &PaymentHistoryView) {
@@ -812,6 +957,7 @@ impl Tab for AccountsReceivableTab {
             Some(ArModal::NewItem(_)) => return self.handle_new_item_key(key, db),
             Some(ArModal::Payment(_)) => return self.handle_payment_key(key, db),
             Some(ArModal::PaymentHistory(_)) => return self.handle_history_key(key),
+            Some(ArModal::ConfirmAutoJe(_)) => return self.handle_confirm_auto_je_key(key, db),
             None => {}
         }
 
@@ -899,6 +1045,9 @@ impl Tab for AccountsReceivableTab {
                 ArModal::NewItem(form) => self.render_new_item_modal(frame, area, form),
                 ArModal::Payment(form) => self.render_payment_modal(frame, area, form),
                 ArModal::PaymentHistory(hist) => self.render_payment_history(frame, area, hist),
+                ArModal::ConfirmAutoJe(data) => {
+                    self.render_confirm_auto_je(frame, area, data);
+                }
             }
         }
     }
@@ -913,5 +1062,213 @@ impl Tab for AccountsReceivableTab {
 
     fn navigate_to(&mut self, record_id: RecordId, _db: &EntityDb) {
         let _ = record_id;
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::ar_repo::NewArItem;
+    use crate::db::schema::{initialize_schema, seed_default_accounts};
+    use crate::db::{entity_db_from_conn, fiscal_repo::FiscalRepo};
+    use crate::types::{AccountType, JournalEntryStatus};
+    use chrono::NaiveDate;
+    use crossterm::event::KeyModifiers;
+    use rusqlite::Connection;
+
+    fn make_db() -> crate::db::EntityDb {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize_schema(&conn).unwrap();
+        seed_default_accounts(&conn).unwrap();
+        FiscalRepo::new(&conn).create_fiscal_year(1, 2026).unwrap();
+        entity_db_from_conn(conn)
+    }
+
+    fn key(code: crossterm::event::KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    /// Creates a real originating JE and an AR item linked to it.
+    fn create_ar_item(db: &crate::db::EntityDb) -> ArItemId {
+        let accounts = db.accounts().list_active().unwrap();
+        let postable: Vec<_> = accounts.iter().filter(|a| !a.is_placeholder).collect();
+        let a1 = postable[0].id;
+        let a2 = postable[1].id;
+        let period = db
+            .fiscal()
+            .get_period_for_date(NaiveDate::from_ymd_opt(2026, 1, 15).unwrap())
+            .unwrap();
+        let orig_je = db
+            .journals()
+            .create_draft(&crate::db::journal_repo::NewJournalEntry {
+                entry_date: NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                memo: None,
+                fiscal_period_id: period.id,
+                reversal_of_je_id: None,
+                lines: vec![
+                    crate::db::journal_repo::NewJournalEntryLine {
+                        account_id: a1,
+                        debit_amount: Money(10_000_000_000),
+                        credit_amount: Money(0),
+                        line_memo: None,
+                        sort_order: 0,
+                    },
+                    crate::db::journal_repo::NewJournalEntryLine {
+                        account_id: a2,
+                        debit_amount: Money(0),
+                        credit_amount: Money(10_000_000_000),
+                        line_memo: None,
+                        sort_order: 1,
+                    },
+                ],
+            })
+            .unwrap();
+        crate::services::journal::post_journal_entry(db, orig_je, "Test Entity").unwrap();
+        db.ar()
+            .create_item(&NewArItem {
+                account_id: a1,
+                customer_name: "ACME Corp".to_string(),
+                description: None,
+                amount: Money(10_000_000_000), // $100
+                due_date: NaiveDate::from_ymd_opt(2026, 2, 1).unwrap(),
+                originating_je_id: orig_je,
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn auto_je_payment_creates_je_and_updates_ar_status() {
+        let db = make_db();
+        create_ar_item(&db);
+
+        let mut tab = AccountsReceivableTab::new();
+        tab.set_entity_name("Test Entity");
+        tab.refresh(&db);
+        assert_eq!(tab.items.len(), 1);
+
+        // Get a non-placeholder cash account number for auto-create.
+        let accounts = db.accounts().list_active().unwrap();
+        let cash_acct = accounts
+            .iter()
+            .find(|a| a.account_type == AccountType::Asset && !a.is_placeholder)
+            .unwrap();
+        let cash_number = cash_acct.number.clone();
+
+        // Open payment modal.
+        tab.handle_key(key(crossterm::event::KeyCode::Char('p')), &db);
+        assert!(matches!(tab.modal, Some(ArModal::Payment(_))));
+
+        // Fill in amount.
+        for c in "100".chars() {
+            tab.handle_key(key(crossterm::event::KeyCode::Char(c)), &db);
+        }
+        // Tab to date field.
+        tab.handle_key(key(crossterm::event::KeyCode::Tab), &db);
+        for c in "2026-01-15".chars() {
+            tab.handle_key(key(crossterm::event::KeyCode::Char(c)), &db);
+        }
+        // Tab to cash account field.
+        tab.handle_key(key(crossterm::event::KeyCode::Tab), &db);
+        for c in cash_number.chars() {
+            tab.handle_key(key(crossterm::event::KeyCode::Char(c)), &db);
+        }
+        // Tab to JE ID field (skip it — leave blank).
+        tab.handle_key(key(crossterm::event::KeyCode::Tab), &db);
+        // Submit.
+        tab.handle_key(key(crossterm::event::KeyCode::Enter), &db);
+
+        // Should now be in ConfirmAutoJe modal.
+        assert!(
+            matches!(tab.modal, Some(ArModal::ConfirmAutoJe(_))),
+            "Expected ConfirmAutoJe modal, got: {:?}",
+            tab.modal.is_some()
+        );
+
+        // Confirm with 'y'.
+        let action = tab.handle_key(key(crossterm::event::KeyCode::Char('y')), &db);
+        assert!(matches!(action, TabAction::ShowMessage(_)));
+        assert!(tab.modal.is_none());
+
+        // Verify a payment JE was posted (originating JE + payment JE = 2 posted JEs).
+        let jes = db
+            .journals()
+            .list(&crate::db::journal_repo::JournalFilter {
+                status: Some(JournalEntryStatus::Posted),
+                from_date: None,
+                to_date: None,
+            })
+            .unwrap();
+        assert_eq!(
+            jes.len(),
+            2,
+            "Originating JE + payment JE should both be posted"
+        );
+
+        // Verify AR item status updated.
+        tab.refresh(&db);
+        assert_eq!(tab.items[0].status, ArApStatus::Paid);
+    }
+
+    #[test]
+    fn manual_je_payment_with_existing_je_id() {
+        let db = make_db();
+        create_ar_item(&db);
+
+        let mut tab = AccountsReceivableTab::new();
+        tab.set_entity_name("Test Entity");
+        tab.refresh(&db);
+
+        // Create a JE first for the manual link.
+        let accounts = db.accounts().list_active().unwrap();
+        let postable: Vec<_> = accounts.iter().filter(|a| !a.is_placeholder).collect();
+        let a1 = postable[0].id;
+        let a2 = postable[1].id;
+        let period = db
+            .fiscal()
+            .get_period_for_date(NaiveDate::from_ymd_opt(2026, 1, 15).unwrap())
+            .unwrap();
+        let je_id = db
+            .journals()
+            .create_draft(&crate::db::journal_repo::NewJournalEntry {
+                entry_date: NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                memo: None,
+                fiscal_period_id: period.id,
+                reversal_of_je_id: None,
+                lines: vec![
+                    crate::db::journal_repo::NewJournalEntryLine {
+                        account_id: a1,
+                        debit_amount: Money(10_000_000_000),
+                        credit_amount: Money(0),
+                        line_memo: None,
+                        sort_order: 0,
+                    },
+                    crate::db::journal_repo::NewJournalEntryLine {
+                        account_id: a2,
+                        debit_amount: Money(0),
+                        credit_amount: Money(10_000_000_000),
+                        line_memo: None,
+                        sort_order: 1,
+                    },
+                ],
+            })
+            .unwrap();
+        crate::services::journal::post_journal_entry(&db, je_id, "Test Entity").unwrap();
+
+        // Open payment modal and use manual JE link.
+        tab.handle_key(key(crossterm::event::KeyCode::Char('p')), &db);
+        if let Some(ArModal::Payment(ref mut form)) = tab.modal {
+            form.amount_str = "100".to_string();
+            form.date_str = "2026-01-15".to_string();
+            // Leave cash_acct_str blank.
+            form.je_id_str = i64::from(je_id).to_string();
+            form.focused = 3; // Point to JE ID field.
+        }
+        // Submit from last field.
+        let action = tab.handle_key(key(crossterm::event::KeyCode::Enter), &db);
+        assert!(matches!(action, TabAction::ShowMessage(_)));
+        tab.refresh(&db);
+        assert_eq!(tab.items[0].status, ArApStatus::Paid);
     }
 }
