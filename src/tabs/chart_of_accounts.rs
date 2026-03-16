@@ -1560,14 +1560,20 @@ fn make_account_table<'a>(
     envelope_balances: &'a HashMap<AccountId, Money>,
     collapsed: &'a HashSet<AccountId>,
 ) -> Table<'a> {
-    let header = Row::new(vec![
+    let show_earmarked = !envelope_balances.is_empty();
+
+    let mut header_cells = vec![
         Cell::from("Number").style(Style::default().add_modifier(Modifier::BOLD)),
         Cell::from("Name").style(Style::default().add_modifier(Modifier::BOLD)),
         Cell::from("Type").style(Style::default().add_modifier(Modifier::BOLD)),
         Cell::from("Balance").style(Style::default().add_modifier(Modifier::BOLD)),
-        Cell::from("Flags").style(Style::default().add_modifier(Modifier::BOLD)),
-    ])
-    .style(Style::default().bg(Color::DarkGray));
+    ];
+    if show_earmarked {
+        header_cells
+            .push(Cell::from("Earmarked").style(Style::default().add_modifier(Modifier::BOLD)));
+    }
+    header_cells.push(Cell::from("Flags").style(Style::default().add_modifier(Modifier::BOLD)));
+    let header = Row::new(header_cells).style(Style::default().bg(Color::DarkGray));
 
     let table_rows: Vec<Row> = rows
         .iter()
@@ -1595,7 +1601,6 @@ fn make_account_table<'a>(
             };
 
             let balance = balances.get(&acc.id).copied().unwrap_or(Money(0));
-            let earmarked = envelope_balances.get(&acc.id).copied();
 
             let mut flags = String::new();
             if acc.is_placeholder {
@@ -1614,49 +1619,53 @@ fn make_account_table<'a>(
                 Style::default()
             };
 
-            let balance_cell = if let Some(earmark) = earmarked {
-                Cell::from(Line::from(vec![
-                    Span::raw(balance.to_string()),
-                    Span::styled(format!(" [{earmark}]"), Style::default().fg(Color::Cyan)),
-                ]))
-            } else {
-                Cell::from(balance.to_string())
-            };
-
-            Row::new(vec![
+            let mut cells = vec![
                 Cell::from(acc.number.clone()),
                 Cell::from(name_cell),
                 Cell::from(type_str),
-                balance_cell,
-                Cell::from(flags),
-            ])
-            .style(row_style)
+                Cell::from(balance.to_string()),
+            ];
+            if show_earmarked {
+                let earmark_cell = match envelope_balances.get(&acc.id) {
+                    Some(&amt) => Cell::from(Span::styled(
+                        amt.to_string(),
+                        Style::default().fg(Color::Cyan),
+                    )),
+                    None => Cell::from("—"),
+                };
+                cells.push(earmark_cell);
+            }
+            cells.push(Cell::from(flags));
+
+            Row::new(cells).style(row_style)
         })
         .collect();
 
-    Table::new(
-        table_rows,
-        [
-            Constraint::Length(8),  // Number
-            Constraint::Min(10),    // Name (gets remaining space)
-            Constraint::Length(7),  // Type
-            Constraint::Length(28), // Balance (room for earmark indicator)
-            Constraint::Length(5),  // Flags
-        ],
-    )
-    .header(header)
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" Chart of Accounts "),
-    )
-    .row_highlight_style(
-        Style::default()
-            .bg(Color::Blue)
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD),
-    )
-    .highlight_symbol("» ")
+    let mut widths = vec![
+        Constraint::Length(8),  // Number
+        Constraint::Min(10),    // Name (gets remaining space)
+        Constraint::Length(7),  // Type
+        Constraint::Length(14), // Balance
+    ];
+    if show_earmarked {
+        widths.push(Constraint::Length(14)); // Earmarked
+    }
+    widths.push(Constraint::Length(5)); // Flags
+
+    Table::new(table_rows, widths)
+        .header(header)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Chart of Accounts "),
+        )
+        .row_highlight_style(
+            Style::default()
+                .bg(Color::Blue)
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("» ")
 }
 
 fn cycle_account_type(current: AccountType, forward: bool) -> AccountType {
