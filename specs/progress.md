@@ -1,9 +1,9 @@
 # Progress Tracker
 
 ## Current State
-- **Active Phase**: Phase 4 — COMPLETE (awaiting developer review)
-- **Last Completed Task**: Phase 4, Task 10 (Depreciation rounding test)
-- **Next Task**: Phase 5 (pending developer review of Phase 4)
+- **Active Phase**: Phase 4 (complete — developer review applied 2026-03-16)
+- **Last Completed Task**: Phase 4, Task 10 + post-phase bugfixes/enhancements
+- **Next Task**: Phase 5 (after developer sign-off)
 - **Blockers**: None
 
 ## Completed Phases
@@ -11,6 +11,7 @@
 - [x] Phase 2a: Chart of Accounts (completed 2026-03-15, review fixes applied 2026-03-15)
 - [x] Phase 2b: Journal Entries (completed 2026-03-15, review fixes applied 2026-03-15)
 - [x] Phase 3: GL, AR/AP, Fiscal Periods (completed 2026-03-15, review fixes applied 2026-03-16)
+- [x] Phase 4: Envelopes, Fixed Assets, Depreciation (completed 2026-03-16, review fixes applied 2026-03-16)
 
 ## Current Phase Progress
 
@@ -84,7 +85,7 @@
 
 - **[Phase 4, Task 10]**: Rounding test uses $10 over 3 months (1_000_000_000 internal units / 3 = 333_333_333 r1).
   Verifies: sum of all monthly amounts == cost_basis exactly; months 1-(N-1) each = base amount; month N = base + remainder.
-  226 total tests passing.
+  228 total tests passing (226 at task completion + 2 added during review for date-range queries).
 
 - **[Phase 4, Task 9]**: `PlaceInServiceFormState` + `CoaModal::PlaceInService/PlaceInServicePicking` added to CoA tab.
   `s` key opens the form only when selected account name contains "construction" (case-insensitive CIP detection).
