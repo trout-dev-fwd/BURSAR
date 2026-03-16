@@ -234,8 +234,10 @@ impl App {
                 self.handle_key(key);
             }
 
-            // 3. Tick: update status bar timeout.
+            // 3. Tick: update status bar timeout + unsaved indicator.
             self.status_bar.tick();
+            let unsaved = self.entity.tabs[self.active_tab].has_unsaved_changes();
+            self.status_bar.set_unsaved(unsaved);
 
             if self.should_quit {
                 break;
@@ -472,7 +474,7 @@ impl App {
                             .set_message("Inter-entity transaction posted.".to_owned());
                     }
                     Err(e) => {
-                        self.status_bar.set_message(format!("Error: {e}"));
+                        self.status_bar.set_error(format!("Error: {e}"));
                     }
                 }
             }
@@ -500,7 +502,7 @@ impl App {
                     )
                 {
                     self.status_bar
-                        .set_message(format!("Failed to create primary accounts: {e}"));
+                        .set_error(format!("Failed to create primary accounts: {e}"));
                 }
                 if mode.secondary_needs_accounts {
                     let primary_name = mode.primary_name.clone();
@@ -509,7 +511,7 @@ impl App {
                         &primary_name,
                     ) {
                         self.status_bar
-                            .set_message(format!("Failed to create secondary accounts: {e}"));
+                            .set_error(format!("Failed to create secondary accounts: {e}"));
                     }
                 }
                 // Refresh account lists (clears needs_account_setup flag).
@@ -570,7 +572,7 @@ impl App {
                     Err(e) => {
                         self.mode = AppMode::Normal;
                         self.status_bar
-                            .set_message(format!("Failed to open {}: {e}", secondary_cfg.name));
+                            .set_error(format!("Failed to open {}: {e}", secondary_cfg.name));
                     }
                     Ok(secondary_db) => {
                         match InterEntityMode::open(
@@ -582,7 +584,7 @@ impl App {
                             Err(e) => {
                                 self.mode = AppMode::Normal;
                                 self.status_bar
-                                    .set_message(format!("Failed to open inter-entity mode: {e}"));
+                                    .set_error(format!("Failed to open inter-entity mode: {e}"));
                             }
                             Ok(mode) => {
                                 if mode.needs_account_setup() {
@@ -651,7 +653,7 @@ impl App {
                     .map(|(i, _)| i)
                     .collect();
                 if candidates.is_empty() {
-                    self.status_bar.set_message(
+                    self.status_bar.set_error(
                         "Inter-entity mode requires at least two entities in workspace config."
                             .to_owned(),
                     );

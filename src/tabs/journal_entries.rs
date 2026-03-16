@@ -991,6 +991,10 @@ impl Tab for JournalEntriesTab {
         self.modal.is_some()
     }
 
+    fn has_unsaved_changes(&self) -> bool {
+        matches!(&self.modal, Some(Modal::NewEntry(form)) if form.has_content())
+    }
+
     fn refresh(&mut self, db: &EntityDb) {
         let filter = self.status_filter.to_filter();
         match db.journals().list(&filter) {
@@ -1436,6 +1440,37 @@ mod tests {
                 tab.modal.is_some()
             ),
         }
+    }
+
+    /// has_unsaved_changes returns true only when the NewEntry form has content.
+    #[test]
+    fn has_unsaved_changes_tracks_new_entry_form_content() {
+        let db = make_db();
+        let mut tab = JournalEntriesTab::new();
+        tab.refresh(&db);
+
+        // No modal → no unsaved changes.
+        assert!(!tab.has_unsaved_changes());
+
+        // Open new-entry modal.
+        tab.handle_key(key(KeyCode::Char('n')), &db);
+        assert!(matches!(tab.modal, Some(Modal::NewEntry(_))));
+        // Form is fresh (only auto-filled date) → no unsaved changes yet.
+        assert!(!tab.has_unsaved_changes());
+
+        // Type something in the memo field to mark form as having content.
+        tab.handle_key(key(KeyCode::Tab), &db); // advance to memo field
+        tab.handle_key(key(KeyCode::Char('X')), &db);
+        assert!(
+            tab.has_unsaved_changes(),
+            "form with memo content should report unsaved changes"
+        );
+
+        // Escape closes the modal → no more unsaved changes.
+        tab.handle_key(key(KeyCode::Esc), &db);
+        // Esc shows a confirm prompt; accept it.
+        tab.handle_key(key(KeyCode::Char('y')), &db);
+        assert!(!tab.has_unsaved_changes());
     }
 
     #[test]

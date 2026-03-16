@@ -112,6 +112,12 @@ pub trait Tab {
         let _ = (record_id, db);
     }
 
+    /// Returns true when the tab has unsaved in-progress content (e.g. a partially filled
+    /// new-entry form). Used by App to drive the `[*]` indicator in the status bar.
+    fn has_unsaved_changes(&self) -> bool {
+        false
+    }
+
     /// Returns (key, description) pairs for this tab's context-specific hotkeys.
     /// Shown in the `?` help overlay. Default returns an empty list.
     fn hotkey_help(&self) -> Vec<(&'static str, &'static str)> {
