@@ -71,13 +71,14 @@ impl<'conn> ApRepo<'conn> {
                 "INSERT INTO ap_items
                     (account_id, vendor_name, description, amount, due_date,
                      status, originating_je_id, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'Open', ?6, ?7, ?8)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     i64::from(new.account_id),
                     new.vendor_name,
                     new.description,
                     new.amount.0,
                     new.due_date.to_string(),
+                    ArApStatus::Open.to_string(),
                     i64::from(new.originating_je_id),
                     now,
                     now,
