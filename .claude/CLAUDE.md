@@ -63,4 +63,42 @@ One commit per task. See `specs/implementation-protocols.md` for full protocol.
 
 ## Gotchas
 
-_(Updated as the project evolves — add discoveries here)_
+_(Discoveries from implementation — update as the project evolves)_
+
+### Money & Precision
+- **$1 = 100,000,000 internal units** (8 decimal places). Test values: `$100 = 10_000_000_000`.
+- **Percentages**: `1% = 1,000,000 units`, `10% = 10_000_000`.
+- **Rounding**: final depreciation month absorbs remainder so `SUM(all months) == cost_basis` exactly.
+
+### Architecture
+- **`EntityDb` is a wrapper** that owns the `rusqlite::Connection` and hands out repo objects via
+  accessor methods (`db.accounts()`, `db.journals()`, etc.). Repos borrow `&Connection`.
+- **`InterEntityMode`** takes primary DB as `&EntityDb` parameter — does NOT store a reference.
+  Secondary `EntityDb` is owned (drops when mode exits).
+- **`Tab::handle_key`** returns `TabAction`; tabs never mutate `App` state directly.
+- **`TabAction::ShowMessage`** routes to `StatusBar::set_success`. Use `App::set_error` callers
+  directly for explicit error paths.
+
+### Cash account detection (envelope fill)
+- Cash = `account_type == Asset && !is_placeholder && name.to_lowercase().contains("cash|bank|checking|savings")`.
+- Owner's Draw suppression: `account_type == Equity && is_contra` → skip fill.
+- If JE has **multiple** cash debit lines, envelope fill amount is the **sum of all** cash debits.
+
+### Fiscal periods
+- `create_draft` rejects closed periods at creation time (avoids orphaned un-postable entries).
+- `generate_pending_depreciation` returns `(Vec<NewJournalEntry>, Option<String>)`. The warning
+  fires when a depreciation month has no fiscal period; generation stops for that asset (not error).
+- Year-end close zeroes GL balances for revenue/expense; **does NOT** clear envelope earmarks.
+
+### Cross-module test access
+- Private struct fields in production code can't be set from cross-module tests. Add
+  `#[cfg(test)] pub(crate) fn set_test_state(...)` helpers to widgets/structs that need it.
+
+### CIP account detection
+- `PlaceInService` form opens only when selected account name contains "construction"
+  (case-insensitive). Tested via substring match, not account type.
+
+### Status bar
+- `set_message` → success (green, 3s). `set_error` → error (red, 5s).
+- `[*]` unsaved indicator: driven by `Tab::has_unsaved_changes()`; App polls each tick.
+- JournalEntriesTab overrides `has_unsaved_changes()` to reflect new-entry form content.
