@@ -6,6 +6,7 @@ pub mod audit_repo;
 pub mod envelope_repo;
 pub mod fiscal_repo;
 pub mod journal_repo;
+pub mod recurring_repo;
 pub mod schema;
 
 use std::path::Path;
@@ -22,6 +23,7 @@ use crate::db::audit_repo::AuditRepo;
 use crate::db::envelope_repo::EnvelopeRepo;
 use crate::db::fiscal_repo::FiscalRepo;
 use crate::db::journal_repo::JournalRepo;
+use crate::db::recurring_repo::RecurringRepo;
 use crate::db::schema::{initialize_schema, seed_default_accounts};
 
 /// Holds the SQLite connection for one entity database.
@@ -105,8 +107,10 @@ impl EntityDb {
         AssetRepo::new(&self.conn)
     }
 
-    // ── Stub repo accessors (filled in later phases) ──────────────────────────
-    // TODO(Phase 5):  fn recurring(&self) -> RecurringRepo<'_>
+    /// Returns a RecurringRepo borrowing this connection.
+    pub fn recurring(&self) -> RecurringRepo<'_> {
+        RecurringRepo::new(&self.conn)
+    }
 }
 
 /// Returns the current local timestamp as an ISO 8601 string (no timezone).

@@ -16,7 +16,9 @@ use crate::db::{
 };
 use crate::services::journal::{post_journal_entry, reverse_journal_entry};
 use crate::tabs::{RecordId, Tab, TabAction, TabId};
-use crate::types::{AccountId, JournalEntryId, JournalEntryStatus, Money, ReconcileState};
+use crate::types::{
+    AccountId, EntryFrequency, JournalEntryId, JournalEntryStatus, Money, ReconcileState,
+};
 use crate::widgets::{
     JeForm, centered_rect,
     confirmation::{ConfirmAction, Confirmation},
@@ -92,6 +94,17 @@ enum Modal {
         confirm: Confirmation,
         je_id: JournalEntryId,
         reversal_date: NaiveDate,
+    },
+    /// Form to set up a recurring template from a posted JE.
+    /// Field 0 = start_date, Field 1 = frequency.
+    RecurringSetup {
+        je_id: JournalEntryId,
+        je_number: String,
+        start_date_str: String,
+        frequency: EntryFrequency,
+        /// 0 = start_date field active, 1 = frequency field active.
+        focused_field: usize,
+        error: Option<String>,
     },
 }
 
@@ -470,6 +483,127 @@ impl JournalEntriesTab {
         }
     }
 
+    fn handle_recurring_setup_key(&mut self, key: KeyEvent, db: &EntityDb) -> TabAction {
+        let Some(Modal::RecurringSetup {
+            je_id,
+            start_date_str,
+            frequency,
+            focused_field,
+            error,
+            ..
+        }) = self.modal.take()
+        else {
+            return TabAction::None;
+        };
+
+        match key.code {
+            KeyCode::Esc => {
+                // modal stays None (already taken)
+                TabAction::None
+            }
+            KeyCode::Tab => {
+                let next_field = if focused_field == 0 { 1 } else { 0 };
+                self.modal = Some(Modal::RecurringSetup {
+                    je_id,
+                    je_number: String::new(),
+                    start_date_str,
+                    frequency,
+                    focused_field: next_field,
+                    error,
+                });
+                TabAction::None
+            }
+            KeyCode::Left | KeyCode::Right if focused_field == 1 => {
+                let next_freq = match frequency {
+                    EntryFrequency::Monthly => EntryFrequency::Quarterly,
+                    EntryFrequency::Quarterly => EntryFrequency::Annually,
+                    EntryFrequency::Annually => EntryFrequency::Monthly,
+                };
+                self.modal = Some(Modal::RecurringSetup {
+                    je_id,
+                    je_number: String::new(),
+                    start_date_str,
+                    frequency: next_freq,
+                    focused_field,
+                    error,
+                });
+                TabAction::None
+            }
+            KeyCode::Backspace if focused_field == 0 => {
+                let mut s = start_date_str;
+                s.pop();
+                self.modal = Some(Modal::RecurringSetup {
+                    je_id,
+                    je_number: String::new(),
+                    start_date_str: s,
+                    frequency,
+                    focused_field,
+                    error: None,
+                });
+                TabAction::None
+            }
+            KeyCode::Char(c) if focused_field == 0 => {
+                let mut s = start_date_str;
+                s.push(c);
+                self.modal = Some(Modal::RecurringSetup {
+                    je_id,
+                    je_number: String::new(),
+                    start_date_str: s,
+                    frequency,
+                    focused_field,
+                    error: None,
+                });
+                TabAction::None
+            }
+            KeyCode::Enter => match NaiveDate::parse_from_str(&start_date_str, "%Y-%m-%d") {
+                Err(_) => {
+                    let err_msg = format!("Invalid date: '{start_date_str}'");
+                    self.modal = Some(Modal::RecurringSetup {
+                        je_id,
+                        je_number: String::new(),
+                        start_date_str,
+                        frequency,
+                        focused_field,
+                        error: Some(err_msg),
+                    });
+                    TabAction::None
+                }
+                Ok(start_date) => {
+                    match db.recurring().create_template(je_id, frequency, start_date) {
+                        Ok(template_id) => TabAction::ShowMessage(format!(
+                            "Recurring template #{} created ({} starting {})",
+                            i64::from(template_id),
+                            frequency,
+                            start_date
+                        )),
+                        Err(e) => {
+                            self.modal = Some(Modal::RecurringSetup {
+                                je_id,
+                                je_number: String::new(),
+                                start_date_str,
+                                frequency,
+                                focused_field,
+                                error: Some(format!("{e}")),
+                            });
+                            TabAction::None
+                        }
+                    }
+                }
+            },
+            _ => {
+                self.modal = Some(Modal::RecurringSetup {
+                    je_id,
+                    je_number: String::new(),
+                    start_date_str,
+                    frequency,
+                    focused_field,
+                    error,
+                });
+                TabAction::None
+            }
+        }
+    }
+
     // ── Render helpers ────────────────────────────────────────────────────────
 
     fn render_list(&self, frame: &mut Frame, area: Rect) {
@@ -660,6 +794,32 @@ impl JournalEntriesTab {
             Modal::ConfirmReverse { confirm, .. } => {
                 confirm.render(frame, area);
             }
+            Modal::RecurringSetup {
+                je_number,
+                start_date_str,
+                frequency,
+                focused_field,
+                error,
+                ..
+            } => {
+                let popup = centered_rect(50, 30, area);
+                frame.render_widget(Clear, popup);
+                let date_indicator = if *focused_field == 0 { ">" } else { " " };
+                let freq_indicator = if *focused_field == 1 { ">" } else { " " };
+                let error_line = error.as_deref().unwrap_or("");
+                let content = format!(
+                    "\n  {date_indicator} Start Date (YYYY-MM-DD): {start_date_str}_\n\n  {freq_indicator} Frequency: {frequency}  (←/→ to change)\n\n  {error_line}\n\n  Tab: switch field   Enter: create   Esc: cancel"
+                );
+                frame.render_widget(
+                    Paragraph::new(content).block(
+                        Block::default()
+                            .title(format!(" Recurring template for {} ", je_number))
+                            .borders(Borders::ALL)
+                            .style(Style::default().fg(Color::Cyan)),
+                    ),
+                    popup,
+                );
+            }
         }
     }
 }
@@ -677,6 +837,7 @@ impl Tab for JournalEntriesTab {
                 Some(Modal::ConfirmPost { .. }) => self.handle_confirm_post_key(key, db),
                 Some(Modal::ReverseDate { .. }) => self.handle_reverse_date_key(key),
                 Some(Modal::ConfirmReverse { .. }) => self.handle_confirm_reverse_key(key, db),
+                Some(Modal::RecurringSetup { .. }) => self.handle_recurring_setup_key(key, db),
                 None => TabAction::None,
             };
         }
@@ -766,6 +927,26 @@ impl Tab for JournalEntriesTab {
                     } else {
                         return TabAction::ShowMessage(
                             "Only Posted entries can be reversed.".to_string(),
+                        );
+                    }
+                }
+            }
+            // [t] create recurring template from a posted JE.
+            KeyCode::Char('t') | KeyCode::Char('T') => {
+                if let Some(entry) = self.selected_entry() {
+                    if entry.status == JournalEntryStatus::Posted {
+                        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+                        self.modal = Some(Modal::RecurringSetup {
+                            je_id: entry.id,
+                            je_number: entry.je_number.clone(),
+                            start_date_str: today,
+                            frequency: EntryFrequency::Monthly,
+                            focused_field: 0,
+                            error: None,
+                        });
+                    } else {
+                        return TabAction::ShowMessage(
+                            "Only Posted entries can be made recurring.".to_string(),
                         );
                     }
                 }
