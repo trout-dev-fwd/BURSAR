@@ -701,7 +701,7 @@ impl EnvelopesTab {
             None => return,
         };
 
-        let popup = centered_rect(50, 10, area);
+        let popup = centered_rect(50, 30, area);
         frame.render_widget(Clear, popup);
 
         let block = Block::default()
@@ -845,7 +845,7 @@ impl EnvelopesTab {
                 input,
                 error,
             } => {
-                let popup = centered_rect(55, 12, area);
+                let popup = centered_rect(55, 40, area);
                 frame.render_widget(Clear, popup);
 
                 let src_name = self
