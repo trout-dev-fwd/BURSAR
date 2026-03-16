@@ -39,6 +39,11 @@ pub enum AppMode {
         /// Indices of selectable entities (all entities except the active one).
         candidates: Vec<usize>,
     },
+    /// Prompting user to create intercompany accounts before opening the form.
+    InterEntityAccountSetup {
+        mode: Box<InterEntityMode>,
+        confirm: crate::widgets::confirmation::Confirmation,
+    },
     /// Inter-entity form is open.
     InterEntity(Box<InterEntityMode>),
 }
@@ -168,6 +173,28 @@ impl App {
                             *selected,
                             candidates,
                         );
+                    }
+                    AppMode::InterEntityAccountSetup { mode, confirm } => {
+                        // Render the form underneath, confirmation overlay on top.
+                        mode.form.render(
+                            frame,
+                            chunks[1],
+                            &mode.primary_name,
+                            &mode.secondary_name,
+                            &mode.primary_accounts,
+                            &mode.secondary_accounts,
+                            &std::collections::HashMap::new(),
+                            &std::collections::HashMap::new(),
+                        );
+                        // Center a small confirmation popup.
+                        let area = chunks[1];
+                        let popup_w = 60u16.min(area.width);
+                        let popup_h = 6u16.min(area.height);
+                        let px = area.x + area.width.saturating_sub(popup_w) / 2;
+                        let py = area.y + area.height.saturating_sub(popup_h) / 2;
+                        let popup_area = ratatui::layout::Rect::new(px, py, popup_w, popup_h);
+                        frame.render_widget(ratatui::widgets::Clear, popup_area);
+                        confirm.render(frame, popup_area);
                     }
                     AppMode::InterEntity(mode) => {
                         mode.form.render(
@@ -345,6 +372,12 @@ impl App {
             return;
         }
 
+        // Intercompany account setup prompt.
+        if matches!(self.mode, AppMode::InterEntityAccountSetup { .. }) {
+            self.handle_account_setup_key(key);
+            return;
+        }
+
         // Secondary entity picker: all input goes to picker.
         if matches!(self.mode, AppMode::SecondaryEntityPicker { .. }) {
             self.handle_secondary_picker_key(key);
@@ -446,6 +479,61 @@ impl App {
         }
     }
 
+    fn handle_account_setup_key(&mut self, key: KeyEvent) {
+        use crate::widgets::confirmation::ConfirmAction;
+        let AppMode::InterEntityAccountSetup {
+            ref mut mode,
+            ref mut confirm,
+        } = self.mode
+        else {
+            return;
+        };
+        let action = confirm.handle_key(key);
+        match action {
+            ConfirmAction::Pending => {}
+            ConfirmAction::Confirmed => {
+                // Create intercompany accounts for whichever sides need them.
+                if mode.primary_needs_accounts
+                    && let Err(e) = crate::inter_entity::create_intercompany_accounts(
+                        &self.entity.db,
+                        &mode.secondary_name.clone(),
+                    )
+                {
+                    self.status_bar
+                        .set_message(format!("Failed to create primary accounts: {e}"));
+                }
+                if mode.secondary_needs_accounts {
+                    let primary_name = mode.primary_name.clone();
+                    if let Err(e) = crate::inter_entity::create_intercompany_accounts(
+                        &mode.secondary_db,
+                        &primary_name,
+                    ) {
+                        self.status_bar
+                            .set_message(format!("Failed to create secondary accounts: {e}"));
+                    }
+                }
+                // Refresh account lists (clears needs_account_setup flag).
+                let _ = mode.refresh_accounts(&self.entity.db);
+                // Transition to form.
+                let AppMode::InterEntityAccountSetup { mode, .. } =
+                    std::mem::replace(&mut self.mode, AppMode::Normal)
+                else {
+                    return;
+                };
+                self.mode = AppMode::InterEntity(mode);
+            }
+            ConfirmAction::Cancelled => {
+                // Skip account creation, go straight to form.
+                let AppMode::InterEntityAccountSetup { mode, .. } =
+                    std::mem::replace(&mut self.mode, AppMode::Normal)
+                else {
+                    return;
+                };
+                self.mode = AppMode::InterEntity(mode);
+            }
+        }
+    }
+
     fn handle_secondary_picker_key(&mut self, key: KeyEvent) {
         let AppMode::SecondaryEntityPicker {
             ref mut selected,
@@ -497,7 +585,17 @@ impl App {
                                     .set_message(format!("Failed to open inter-entity mode: {e}"));
                             }
                             Ok(mode) => {
-                                self.mode = AppMode::InterEntity(Box::new(mode));
+                                if mode.needs_account_setup() {
+                                    let msg = build_account_setup_message(&mode);
+                                    let confirm =
+                                        crate::widgets::confirmation::Confirmation::new(msg);
+                                    self.mode = AppMode::InterEntityAccountSetup {
+                                        mode: Box::new(mode),
+                                        confirm,
+                                    };
+                                } else {
+                                    self.mode = AppMode::InterEntity(Box::new(mode));
+                                }
                             }
                         }
                     }
@@ -644,6 +742,23 @@ fn render_help_overlay(
             .style(Style::default().bg(Color::Black)),
         popup_area,
     );
+}
+
+fn build_account_setup_message(mode: &InterEntityMode) -> String {
+    let mut parts = Vec::new();
+    if mode.primary_needs_accounts {
+        parts.push(format!(
+            "• {} is missing Due From/To {} accounts",
+            mode.primary_name, mode.secondary_name
+        ));
+    }
+    if mode.secondary_needs_accounts {
+        parts.push(format!(
+            "• {} is missing Due From/To {} accounts",
+            mode.secondary_name, mode.primary_name
+        ));
+    }
+    format!("Create intercompany accounts?\n{}", parts.join("\n"))
 }
 
 fn render_secondary_entity_picker(
