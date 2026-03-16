@@ -1,9 +1,9 @@
 # Progress Tracker
 
 ## Current State
-- **Active Phase**: Phase 3 (complete — developer review applied 2026-03-16)
-- **Last Completed Task**: Phase 3, Task 12 + post-phase bugfixes/enhancements
-- **Next Task**: Phase 4 (after developer sign-off)
+- **Active Phase**: Phase 4
+- **Last Completed Task**: Phase 4, Task 5 (envelope transfers)
+- **Next Task**: Phase 4, Task 6 (envelope indicators on CoA tab)
 - **Blockers**: None
 
 ## Completed Phases
@@ -13,6 +13,18 @@
 - [x] Phase 3: GL, AR/AP, Fiscal Periods (completed 2026-03-15, review fixes applied 2026-03-16)
 
 ## Current Phase Progress
+
+### Phase 4: Envelopes, Fixed Assets, Depreciation
+- [x] Task 1: Create EnvelopeRepo [TEST-FIRST]
+- [x] Task 2: Wire envelope fill into JE post orchestration [TEST-FIRST]
+- [x] Task 3: Wire envelope reversal into JE reverse orchestration
+- [x] Task 4: Implement Envelopes tab — allocation config + balances
+- [x] Task 5: Implement envelope transfers
+- [ ] Task 6: Add envelope indicators to Chart of Accounts tab
+- [ ] Task 7: Create AssetRepo [TEST-FIRST]
+- [ ] Task 8: Implement Fixed Assets tab
+- [ ] Task 9: Place in Service action on CoA tab
+- [ ] Task 10: Depreciation rounding verification [TEST-FIRST]
 
 ### Phase 3: General Ledger, AR/AP, Fiscal Periods
 - [x] Task 1: Implement General Ledger tab
@@ -69,6 +81,30 @@
 - [x] Task 20: Set up pre-commit hook
 
 ## Decisions & Discoveries
+
+- **[Phase 4, Task 5]**: Transfer modal uses a `TransferStep` enum state machine (SelectSource →
+  SelectDest → EnterAmount → Confirm) stored in a `TransferModal` struct on `EnvelopesTab`.
+  Account list for source/dest comes from `self.accounts` filtered by `self.allocations`. Dest
+  list excludes the selected source. Balance validation: `amount > src_envelope_balance → error`.
+  On confirm: calls `EnvelopeRepo::record_transfer()`, updates local `envelope_balances` cache
+  immediately (no full reload needed), writes `EnvelopeTransfer` audit entry. `t` key only active
+  in Balances view. `parse_money` from `widgets/je_form.rs` reused for amount parsing.
+
+- **[Phase 4, Task 4]**: `EnvelopesTab` has two sub-views toggled by Tab: Allocation Config
+  (all non-placeholder accounts with editable %) and Envelope Balances (allocated accounts only,
+  shows GL Balance / Earmarked / Available). Balance data pre-loaded in `refresh()` since
+  `render()` lacks `&EntityDb`. Allocation rows highlighted in Cyan when allocated.
+
+- **[Phase 4, Task 3]**: `reverse_journal_entry()` pre-fetches fills with `get_fills_for_je()`
+  before opening the transaction, then calls `record_reversal()` inside the transaction for each.
+
+- **[Phase 4, Task 2]**: Cash account detected by: `account_type == Asset && !is_placeholder &&
+  name.to_lowercase().contains(cash|bank|checking|savings)`. Owner's Draw suppression check:
+  `account_type == Equity && is_contra`. No schema change needed.
+
+- **[Phase 4, Task 1]**: `EnvelopeRepo` uses `ON CONFLICT(account_id) DO UPDATE` for
+  `set_allocation` (upsert). `record_transfer` creates paired rows with shared `transfer_group_id`
+  (UUID). `get_balance` uses `COALESCE(SUM(amount), 0)`.
 
 - **[Phase 3, Task 12]**: `g` key in JE detail view returns
   `TabAction::NavigateTo(TabId::GeneralLedger, RecordId::Account(line.account_id))`. The full
