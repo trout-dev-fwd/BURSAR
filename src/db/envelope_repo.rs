@@ -251,12 +251,15 @@ impl<'conn> EnvelopeRepo<'conn> {
             "SELECT id, account_id, entry_type, amount, source_je_id, related_account_id,
                     transfer_group_id, memo, created_at
              FROM envelope_ledger
-             WHERE source_je_id = ?1 AND entry_type = 'Fill'
+             WHERE source_je_id = ?1 AND entry_type = ?2
              ORDER BY id ASC",
         )?;
-        stmt.query_map(params![i64::from(je_id)], row_to_ledger_entry)?
-            .map(|r| r.map_err(anyhow::Error::from))
-            .collect()
+        stmt.query_map(
+            params![i64::from(je_id), EnvelopeEntryType::Fill.to_string()],
+            row_to_ledger_entry,
+        )?
+        .map(|r| r.map_err(anyhow::Error::from))
+        .collect()
     }
 }
 
