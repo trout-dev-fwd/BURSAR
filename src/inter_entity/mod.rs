@@ -10,6 +10,7 @@
 
 pub mod form;
 pub mod recovery;
+pub mod write_protocol;
 
 use anyhow::Result;
 

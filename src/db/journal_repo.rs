@@ -208,6 +208,56 @@ impl<'conn> JournalRepo<'conn> {
         Ok(je_id)
     }
 
+    /// Sets `inter_entity_uuid` and `source_entity_name` on an existing journal entry.
+    ///
+    /// Called immediately after `create_draft` during the inter-entity write protocol
+    /// to tag the entry with the cross-database linkage before posting.
+    pub fn set_inter_entity_metadata(
+        &self,
+        id: JournalEntryId,
+        uuid: &str,
+        source_entity_name: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE journal_entries
+             SET inter_entity_uuid = ?1, source_entity_name = ?2, updated_at = ?3
+             WHERE id = ?4",
+            params![uuid, source_entity_name, now_str(), i64::from(id)],
+        )?;
+        Ok(())
+    }
+
+    /// Permanently deletes a Draft journal entry and all its lines.
+    ///
+    /// **Only permitted during inter-entity rollback recovery (Phase 6).**
+    /// Returns an error if the entry is not in Draft status — Posted entries
+    /// must be reversed, never deleted.
+    pub fn delete_draft(&self, id: JournalEntryId) -> Result<()> {
+        let status: String = self
+            .conn
+            .query_row(
+                "SELECT status FROM journal_entries WHERE id = ?1",
+                params![i64::from(id)],
+                |row| row.get(0),
+            )
+            .with_context(|| format!("delete_draft: journal entry {} not found", i64::from(id)))?;
+        if status != "Draft" {
+            anyhow::bail!(
+                "delete_draft: entry {} has status '{status}', expected Draft",
+                i64::from(id)
+            );
+        }
+        self.conn.execute(
+            "DELETE FROM journal_entry_lines WHERE journal_entry_id = ?1",
+            params![i64::from(id)],
+        )?;
+        self.conn.execute(
+            "DELETE FROM journal_entries WHERE id = ?1",
+            params![i64::from(id)],
+        )?;
+        Ok(())
+    }
+
     /// Returns a journal entry and all its lines, ordered by sort_order then id.
     pub fn get_with_lines(
         &self,
