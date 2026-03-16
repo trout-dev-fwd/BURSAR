@@ -8,12 +8,14 @@
 //! The primary entity's `EntityDb` is owned by `App::entity` and is NOT stored here.
 //! All primary-entity data access is received as `&EntityDb` parameters (same pattern as tabs).
 
+pub mod form;
 pub mod recovery;
 
 use anyhow::Result;
 
 use crate::db::EntityDb;
 use crate::db::account_repo::Account;
+use crate::inter_entity::form::InterEntityForm;
 
 /// Error type for inter-entity operations.
 #[derive(Debug, thiserror::Error)]
@@ -43,6 +45,8 @@ pub struct InterEntityMode {
     pub primary_accounts: Vec<Account>,
     /// Active, non-placeholder accounts from Entity B (for the bottom-right pane).
     pub secondary_accounts: Vec<Account>,
+    /// The split-pane entry form.
+    pub form: InterEntityForm,
 }
 
 impl InterEntityMode {
@@ -66,6 +70,7 @@ impl InterEntityMode {
             secondary_name,
             primary_accounts,
             secondary_accounts,
+            form: InterEntityForm::new(),
         })
     }
 

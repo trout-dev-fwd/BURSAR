@@ -2,8 +2,8 @@
 
 ## Current State
 - **Active Phase**: Phase 6 — Inter-Entity + Polish
-- **Last Completed Task**: Phase 6, Task 1
-- **Next Task**: Phase 6, Task 2
+- **Last Completed Task**: Phase 6, Task 2
+- **Next Task**: Phase 6, Task 3
 - **Blockers**: None
 
 ## Completed Phases
@@ -18,7 +18,7 @@
 
 ### Phase 6: Inter-Entity Transactions & Polish
 - [x] Task 1: Create InterEntityMode struct
-- [ ] Task 2: Create inter-entity form
+- [x] Task 2: Create inter-entity form
 - [ ] Task 3: Implement inter-entity write protocol [TEST-FIRST]
 - [ ] Task 4: Implement inter-entity startup recovery [TEST-FIRST]
 - [ ] Task 5: Wire inter-entity mode into App
@@ -116,6 +116,13 @@
 - [x] Task 20: Set up pre-commit hook
 
 ## Decisions & Discoveries
+
+- **[Phase 6, Task 2]**: `InterEntityForm` in `src/inter_entity/form.rs` embeds two `JeForm` instances
+  (one per entity) for line-item entry. Shared date/memo in a top header. Section navigation via Tab.
+  `Ctrl+S` validates both sides independently (per-entity balance check). `Esc` with content shows
+  `Confirmation` exit prompt. `JeForm` extended with: `is_at_header()`, `skip_to_lines()`,
+  `has_content()`, `validate_lines()`, `render_lines_only()` — minimal non-breaking additions.
+  Bottom pane: two side-by-side account lists with optional earmark column. 12 tests added (330 total).
 
 - **[Phase 6, Task 1]**: `InterEntityMode` in `src/inter_entity/mod.rs` owns `secondary_db: EntityDb`
   (drops connection when mode exits). Does NOT store a reference to primary `EntityDb` — receives it

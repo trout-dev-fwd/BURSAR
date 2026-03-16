@@ -434,6 +434,96 @@ impl JeForm {
             .fold(Money(0), |acc, m| acc + m)
     }
 
+    // ── Accessors for inter-entity form integration ───────────────────────────
+
+    /// Returns `true` when focus is on the Date or Memo field (the "header" fields).
+    /// Used by `InterEntityForm` to detect when Tab has wrapped back to the top,
+    /// so it can switch the active section to the next entity.
+    pub fn is_at_header(&self) -> bool {
+        matches!(self.focus, Focus::Date | Focus::Memo)
+    }
+
+    /// Advances focus to the first line-item field, bypassing Date and Memo.
+    /// Called by `InterEntityForm` when switching into this form from another section,
+    /// so the user lands directly on the line rows rather than the header.
+    pub fn skip_to_lines(&mut self) {
+        self.focus = Focus::LineAccount(0);
+    }
+
+    /// Returns `true` if the form has any user-entered content (account selected,
+    /// any text typed in date, memo, debit, credit, or note fields).
+    /// Used by `InterEntityForm` to decide whether to show an "unsaved changes" prompt.
+    pub fn has_content(&self) -> bool {
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        if self.date_input != today || !self.memo_input.is_empty() {
+            return true;
+        }
+        self.lines.iter().any(|l| {
+            l.account_id.is_some()
+                || !l.debit_input.is_empty()
+                || !l.credit_input.is_empty()
+                || !l.note_input.is_empty()
+        })
+    }
+
+    /// Validates line items only (no date/memo check). Returns the parsed lines on success
+    /// or an error message on failure.
+    /// Called by `InterEntityForm` during combined submission — the shared date is owned
+    /// by the inter-entity form header, not by each embedded `JeForm`.
+    pub fn validate_lines(&self) -> Result<Vec<NewJournalEntryLine>, String> {
+        if self.lines.len() < 2 {
+            return Err("At least 2 line rows are required.".to_string());
+        }
+        let mut parsed: Vec<NewJournalEntryLine> = Vec::new();
+        for (i, row) in self.lines.iter().enumerate() {
+            let account_id = row
+                .account_id
+                .ok_or_else(|| format!("Line {}: no account selected.", i + 1))?;
+            let debit = parse_money(&row.debit_input)
+                .map_err(|e| format!("Line {}: debit — {e}", i + 1))?;
+            let credit = parse_money(&row.credit_input)
+                .map_err(|e| format!("Line {}: credit — {e}", i + 1))?;
+            if debit.is_zero() && credit.is_zero() {
+                return Err(format!("Line {}: both debit and credit are zero.", i + 1));
+            }
+            parsed.push(NewJournalEntryLine {
+                account_id,
+                debit_amount: debit,
+                credit_amount: credit,
+                line_memo: if row.note_input.is_empty() {
+                    None
+                } else {
+                    Some(row.note_input.clone())
+                },
+                sort_order: i as i32,
+            });
+        }
+        Ok(parsed)
+    }
+
+    /// Renders only the line-item table and running totals, without the Date/Memo header
+    /// or the help bar. Used by `InterEntityForm` to embed this form as a sub-section.
+    pub fn render_lines_only(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        accounts: &[Account],
+        envelope_avail: &HashMap<AccountId, Money>,
+    ) {
+        // Lines area takes most of the space; totals row is fixed at 2 lines.
+        let layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(3), Constraint::Length(2)])
+            .split(area);
+
+        self.render_lines(frame, layout[0], envelope_avail);
+        self.render_totals(frame, layout[1]);
+
+        if self.picker_active {
+            self.account_picker.render(frame, area, accounts);
+        }
+    }
+
     // ── Render ────────────────────────────────────────────────────────────────
 
     /// Renders the form into `area`. Renders the account picker popup on top when active.
