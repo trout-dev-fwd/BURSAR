@@ -354,7 +354,7 @@ impl ChartOfAccountsTab {
             KeyCode::Enter => {
                 // Field 3 (Parent): open AccountPicker instead of advancing.
                 if form.focused_field == 3 {
-                    let mut picker = AccountPicker::new();
+                    let mut picker = AccountPicker::with_placeholders();
                     picker.refresh(&self.all_accounts);
                     // Transition: move the form into the AddFormPickingParent variant.
                     let form_state = match self.modal.take() {
@@ -398,7 +398,7 @@ impl ChartOfAccountsTab {
                     }
                     3 => {
                         // Any char on parent field opens the picker.
-                        let mut picker = AccountPicker::new();
+                        let mut picker = AccountPicker::with_placeholders();
                         picker.refresh(&self.all_accounts);
                         // Pre-seed the picker with the typed character.
                         let seed_key =

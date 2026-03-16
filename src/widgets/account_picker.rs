@@ -37,6 +37,9 @@ pub struct AccountPicker {
     /// Indexes into the caller's account slice that match the current query.
     matches: Vec<usize>,
     list_state: ListState,
+    /// When true, placeholder accounts are included in results (e.g. for parent selection).
+    /// Defaults to false (appropriate for JE line account selection).
+    include_placeholders: bool,
 }
 
 impl Default for AccountPicker {
@@ -51,6 +54,16 @@ impl AccountPicker {
             query: String::new(),
             matches: Vec::new(),
             list_state: ListState::default(),
+            include_placeholders: false,
+        }
+    }
+
+    /// Returns a new picker that includes placeholder accounts in results.
+    /// Use this when selecting parent accounts (placeholders are valid parents).
+    pub fn with_placeholders() -> Self {
+        Self {
+            include_placeholders: true,
+            ..Self::new()
         }
     }
 
@@ -75,7 +88,7 @@ impl AccountPicker {
             .enumerate()
             .filter(|(_, a)| {
                 a.is_active
-                    && !a.is_placeholder
+                    && (self.include_placeholders || !a.is_placeholder)
                     && (q.is_empty()
                         || a.name.to_lowercase().contains(&q)
                         || a.number.to_lowercase().contains(&q))
@@ -425,5 +438,23 @@ mod tests {
         assert_eq!(picker.query(), "");
         assert!(picker.matches.is_empty());
         assert_eq!(picker.list_state.selected(), None);
+    }
+
+    #[test]
+    fn with_placeholders_includes_placeholder_accounts() {
+        let accs = accounts();
+        let mut picker = AccountPicker::with_placeholders();
+        picker.refresh(&accs);
+
+        // 8 total - 1 inactive = 7 matches (placeholders included)
+        assert_eq!(picker.matches.len(), 7);
+
+        // Verify placeholders are present
+        let has_placeholder = picker.matches.iter().any(|&idx| accs[idx].is_placeholder);
+        assert!(has_placeholder, "placeholders should be included");
+
+        // Verify inactive still excluded
+        let has_inactive = picker.matches.iter().any(|&idx| !accs[idx].is_active);
+        assert!(!has_inactive, "inactive should still be excluded");
     }
 }
