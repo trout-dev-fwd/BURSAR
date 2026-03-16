@@ -45,7 +45,7 @@ pub struct EntityContext {
 impl EntityContext {
     /// Creates an entity context from an open EntityDb, building all 9 tabs and
     /// performing an initial data load so tabs render content immediately.
-    pub fn new(db: EntityDb, name: String) -> Self {
+    pub fn new(db: EntityDb, name: String, report_output_dir: std::path::PathBuf) -> Self {
         let mut coa = ChartOfAccountsTab::new();
         coa.set_entity_name(&name);
         let mut je = JournalEntriesTab::new();
@@ -56,6 +56,8 @@ impl EntityContext {
         ap.set_entity_name(&name);
         let mut env = EnvelopesTab::new();
         env.set_entity_name(&name);
+        let mut reports = ReportsTab::new(report_output_dir);
+        reports.set_entity_name(&name);
         let mut tabs: Vec<Box<dyn Tab>> = vec![
             Box::new(coa),
             Box::new(GeneralLedgerTab::new()),
@@ -64,7 +66,7 @@ impl EntityContext {
             Box::new(ap),
             Box::new(env),
             Box::new(FixedAssetsTab::new()),
-            Box::new(ReportsTab),
+            Box::new(reports),
             Box::new(AuditLogTab),
         ];
         // Initial data load so tabs show content on first render.
@@ -569,7 +571,8 @@ fn wizard_handle_key(
                             form.error = Some(format!("Failed to save config: {e}"));
                             return WizardOutcome::Continue;
                         }
-                        let ctx = EntityContext::new(db, entity_name);
+                        let ctx =
+                            EntityContext::new(db, entity_name, config.report_output_dir.clone());
                         return WizardOutcome::Done(ctx);
                     }
                 }
@@ -704,7 +707,11 @@ pub fn run_entity_picker(config: &WorkspaceConfig) -> Result<EntityContext> {
     if config.entities.len() == 1 {
         let entity_cfg = &config.entities[0];
         let db = EntityDb::open(&entity_cfg.db_path)?;
-        return Ok(EntityContext::new(db, entity_cfg.name.clone()));
+        return Ok(EntityContext::new(
+            db,
+            entity_cfg.name.clone(),
+            config.report_output_dir.clone(),
+        ));
     }
 
     enable_raw_mode()?;
@@ -744,7 +751,11 @@ fn run_picker_loop<B: ratatui::backend::Backend>(
                 KeyCode::Enter => {
                     let entity_cfg = &config.entities[selected];
                     let db = EntityDb::open(&entity_cfg.db_path)?;
-                    return Ok(EntityContext::new(db, entity_cfg.name.clone()));
+                    return Ok(EntityContext::new(
+                        db,
+                        entity_cfg.name.clone(),
+                        config.report_output_dir.clone(),
+                    ));
                 }
                 KeyCode::Esc => {
                     anyhow::bail!("Entity selection cancelled");
