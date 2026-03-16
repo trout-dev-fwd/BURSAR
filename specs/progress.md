@@ -13,7 +13,7 @@
 - [x] Phase 3: GL, AR/AP, Fiscal Periods (completed 2026-03-15, review fixes applied 2026-03-16)
 - [x] Phase 4: Envelopes, Fixed Assets, Depreciation (completed 2026-03-16, review fixes applied 2026-03-16)
 - [x] Phase 5: Reports, Recurring, Startup (completed 2026-03-16, review fixes applied 2026-03-16)
-- [x] Phase 6: Inter-Entity Transactions & Polish (completed 2026-03-16)
+- [x] Phase 6: Inter-Entity Transactions & Polish (completed 2026-03-16, review fixes applied 2026-03-16)
 
 ## Current Phase Progress
 
@@ -363,6 +363,23 @@ Applied 3 fixes from the end-of-phase developer review:
 3. **Tilde expansion in config paths** — `load_config()` now expands leading `~` to `$HOME` in
    `report_output_dir` and all entity `db_path` values. TOML file retains `~` for portability;
    expansion is load-time only. Prevents creation of literal `~` directories.
+
+## Phase 6 Review Fixes (2026-03-16)
+
+Applied 4 must-fix issues from the end-of-phase Opus review:
+
+1. **Esc in recovery prompts no longer triggers destructive action** — `show_key_choice` in `startup.rs`
+   previously mapped Esc to `false` (the destructive option in BothDraft and ActiveDraftOtherPosted
+   prompts). Removed Esc handling so recovery prompts require an explicit key choice (P/D or C/R).
+2. **Write protocol rollback tests now exercise actual rollback paths** — `rollback_primary_draft_when_secondary_draft_fails`
+   closes secondary's period so step 5 (`create_draft`) fails after step 4 creates the primary draft,
+   verifying primary draft cleanup. `rollback_both_drafts_when_primary_post_fails` uses unbalanced
+   primary lines so step 6 (`post_journal_entry`) fails after both drafts exist, verifying both are
+   deleted. Previous tests failed before drafts were created, giving false confidence.
+3. **`classify_peer` uses `JournalEntryStatus::from_str`** — replaced raw string comparison with
+   enum parsing. Returns error for unexpected status values instead of silently classifying as Posted.
+4. **`resolve_delete_orphan` errors surfaced to user** — replaced three `let _ =` sites in `startup.rs`
+   with `if let Err(e)` + `show_acknowledge` so the user sees cleanup failures.
 
 ## Known Issues
 - None currently.

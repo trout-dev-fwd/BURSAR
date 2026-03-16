@@ -253,73 +253,28 @@ mod tests {
         assert_eq!(secondary_je.source_entity_name.as_deref(), Some("Entity A"));
     }
 
-    // ── Rollback: failure creating secondary draft ────────────────────────────
+    // ── Rollback: failure creating secondary draft (step 5) ─────────────────
 
-    /// Simulate step-5 failure: secondary DB has no fiscal period for the date,
-    /// so create_draft fails. Primary draft must be rolled back.
+    /// Step-5 failure: primary draft created (step 4), but secondary's period
+    /// is closed so `create_draft` rejects it. Primary draft must be rolled back.
     #[test]
-    fn rollback_when_secondary_draft_fails() {
-        let primary_db = make_entity_db_with_fy();
-        // Secondary has no fiscal year → get_period_for_date will fail.
-        let secondary_db = {
-            let conn = Connection::open_in_memory().expect("in-memory db");
-            initialize_schema(&conn).expect("schema");
-            seed_default_accounts(&conn).expect("seed accounts");
-            // Intentionally NO fiscal year created.
-            crate::db::entity_db_from_conn(conn)
-        };
-
-        let (a1, a2) = non_placeholder_accounts(&primary_db);
-
-        let input = InterEntityInput {
-            entry_date: NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
-            memo: None,
-            primary_lines: balanced_lines(a1, a2),
-            secondary_lines: vec![], // won't be reached
-        };
-
-        let result = execute(&primary_db, &secondary_db, "Entity A", "Entity B", &input);
-        assert!(result.is_err(), "should have failed");
-
-        // Primary DB should have no journal entries (draft was rolled back).
-        let primary_entries = primary_db
-            .journals()
-            .list(&crate::db::journal_repo::JournalFilter::default())
-            .expect("list");
-        assert!(
-            primary_entries.is_empty(),
-            "primary draft should have been deleted on rollback"
-        );
-    }
-
-    // ── Rollback: both Draft (failure posting primary) ────────────────────────
-
-    /// Force post_journal_entry for Entity A to fail by closing its fiscal period
-    /// after the draft is created but before posting.
-    ///
-    /// We achieve this by using a helper that inserts both drafts and then closes
-    /// the period, then calls only the post step — but since the protocol is atomic
-    /// we instead verify the rollback by using a date in a *closed* period and
-    /// ensuring both drafts are cleaned up.
-    ///
-    /// Strategy: create both DBs normally, but close period A after setup so that
-    /// post_journal_entry for A fails (period closed). Both drafts should be deleted.
-    #[test]
-    fn rollback_both_drafts_when_primary_post_fails() {
+    fn rollback_primary_draft_when_secondary_draft_fails() {
         let primary_db = make_entity_db_with_fy();
         let secondary_db = make_entity_db_with_fy();
 
         let (a1, a2) = non_placeholder_accounts(&primary_db);
         let (b1, b2) = non_placeholder_accounts(&secondary_db);
 
-        // Close the primary's Jan-2026 period so posting will fail.
-        let primary_period = primary_db
+        // Close the secondary's Jan-2026 period so create_draft (step 5) fails.
+        // get_period_for_date (step 3) still succeeds — the period exists, it's
+        // just closed. create_draft rejects closed periods.
+        let secondary_period = secondary_db
             .fiscal()
             .get_period_for_date(NaiveDate::from_ymd_opt(2026, 1, 15).unwrap())
             .expect("get period");
-        primary_db
+        secondary_db
             .fiscal()
-            .close_period(primary_period.id, "Entity A")
+            .close_period(secondary_period.id, "Entity B")
             .expect("close period");
 
         let input = InterEntityInput {
@@ -330,9 +285,72 @@ mod tests {
         };
 
         let result = execute(&primary_db, &secondary_db, "Entity A", "Entity B", &input);
-        assert!(result.is_err(), "should have failed");
+        assert!(result.is_err(), "should have failed at step 5");
 
-        // Both DBs should be clean (no remaining entries).
+        // Primary draft from step 4 should have been rolled back.
+        let primary_entries = primary_db
+            .journals()
+            .list(&crate::db::journal_repo::JournalFilter::default())
+            .expect("list");
+        assert!(
+            primary_entries.is_empty(),
+            "primary draft should have been deleted on rollback"
+        );
+
+        // Secondary should also be clean (draft was never created).
+        let secondary_entries = secondary_db
+            .journals()
+            .list(&crate::db::journal_repo::JournalFilter::default())
+            .expect("list");
+        assert!(
+            secondary_entries.is_empty(),
+            "secondary should have no entries"
+        );
+    }
+
+    // ── Rollback: both Draft (failure posting primary, step 6) ───────────────
+
+    /// Step-6 failure: both drafts created (steps 4-5), but primary lines are
+    /// unbalanced so `post_journal_entry` rejects the primary. Both drafts must
+    /// be deleted.
+    #[test]
+    fn rollback_both_drafts_when_primary_post_fails() {
+        let primary_db = make_entity_db_with_fy();
+        let secondary_db = make_entity_db_with_fy();
+
+        let (a1, _a2) = non_placeholder_accounts(&primary_db);
+        let (b1, b2) = non_placeholder_accounts(&secondary_db);
+
+        // Primary lines are UNBALANCED: create_draft accepts them, but
+        // post_journal_entry rejects them (debits != credits).
+        let unbalanced_primary_lines = vec![
+            NewJournalEntryLine {
+                account_id: a1,
+                debit_amount: Money(10_000_000_000),
+                credit_amount: Money(0),
+                line_memo: None,
+                sort_order: 0,
+            },
+            NewJournalEntryLine {
+                account_id: a1,
+                debit_amount: Money(5_000_000_000), // doesn't balance
+                credit_amount: Money(0),
+                line_memo: None,
+                sort_order: 1,
+            },
+        ];
+
+        let input = InterEntityInput {
+            entry_date: NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+            memo: None,
+            primary_lines: unbalanced_primary_lines,
+            secondary_lines: balanced_lines(b1, b2),
+        };
+
+        let result = execute(&primary_db, &secondary_db, "Entity A", "Entity B", &input);
+        assert!(result.is_err(), "should have failed at step 6");
+
+        // Both drafts from steps 4-5 should have been deleted.
         let primary_entries = primary_db
             .journals()
             .list(&crate::db::journal_repo::JournalFilter::default())

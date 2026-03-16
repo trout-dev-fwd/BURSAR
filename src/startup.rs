@@ -208,8 +208,10 @@ fn run_inter_entity_recovery<B: ratatui::backend::Backend>(
                 "Orphaned Inter-Entity Draft",
                 &msg,
                 &[('d', true), ('\n', false)],
-            )? {
-                let _ = resolve_delete_orphan(active_db, orphan.id);
+            )? && let Err(e) = resolve_delete_orphan(active_db, orphan.id)
+            {
+                let err_msg = format!("Failed to delete orphan: {e}\n\nPress Enter to continue.");
+                show_acknowledge(terminal, active_name, "Recovery Error", &err_msg)?;
             }
             continue;
         };
@@ -233,8 +235,11 @@ fn run_inter_entity_recovery<B: ratatui::backend::Backend>(
                     "Orphaned Inter-Entity Draft",
                     &msg,
                     &[('d', true), ('\n', false)],
-                )? {
-                    let _ = resolve_delete_orphan(active_db, orphan.id);
+                )? && let Err(e) = resolve_delete_orphan(active_db, orphan.id)
+                {
+                    let err_msg =
+                        format!("Failed to delete orphan: {e}\n\nPress Enter to continue.");
+                    show_acknowledge(terminal, active_name, "Recovery Error", &err_msg)?;
                 }
                 continue;
             }
@@ -323,8 +328,11 @@ fn run_inter_entity_recovery<B: ratatui::backend::Backend>(
                     "Recovery: Orphan Not Found in Peer",
                     &msg,
                     &[('d', true), ('\n', false)],
-                )? {
-                    let _ = resolve_delete_orphan(active_db, orphan.id);
+                )? && let Err(e) = resolve_delete_orphan(active_db, orphan.id)
+                {
+                    let err_msg =
+                        format!("Failed to delete orphan: {e}\n\nPress Enter to continue.");
+                    show_acknowledge(terminal, active_name, "Recovery Error", &err_msg)?;
                 }
             }
         }
@@ -393,7 +401,8 @@ fn show_key_choice<B: ratatui::backend::Backend>(
             let ch = match key.code {
                 KeyCode::Char(c) => c.to_ascii_lowercase(),
                 KeyCode::Enter => '\n',
-                KeyCode::Esc => return Ok(false),
+                // Esc is deliberately NOT handled here — recovery prompts
+                // require an explicit choice to prevent accidental data loss.
                 _ => continue,
             };
             for (choice_char, is_positive) in choices {

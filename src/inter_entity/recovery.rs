@@ -9,6 +9,8 @@
 //!   **roll back** (reverse other's posted entry + delete active draft).
 //! - `PeerNotFound` — the other entity has no entry for this UUID; offer to delete.
 
+use std::str::FromStr;
+
 use anyhow::Result;
 use chrono::NaiveDate;
 use rusqlite::params;
@@ -16,7 +18,7 @@ use rusqlite::params;
 use crate::db::EntityDb;
 use crate::db::journal_repo::JournalEntry;
 use crate::services::journal::{post_journal_entry, reverse_journal_entry};
-use crate::types::JournalEntryId;
+use crate::types::{JournalEntryId, JournalEntryStatus};
 
 // ── Data types ────────────────────────────────────────────────────────────────
 
@@ -67,12 +69,13 @@ pub fn classify_peer(other_db: &EntityDb, uuid: &str) -> Result<PeerStatus> {
     );
 
     match result {
-        Ok((id, status)) => {
+        Ok((id, status_str)) => {
             let je_id = JournalEntryId::from(id);
-            if status == "Draft" {
-                Ok(PeerStatus::Draft(je_id))
-            } else {
-                Ok(PeerStatus::Posted(je_id))
+            let status =
+                JournalEntryStatus::from_str(&status_str).map_err(|e| anyhow::anyhow!("{e}"))?;
+            match status {
+                JournalEntryStatus::Draft => Ok(PeerStatus::Draft(je_id)),
+                JournalEntryStatus::Posted => Ok(PeerStatus::Posted(je_id)),
             }
         }
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(PeerStatus::NotFound),
