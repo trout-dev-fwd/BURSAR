@@ -83,12 +83,21 @@ struct ConfirmToggleState {
     confirm: Confirmation,
 }
 
+/// State for the delete confirmation dialog.
+struct ConfirmDeleteState {
+    id: AccountId,
+    number: String,
+    name: String,
+    confirm: Confirmation,
+}
+
 enum CoaModal {
     AddForm(AddFormState),
     /// The AccountPicker is open as a sub-overlay of the Add form.
     AddFormPickingParent(AddFormState, AccountPicker),
     EditForm(EditFormState),
     ConfirmToggle(ConfirmToggleState),
+    ConfirmDelete(ConfirmDeleteState),
 }
 
 // ── Tab struct ────────────────────────────────────────────────────────────────
@@ -306,6 +315,24 @@ impl ChartOfAccountsTab {
             number: acc.number,
             focused_field: 0,
             error: None,
+        }));
+    }
+
+    fn open_confirm_delete(&mut self) {
+        let acc = match self.selected_account() {
+            Some(a) => a.clone(),
+            None => return,
+        };
+        let msg = format!(
+            "Delete account {} {}? This cannot be undone.",
+            acc.number, acc.name
+        );
+        self.search_active = false;
+        self.modal = Some(CoaModal::ConfirmDelete(ConfirmDeleteState {
+            id: acc.id,
+            number: acc.number.clone(),
+            name: acc.name.clone(),
+            confirm: Confirmation::new(msg),
         }));
     }
 
@@ -692,6 +719,47 @@ impl ChartOfAccountsTab {
         }
     }
 
+    fn handle_confirm_delete_key(&mut self, key: KeyEvent, db: &EntityDb) -> TabAction {
+        let state = match &mut self.modal {
+            Some(CoaModal::ConfirmDelete(s)) => s,
+            _ => return TabAction::None,
+        };
+
+        match state.confirm.handle_key(key) {
+            ConfirmAction::Confirmed => {
+                let id = state.id;
+                let number = state.number.clone();
+                let name = state.name.clone();
+
+                match db.accounts().delete(id) {
+                    Err(e) => {
+                        self.modal = None;
+                        TabAction::ShowMessage(format!("{e}"))
+                    }
+                    Ok(()) => {
+                        let desc = format!("Deleted account {number} {name}");
+                        if let Err(e) = db.audit().append(
+                            crate::types::AuditAction::AccountDeleted,
+                            &self.entity_name,
+                            Some("Account"),
+                            Some(i64::from(id)),
+                            &desc,
+                        ) {
+                            tracing::error!("Failed to write audit log: {e}");
+                        }
+                        self.modal = None;
+                        TabAction::RefreshData
+                    }
+                }
+            }
+            ConfirmAction::Cancelled => {
+                self.modal = None;
+                TabAction::None
+            }
+            ConfirmAction::Pending => TabAction::None,
+        }
+    }
+
     // ── Render helpers ────────────────────────────────────────────────────────
 
     fn render_table(&self, frame: &mut Frame, area: Rect) {
@@ -847,6 +915,9 @@ impl Tab for ChartOfAccountsTab {
             Some(CoaModal::ConfirmToggle(_)) => {
                 return self.handle_confirm_toggle_key(key, db);
             }
+            Some(CoaModal::ConfirmDelete(_)) => {
+                return self.handle_confirm_delete_key(key, db);
+            }
             None => {}
         }
 
@@ -906,6 +977,7 @@ impl Tab for ChartOfAccountsTab {
                 KeyCode::Char('a') => self.open_add_form(),
                 KeyCode::Char('e') => self.open_edit_form(),
                 KeyCode::Char('d') => self.open_confirm_toggle(),
+                KeyCode::Char('x') => self.open_confirm_delete(),
                 _ => {}
             }
         }
@@ -949,7 +1021,7 @@ impl Tab for ChartOfAccountsTab {
             frame.render_widget(
                 Paragraph::new(Line::from(vec![
                     Span::styled(
-                        " ↑↓/jk: navigate  Enter: expand/GL  /: search  a: add  e: edit  d: toggle active",
+                        " ↑↓/jk: navigate  Enter: expand/GL  /: search  a: add  e: edit  d: toggle active  x: delete",
                         Style::default().fg(Color::DarkGray),
                     ),
                     Span::styled(
@@ -970,6 +1042,7 @@ impl Tab for ChartOfAccountsTab {
                 }
                 CoaModal::EditForm(f) => self.render_edit_form(frame, area, f),
                 CoaModal::ConfirmToggle(s) => self.render_confirm_toggle(frame, area, s),
+                CoaModal::ConfirmDelete(s) => s.confirm.render(frame, area),
             }
         }
     }

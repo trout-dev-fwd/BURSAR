@@ -168,6 +168,106 @@ impl<'conn> AccountRepo<'conn> {
         Ok(())
     }
 
+    /// Permanently deletes an unused account. Returns an error if the account has any
+    /// journal entry lines, AR/AP items, child accounts, envelope allocations, or
+    /// fixed asset details. Accounts that have been used should be deactivated instead.
+    pub fn delete(&self, id: AccountId) -> Result<()> {
+        let id_val = i64::from(id);
+
+        // Guard: journal entry lines
+        let je_count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM journal_entry_lines WHERE account_id = ?1",
+            params![id_val],
+            |row| row.get(0),
+        )?;
+        if je_count > 0 {
+            bail!(
+                "Cannot delete: account has {} journal entr{}",
+                je_count,
+                if je_count == 1 { "y" } else { "ies" }
+            );
+        }
+
+        // Guard: AR items
+        let ar_count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM ar_items WHERE account_id = ?1",
+            params![id_val],
+            |row| row.get(0),
+        )?;
+        if ar_count > 0 {
+            bail!(
+                "Cannot delete: account has {} AR item{}",
+                ar_count,
+                if ar_count == 1 { "" } else { "s" }
+            );
+        }
+
+        // Guard: AP items
+        let ap_count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM ap_items WHERE account_id = ?1",
+            params![id_val],
+            |row| row.get(0),
+        )?;
+        if ap_count > 0 {
+            bail!(
+                "Cannot delete: account has {} AP item{}",
+                ap_count,
+                if ap_count == 1 { "" } else { "s" }
+            );
+        }
+
+        // Guard: child accounts
+        let child_count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM accounts WHERE parent_id = ?1",
+            params![id_val],
+            |row| row.get(0),
+        )?;
+        if child_count > 0 {
+            bail!(
+                "Cannot delete: account has {} child account{}",
+                child_count,
+                if child_count == 1 { "" } else { "s" }
+            );
+        }
+
+        // Guard: envelope allocations
+        let env_count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM envelope_allocations WHERE account_id = ?1",
+            params![id_val],
+            |row| row.get(0),
+        )?;
+        if env_count > 0 {
+            bail!(
+                "Cannot delete: account has {} envelope allocation{}",
+                env_count,
+                if env_count == 1 { "" } else { "s" }
+            );
+        }
+
+        // Guard: fixed asset details
+        let fa_count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM fixed_asset_details WHERE account_id = ?1",
+            params![id_val],
+            |row| row.get(0),
+        )?;
+        if fa_count > 0 {
+            bail!(
+                "Cannot delete: account has {} fixed asset detail{}",
+                fa_count,
+                if fa_count == 1 { "" } else { "s" }
+            );
+        }
+
+        let rows_affected = self
+            .conn
+            .execute("DELETE FROM accounts WHERE id = ?1", params![id_val])?;
+        if rows_affected == 0 {
+            bail!("Account not found: {}", id_val);
+        }
+
+        Ok(())
+    }
+
     /// Returns direct children of `parent_id` ordered by account number.
     pub fn get_children(&self, parent_id: AccountId) -> Result<Vec<Account>> {
         let mut stmt = self.conn.prepare(
@@ -609,6 +709,125 @@ mod tests {
         assert!(
             result.is_err(),
             "Non-existent parent should return an error"
+        );
+    }
+
+    // ── delete ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn delete_unused_account_succeeds() {
+        let conn = db_empty();
+        let repo = AccountRepo::new(&conn);
+
+        let id = repo
+            .create(&NewAccount {
+                number: "9999".to_string(),
+                name: "Temp".to_string(),
+                account_type: AccountType::Asset,
+                parent_id: None,
+                is_contra: false,
+                is_placeholder: false,
+            })
+            .expect("create");
+
+        repo.delete(id)
+            .expect("delete should succeed for unused account");
+        assert!(
+            repo.get_by_id(id).is_err(),
+            "account should no longer exist"
+        );
+    }
+
+    #[test]
+    fn delete_account_with_children_returns_error() {
+        let conn = db_empty();
+        let repo = AccountRepo::new(&conn);
+
+        let parent_id = repo
+            .create(&NewAccount {
+                number: "1000".to_string(),
+                name: "Parent".to_string(),
+                account_type: AccountType::Asset,
+                parent_id: None,
+                is_contra: false,
+                is_placeholder: true,
+            })
+            .expect("create parent");
+
+        repo.create(&NewAccount {
+            number: "1010".to_string(),
+            name: "Child".to_string(),
+            account_type: AccountType::Asset,
+            parent_id: Some(parent_id),
+            is_contra: false,
+            is_placeholder: false,
+        })
+        .expect("create child");
+
+        let err = repo.delete(parent_id).unwrap_err();
+        assert!(
+            err.to_string().contains("child account"),
+            "error should mention child accounts, got: {err}"
+        );
+    }
+
+    #[test]
+    fn delete_account_with_journal_entries_returns_error() {
+        use crate::db::{entity_db_from_conn, fiscal_repo::FiscalRepo, journal_repo::*};
+        use chrono::NaiveDate;
+
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        crate::db::schema::initialize_schema(&conn).expect("schema");
+        crate::db::schema::seed_default_accounts(&conn).expect("seed");
+        FiscalRepo::new(&conn)
+            .create_fiscal_year(1, 2026)
+            .expect("fiscal year");
+        let db = entity_db_from_conn(conn);
+
+        let accounts: Vec<_> = db
+            .accounts()
+            .list_all()
+            .unwrap()
+            .into_iter()
+            .filter(|a| !a.is_placeholder && a.is_active)
+            .collect();
+        let acct_a = &accounts[0];
+        let acct_b = &accounts[1];
+
+        let period = db
+            .fiscal()
+            .get_period_for_date(NaiveDate::from_ymd_opt(2026, 1, 15).unwrap())
+            .unwrap();
+
+        db.journals()
+            .create_draft(&NewJournalEntry {
+                entry_date: NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                memo: None,
+                fiscal_period_id: period.id,
+                reversal_of_je_id: None,
+                lines: vec![
+                    NewJournalEntryLine {
+                        account_id: acct_a.id,
+                        debit_amount: Money(100_000_000),
+                        credit_amount: Money(0),
+                        line_memo: None,
+                        sort_order: 0,
+                    },
+                    NewJournalEntryLine {
+                        account_id: acct_b.id,
+                        debit_amount: Money(0),
+                        credit_amount: Money(100_000_000),
+                        line_memo: None,
+                        sort_order: 1,
+                    },
+                ],
+            })
+            .unwrap();
+
+        let err = db.accounts().delete(acct_a.id).unwrap_err();
+        assert!(
+            err.to_string().contains("journal entr"),
+            "error should mention journal entries, got: {err}"
         );
     }
 
