@@ -13,6 +13,7 @@ use crate::db::{
     EntityDb,
     account_repo::Account,
     journal_repo::{JournalEntry, JournalEntryLine, JournalFilter, NewJournalEntry},
+    recurring_repo::RecurringTemplate,
 };
 use crate::services::journal::{post_journal_entry, reverse_journal_entry};
 use crate::tabs::{RecordId, Tab, TabAction, TabId};
@@ -72,6 +73,34 @@ struct DetailState {
     focused_line: usize,
 }
 
+// ── Recurring sub-view ────────────────────────────────────────────────────────
+
+struct RecurringSubView {
+    templates: Vec<RecurringTemplate>,
+    /// Maps source_je_id → (je_number, memo) for display.
+    je_info: HashMap<JournalEntryId, (String, Option<String>)>,
+    selected: usize,
+}
+
+impl RecurringSubView {
+    fn selected_template(&self) -> Option<&RecurringTemplate> {
+        self.templates.get(self.selected)
+    }
+
+    fn scroll_up(&mut self) {
+        if self.selected > 0 {
+            self.selected -= 1;
+        }
+    }
+
+    fn scroll_down(&mut self) {
+        let max = self.templates.len().saturating_sub(1);
+        if self.selected < max {
+            self.selected += 1;
+        }
+    }
+}
+
 // ── Modal state machine ───────────────────────────────────────────────────────
 
 enum Modal {
@@ -122,6 +151,8 @@ pub struct JournalEntriesTab {
     /// Envelope available balance per account (Earmarked − GL Balance for current FY).
     /// Accounts without allocations are absent from the map.
     envelope_avail: HashMap<AccountId, Money>,
+    /// Recurring templates sub-view. When `Some`, the sub-view is active.
+    recurring: Option<RecurringSubView>,
 }
 
 impl Default for JournalEntriesTab {
@@ -135,6 +166,7 @@ impl Default for JournalEntriesTab {
             modal: None,
             entity_name: String::new(),
             envelope_avail: HashMap::new(),
+            recurring: None,
         }
     }
 }
@@ -604,11 +636,215 @@ impl JournalEntriesTab {
         }
     }
 
+    // ── Recurring sub-view ────────────────────────────────────────────────────
+
+    /// Loads (or reloads) the recurring templates sub-view, preserving the
+    /// current selection when called for a reload.
+    fn open_recurring_view(&mut self, db: &EntityDb) {
+        let templates = db.recurring().list_all().unwrap_or_else(|e| {
+            tracing::error!("Failed to load recurring templates: {e}");
+            Vec::new()
+        });
+        let all_jes = db
+            .journals()
+            .list(&JournalFilter {
+                status: None,
+                from_date: None,
+                to_date: None,
+            })
+            .unwrap_or_else(|e| {
+                tracing::error!("Failed to load JEs for recurring view: {e}");
+                Vec::new()
+            });
+        let je_info: HashMap<JournalEntryId, (String, Option<String>)> = all_jes
+            .into_iter()
+            .map(|je| (je.id, (je.je_number, je.memo)))
+            .collect();
+        // Preserve selection across reloads, clamping to valid range.
+        let selected = self
+            .recurring
+            .as_ref()
+            .map(|s| s.selected.min(templates.len().saturating_sub(1)))
+            .unwrap_or(0);
+        self.recurring = Some(RecurringSubView {
+            templates,
+            je_info,
+            selected,
+        });
+    }
+
+    fn handle_recurring_key(&mut self, key: KeyEvent, db: &EntityDb) -> TabAction {
+        match key.code {
+            KeyCode::Esc => {
+                self.recurring = None;
+            }
+            KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
+                if let Some(sub) = &mut self.recurring {
+                    sub.scroll_up();
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
+                if let Some(sub) = &mut self.recurring {
+                    sub.scroll_down();
+                }
+            }
+            // Enter: navigate to the source JE in the main list.
+            KeyCode::Enter => {
+                let je_id = self
+                    .recurring
+                    .as_ref()
+                    .and_then(|s| s.selected_template())
+                    .map(|t| t.source_je_id);
+                if let Some(id) = je_id {
+                    self.recurring = None;
+                    self.status_filter = StatusFilter::All;
+                    self.close_detail();
+                    self.refresh(db);
+                    self.scroll_to(id);
+                }
+            }
+            // [g] generate all entries due today or earlier.
+            KeyCode::Char('g') | KeyCode::Char('G') => {
+                let today = chrono::Local::now().date_naive();
+                match db.recurring().generate_entries(today) {
+                    Ok(ids) if ids.is_empty() => {
+                        return TabAction::ShowMessage(
+                            "No recurring entries are due today or earlier.".to_string(),
+                        );
+                    }
+                    Ok(ids) => {
+                        let n = ids.len();
+                        // Reload the sub-view so next_due_dates reflect the advances.
+                        self.open_recurring_view(db);
+                        return TabAction::ShowMessage(format!(
+                            "Generated {n} draft entr{}. Review in the main list.",
+                            if n == 1 { "y" } else { "ies" }
+                        ));
+                    }
+                    Err(e) => {
+                        return TabAction::ShowMessage(format!("Generation failed: {e}"));
+                    }
+                }
+            }
+            // [d] toggle active/inactive on selected template.
+            KeyCode::Char('d') | KeyCode::Char('D') => {
+                let template_info = self
+                    .recurring
+                    .as_ref()
+                    .and_then(|s| s.selected_template())
+                    .map(|t| (t.id, t.is_active));
+                if let Some((id, is_active)) = template_info {
+                    let result = if is_active {
+                        db.recurring().deactivate(id)
+                    } else {
+                        db.recurring().activate(id)
+                    };
+                    match result {
+                        Ok(()) => {
+                            self.open_recurring_view(db);
+                            let verb = if is_active {
+                                "deactivated"
+                            } else {
+                                "activated"
+                            };
+                            return TabAction::ShowMessage(format!("Template {verb}."));
+                        }
+                        Err(e) => {
+                            return TabAction::ShowMessage(format!("Toggle failed: {e}"));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        TabAction::None
+    }
+
     // ── Render helpers ────────────────────────────────────────────────────────
+
+    fn render_recurring_view(&self, frame: &mut Frame, area: Rect) {
+        let Some(sub) = &self.recurring else {
+            return;
+        };
+        let today = chrono::Local::now().date_naive();
+
+        let title = " Recurring Templates  ↑↓: scroll  Enter: source JE  [g] generate due  [d] toggle active  Esc: back ";
+
+        let block = Block::default().title(title).borders(Borders::ALL);
+
+        if sub.templates.is_empty() {
+            frame.render_widget(
+                Paragraph::new(
+                    "  No recurring templates configured. Use [t] on a Posted JE to create one.",
+                )
+                .block(block),
+                area,
+            );
+            return;
+        }
+
+        let header = Row::new(vec![
+            Cell::from("JE #").style(Style::default().add_modifier(Modifier::BOLD)),
+            Cell::from("Memo").style(Style::default().add_modifier(Modifier::BOLD)),
+            Cell::from("Frequency").style(Style::default().add_modifier(Modifier::BOLD)),
+            Cell::from("Next Due").style(Style::default().add_modifier(Modifier::BOLD)),
+            Cell::from("Status").style(Style::default().add_modifier(Modifier::BOLD)),
+        ]);
+
+        let rows: Vec<Row> = sub
+            .templates
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                let (je_number, memo) = sub
+                    .je_info
+                    .get(&t.source_je_id)
+                    .map(|(n, m)| (n.as_str(), m.as_deref().unwrap_or("")))
+                    .unwrap_or(("?", ""));
+                let status_str = if t.is_active { "Active" } else { "Inactive" };
+
+                // Base color encodes urgency / state.
+                let base_style = if !t.is_active {
+                    Style::default().fg(Color::DarkGray)
+                } else if t.next_due_date < today {
+                    Style::default().fg(Color::Red)
+                } else if t.next_due_date == today {
+                    Style::default().fg(Color::Yellow)
+                } else {
+                    Style::default()
+                };
+                let row_style = if i == sub.selected {
+                    base_style.add_modifier(Modifier::REVERSED)
+                } else {
+                    base_style
+                };
+
+                Row::new(vec![
+                    Cell::from(je_number.to_string()),
+                    Cell::from(memo.to_string()),
+                    Cell::from(t.frequency.to_string()),
+                    Cell::from(t.next_due_date.to_string()),
+                    Cell::from(status_str),
+                ])
+                .style(row_style)
+            })
+            .collect();
+
+        let widths = [
+            Constraint::Length(8),
+            Constraint::Min(20),
+            Constraint::Length(12),
+            Constraint::Length(12),
+            Constraint::Length(10),
+        ];
+
+        let table = Table::new(rows, widths).header(header).block(block);
+        frame.render_widget(table, area);
+    }
 
     fn render_list(&self, frame: &mut Frame, area: Rect) {
         let title = format!(
-            " Journal Entries  [n] new  [p] post  [r] reverse  [f] filter: {}  ↑↓: scroll  Enter: detail ",
+            " Journal Entries  [n] new  [p] post  [r] reverse  [R] recurring  [f] filter: {}  ↑↓: scroll  Enter: detail ",
             self.status_filter.label()
         );
 
@@ -835,6 +1071,7 @@ impl Tab for JournalEntriesTab {
             ("n", "New journal entry"),
             ("p", "Post selected entry"),
             ("r", "Reverse posted entry"),
+            ("R", "Recurring templates sub-view"),
             ("i", "New inter-entity entry"),
             ("g", "Go to General Ledger"),
             ("f", "Cycle fiscal period filter"),
@@ -843,6 +1080,11 @@ impl Tab for JournalEntriesTab {
     }
 
     fn handle_key(&mut self, key: KeyEvent, db: &EntityDb) -> TabAction {
+        // When the recurring sub-view is open, route all keys to it.
+        if self.recurring.is_some() {
+            return self.handle_recurring_key(key, db);
+        }
+
         // Route all keys to the active modal first.
         if self.modal.is_some() {
             return match &self.modal {
@@ -921,7 +1163,8 @@ impl Tab for JournalEntriesTab {
                     }
                 }
             }
-            KeyCode::Char('r') | KeyCode::Char('R') => {
+            // [r] lowercase: open reverse date modal.
+            KeyCode::Char('r') => {
                 if let Some(entry) = self.selected_entry() {
                     if entry.status == JournalEntryStatus::Posted && !entry.is_reversed {
                         let je_id = entry.id;
@@ -943,6 +1186,10 @@ impl Tab for JournalEntriesTab {
                         );
                     }
                 }
+            }
+            // [R] uppercase: open recurring templates sub-view.
+            KeyCode::Char('R') => {
+                self.open_recurring_view(db);
             }
             // [t] create recurring template from a posted JE.
             KeyCode::Char('t') | KeyCode::Char('T') => {
@@ -974,6 +1221,12 @@ impl Tab for JournalEntriesTab {
     }
 
     fn render(&self, frame: &mut Frame, area: Rect) {
+        // Recurring sub-view takes over the full area when open.
+        if self.recurring.is_some() {
+            self.render_recurring_view(frame, area);
+            return;
+        }
+
         if self.detail.is_some() {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
@@ -1120,6 +1373,34 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn r_uppercase_opens_recurring_subview() {
+        let db = make_db();
+        let mut tab = JournalEntriesTab::new();
+        tab.refresh(&db);
+
+        let open_key = KeyEvent::new(KeyCode::Char('R'), KeyModifiers::SHIFT);
+        tab.handle_key(open_key, &db);
+
+        assert!(tab.recurring.is_some());
+    }
+
+    #[test]
+    fn esc_closes_recurring_subview() {
+        let db = make_db();
+        let mut tab = JournalEntriesTab::new();
+        tab.refresh(&db);
+
+        // Open the sub-view with 'R'.
+        let open_key = KeyEvent::new(KeyCode::Char('R'), KeyModifiers::SHIFT);
+        tab.handle_key(open_key, &db);
+        assert!(tab.recurring.is_some());
+
+        // Esc should close it.
+        tab.handle_key(key(KeyCode::Esc), &db);
+        assert!(tab.recurring.is_none());
     }
 
     #[test]

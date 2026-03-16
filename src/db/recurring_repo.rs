@@ -143,11 +143,66 @@ impl<'conn> RecurringRepo<'conn> {
         Ok(generated)
     }
 
+    /// Returns all templates (active and inactive) ordered by next_due_date ascending.
+    pub fn list_all(&self) -> Result<Vec<RecurringTemplate>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, source_je_id, frequency, next_due_date, is_active, last_generated_date
+             FROM recurring_entry_templates
+             ORDER BY next_due_date ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, bool>(4)?,
+                row.get::<_, Option<String>>(5)?,
+            ))
+        })?;
+        rows.map(|r| {
+            let (id, source_je_id, frequency_str, next_due_str, is_active, last_gen_str) = r?;
+            let frequency = frequency_str
+                .parse::<EntryFrequency>()
+                .map_err(|e| rusqlite::Error::InvalidColumnName(e.to_string()))?;
+            let next_due_date = NaiveDate::parse_from_str(&next_due_str, "%Y-%m-%d")
+                .map_err(|e| rusqlite::Error::InvalidColumnName(e.to_string()))?;
+            let last_generated_date = last_gen_str
+                .map(|s| {
+                    NaiveDate::parse_from_str(&s, "%Y-%m-%d")
+                        .map_err(|e| rusqlite::Error::InvalidColumnName(e.to_string()))
+                })
+                .transpose()?;
+            Ok(RecurringTemplate {
+                id: RecurringTemplateId::from(id),
+                source_je_id: JournalEntryId::from(source_je_id),
+                frequency,
+                next_due_date,
+                is_active,
+                last_generated_date,
+            })
+        })
+        .collect()
+    }
+
     /// Deactivates a recurring template so it no longer generates entries.
     pub fn deactivate(&self, id: RecurringTemplateId) -> Result<()> {
         let now = now_str();
         let changed = self.conn.execute(
             "UPDATE recurring_entry_templates SET is_active = 0, updated_at = ?1 WHERE id = ?2",
+            params![now, i64::from(id)],
+        )?;
+        if changed == 0 {
+            bail!("Recurring template {id:?} not found");
+        }
+        Ok(())
+    }
+
+    /// Reactivates a previously deactivated template.
+    pub fn activate(&self, id: RecurringTemplateId) -> Result<()> {
+        let now = now_str();
+        let changed = self.conn.execute(
+            "UPDATE recurring_entry_templates SET is_active = 1, updated_at = ?1 WHERE id = ?2",
             params![now, i64::from(id)],
         )?;
         if changed == 0 {
@@ -542,6 +597,68 @@ mod tests {
             .generate_entries(NaiveDate::from_ymd_opt(2026, 1, 31).unwrap())
             .expect("generate");
         assert!(generated.is_empty());
+    }
+
+    #[test]
+    fn list_all_includes_inactive() {
+        let (db, period_id) = make_db();
+        let cash = create_account(&db, "1110", "Cash", AccountType::Asset);
+        let revenue = create_account(&db, "4100", "Revenue", AccountType::Revenue);
+        let je_id = post_je(
+            &db,
+            period_id,
+            NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+            cash,
+            revenue,
+            Money::from_dollars(100.0),
+        );
+        let template_id = db
+            .recurring()
+            .create_template(
+                je_id,
+                EntryFrequency::Monthly,
+                NaiveDate::from_ymd_opt(2026, 2, 1).unwrap(),
+            )
+            .expect("create");
+        db.recurring().deactivate(template_id).expect("deactivate");
+
+        // list_upcoming omits inactive entries.
+        let upcoming = db.recurring().list_upcoming().expect("list");
+        assert!(upcoming.is_empty());
+
+        // list_all returns the inactive template.
+        let all = db.recurring().list_all().expect("list_all");
+        assert_eq!(all.len(), 1);
+        assert!(!all[0].is_active);
+    }
+
+    #[test]
+    fn activate_reactivates_template() {
+        let (db, period_id) = make_db();
+        let cash = create_account(&db, "1110", "Cash", AccountType::Asset);
+        let revenue = create_account(&db, "4100", "Revenue", AccountType::Revenue);
+        let je_id = post_je(
+            &db,
+            period_id,
+            NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+            cash,
+            revenue,
+            Money::from_dollars(100.0),
+        );
+        let template_id = db
+            .recurring()
+            .create_template(
+                je_id,
+                EntryFrequency::Monthly,
+                NaiveDate::from_ymd_opt(2026, 2, 1).unwrap(),
+            )
+            .expect("create");
+        db.recurring().deactivate(template_id).expect("deactivate");
+        db.recurring().activate(template_id).expect("activate");
+
+        let upcoming = db.recurring().list_upcoming().expect("list");
+        assert_eq!(upcoming.len(), 1);
+        assert!(upcoming[0].is_active);
     }
 
     #[test]
