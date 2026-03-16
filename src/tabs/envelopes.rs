@@ -611,9 +611,9 @@ impl EnvelopesTab {
             .collect();
 
         let widths = [
-            Constraint::Length(8),
-            Constraint::Min(30),
-            Constraint::Length(12),
+            Constraint::Length(8),  // Number
+            Constraint::Min(10),    // Name (gets remaining space)
+            Constraint::Length(12), // Allocation %
         ];
 
         let table = Table::new(rows, widths)
@@ -662,11 +662,11 @@ impl EnvelopesTab {
             .collect();
 
         let widths = [
-            Constraint::Min(28),
-            Constraint::Length(12),
-            Constraint::Length(14),
-            Constraint::Length(14),
-            Constraint::Length(14),
+            Constraint::Min(10),    // Name (gets remaining space)
+            Constraint::Length(12), // Allocation %
+            Constraint::Length(14), // GL Balance
+            Constraint::Length(14), // Earmarked
+            Constraint::Length(14), // Available
         ];
 
         let table = Table::new(rows, widths)

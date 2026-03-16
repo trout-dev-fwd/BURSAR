@@ -129,12 +129,13 @@ impl App {
         loop {
             // 1. Render.
             terminal.draw(|frame| {
+                let tab_bar_height = self.tab_bar_height(frame.area().width);
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([
-                        Constraint::Length(3), // tab bar
-                        Constraint::Min(0),    // content
-                        Constraint::Length(1), // status bar
+                        Constraint::Length(tab_bar_height), // tab bar
+                        Constraint::Min(0),                 // content
+                        Constraint::Length(1),              // status bar
                     ])
                     .split(frame.area());
 
@@ -171,30 +172,116 @@ impl App {
         Ok(())
     }
 
+    /// Returns the short label for a tab, abbreviating if `abbreviate` is true.
+    fn tab_label(title: &str, abbreviate: bool) -> &str {
+        if !abbreviate {
+            return title;
+        }
+        match title {
+            "Chart of Accounts" => "CoA",
+            "General Ledger" => "GL",
+            "Journal Entries" => "Journal",
+            "Accounts Receivable" => "AR",
+            "Accounts Payable" => "AP",
+            "Fixed Assets" => "Assets",
+            other => other,
+        }
+    }
+
+    /// Compute how many rows the tab bar needs (2 border rows + content rows).
+    fn tab_bar_height(&self, width: u16) -> u16 {
+        let inner_width = width.saturating_sub(2) as usize; // borders
+        let labels: Vec<&str> = self.entity.tabs.iter().map(|t| t.title()).collect();
+
+        // Try full names first, then abbreviated.
+        for abbreviate in [false, true] {
+            let total: usize = labels
+                .iter()
+                .map(|t| Self::tab_label(t, abbreviate).len() + 3) // " label " + separator
+                .sum();
+            if total <= inner_width {
+                return 3; // single row + 2 borders
+            }
+        }
+        // Need two rows.
+        4
+    }
+
     fn render_tab_bar(&self, frame: &mut ratatui::Frame, area: ratatui::layout::Rect) {
-        let tab_titles: Vec<Line> = self
-            .entity
-            .tabs
+        let inner_width = area.width.saturating_sub(2) as usize;
+        let titles: Vec<&str> = self.entity.tabs.iter().map(|t| t.title()).collect();
+
+        // Decide whether to abbreviate: try full names, fall back to short.
+        let abbreviate = {
+            let full_total: usize = titles.iter().map(|t| t.len() + 3).sum();
+            full_total > inner_width
+        };
+
+        let labels: Vec<&str> = titles
             .iter()
-            .enumerate()
-            .map(|(i, tab)| {
-                Line::from(vec![Span::styled(
-                    format!(" {} ", tab.title()),
-                    if i == self.active_tab {
+            .map(|t| Self::tab_label(t, abbreviate))
+            .collect();
+
+        let total_width: usize = labels.iter().map(|l| l.len() + 3).sum();
+        let needs_wrap = total_width > inner_width;
+
+        if needs_wrap {
+            // Split tabs across two rows, roughly equal.
+            let mut split_at = labels.len() / 2;
+            // Adjust so first row fits within inner_width.
+            let mut row1_width: usize = labels[..split_at].iter().map(|l| l.len() + 3).sum();
+            while row1_width > inner_width && split_at > 1 {
+                split_at -= 1;
+                row1_width = labels[..split_at].iter().map(|l| l.len() + 3).sum();
+            }
+
+            let make_spans = |range: std::ops::Range<usize>| -> Vec<Span> {
+                let mut spans = Vec::new();
+                for i in range {
+                    let style = if i == self.active_tab {
                         Style::default().fg(Color::Yellow).bg(Color::DarkGray)
                     } else {
                         Style::default().fg(Color::Gray)
-                    },
-                )])
-            })
-            .collect();
+                    };
+                    spans.push(Span::styled(format!(" {} ", labels[i]), style));
+                    spans.push(Span::raw("│"));
+                }
+                spans
+            };
 
-        let tabs_widget = Tabs::new(tab_titles)
-            .block(Block::default().borders(Borders::ALL).title("Tabs"))
-            .select(self.active_tab)
-            .highlight_style(Style::default().fg(Color::Yellow).bg(Color::DarkGray));
+            let line1 = Line::from(make_spans(0..split_at));
+            let line2 = Line::from(make_spans(split_at..labels.len()));
 
-        frame.render_widget(tabs_widget, area);
+            let block = Block::default().borders(Borders::ALL).title("Tabs");
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+            if inner.height >= 2 {
+                frame.render_widget(Paragraph::new(vec![line1, line2]), inner);
+            }
+        } else {
+            // Single-row: use the Tabs widget.
+            let tab_titles: Vec<Line> = labels
+                .iter()
+                .enumerate()
+                .map(|(i, label)| {
+                    Line::from(vec![Span::styled(
+                        format!(" {label} "),
+                        if i == self.active_tab {
+                            Style::default().fg(Color::Yellow).bg(Color::DarkGray)
+                        } else {
+                            Style::default().fg(Color::Gray)
+                        },
+                    )])
+                })
+                .collect();
+
+            let tabs_widget = Tabs::new(tab_titles)
+                .block(Block::default().borders(Borders::ALL).title("Tabs"))
+                .select(self.active_tab)
+                .highlight_style(Style::default().fg(Color::Yellow).bg(Color::DarkGray));
+
+            frame.render_widget(tabs_widget, area);
+        }
     }
 
     fn handle_key(&mut self, key: KeyEvent) {

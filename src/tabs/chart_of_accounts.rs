@@ -1637,11 +1637,11 @@ fn make_account_table<'a>(
     Table::new(
         table_rows,
         [
-            Constraint::Length(8),
-            Constraint::Min(30),
-            Constraint::Length(7),
-            Constraint::Length(12),
-            Constraint::Length(5),
+            Constraint::Length(8),  // Number
+            Constraint::Min(10),    // Name (gets remaining space)
+            Constraint::Length(7),  // Type
+            Constraint::Length(28), // Balance (room for earmark indicator)
+            Constraint::Length(5),  // Flags
         ],
     )
     .header(header)
