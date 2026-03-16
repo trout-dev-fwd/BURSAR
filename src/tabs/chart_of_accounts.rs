@@ -106,6 +106,8 @@ pub struct ChartOfAccountsTab {
     entity_name: String,
     all_accounts: Vec<Account>,
     balances: HashMap<AccountId, Money>,
+    /// Envelope ledger balances (earmarked amounts) for accounts with allocations.
+    envelope_balances: HashMap<AccountId, Money>,
     /// Set of collapsed group accounts (has_children but currently folded).
     collapsed: HashSet<AccountId>,
     /// Flattened view for normal mode.
@@ -133,6 +135,7 @@ impl ChartOfAccountsTab {
             entity_name: String::new(),
             all_accounts: Vec::new(),
             balances: HashMap::new(),
+            envelope_balances: HashMap::new(),
             collapsed: HashSet::new(),
             visible: Vec::new(),
             table_state: {
@@ -764,7 +767,12 @@ impl ChartOfAccountsTab {
 
     fn render_table(&self, frame: &mut Frame, area: Rect) {
         let rows = self.current_rows();
-        let table = make_account_table(rows, &self.balances, &self.collapsed);
+        let table = make_account_table(
+            rows,
+            &self.balances,
+            &self.envelope_balances,
+            &self.collapsed,
+        );
         let mut state = if self.search_active {
             self.filtered_state.clone()
         } else {
@@ -1071,6 +1079,19 @@ impl Tab for ChartOfAccountsTab {
             }
         }
 
+        // Load envelope earmarked amounts for accounts with allocations.
+        let mut env_bals = HashMap::new();
+        if let Ok(allocs) = db.envelopes().get_all_allocations() {
+            for alloc in allocs {
+                if let Ok(bal) = db.envelopes().get_balance(alloc.account_id)
+                    && bal.0 != 0
+                {
+                    env_bals.insert(alloc.account_id, bal);
+                }
+            }
+        }
+        self.envelope_balances = env_bals;
+
         self.build_visible();
         if self.search_active {
             self.update_filter();
@@ -1122,6 +1143,7 @@ fn flatten_tree(
 fn make_account_table<'a>(
     rows: &'a [VisibleRow],
     balances: &'a HashMap<AccountId, Money>,
+    envelope_balances: &'a HashMap<AccountId, Money>,
     collapsed: &'a HashSet<AccountId>,
 ) -> Table<'a> {
     let header = Row::new(vec![
@@ -1159,6 +1181,7 @@ fn make_account_table<'a>(
             };
 
             let balance = balances.get(&acc.id).copied().unwrap_or(Money(0));
+            let earmarked = envelope_balances.get(&acc.id).copied();
 
             let mut flags = String::new();
             if acc.is_placeholder {
@@ -1177,11 +1200,20 @@ fn make_account_table<'a>(
                 Style::default()
             };
 
+            let balance_cell = if let Some(earmark) = earmarked {
+                Cell::from(Line::from(vec![
+                    Span::raw(balance.to_string()),
+                    Span::styled(format!(" [{earmark}]"), Style::default().fg(Color::Cyan)),
+                ]))
+            } else {
+                Cell::from(balance.to_string())
+            };
+
             Row::new(vec![
                 Cell::from(acc.number.clone()),
                 Cell::from(name_cell),
                 Cell::from(type_str),
-                Cell::from(balance.to_string()),
+                balance_cell,
                 Cell::from(flags),
             ])
             .style(row_style)
