@@ -1401,6 +1401,44 @@ mod tests {
     }
 
     #[test]
+    fn new_entry_with_date_outside_fiscal_period_shows_message() {
+        let db = make_db(); // fiscal year 2026 only
+        let mut tab = JournalEntriesTab::new();
+        tab.refresh(&db);
+
+        // Open new entry modal.
+        tab.handle_key(key(KeyCode::Char('n')), &db);
+        assert!(matches!(tab.modal, Some(Modal::NewEntry(_))));
+
+        // Fill in a date that has no fiscal period (2024 — no fiscal year created).
+        let accts = non_placeholder_accounts(&db);
+        if let Some(Modal::NewEntry(ref mut form)) = tab.modal {
+            form.set_test_state(
+                "2024-01-15",
+                &[(accts[0], "100", ""), (accts[1], "", "100")],
+            );
+        }
+
+        // Submit — should fail because 2024 has no fiscal period.
+        let action = tab.handle_key(
+            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+            &db,
+        );
+        match action {
+            TabAction::ShowMessage(msg) => {
+                assert!(
+                    msg.contains("fiscal period"),
+                    "message should mention fiscal period; got: {msg}"
+                );
+            }
+            _ => panic!(
+                "Expected ShowMessage, modal remained: {:?}",
+                tab.modal.is_some()
+            ),
+        }
+    }
+
+    #[test]
     fn c_key_on_draft_line_shows_message() {
         let db = make_db();
         create_draft(&db);

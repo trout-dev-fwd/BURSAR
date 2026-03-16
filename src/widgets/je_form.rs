@@ -121,6 +121,21 @@ impl JeForm {
         *self = Self::new();
     }
 
+    /// Test helper: set date and line data directly without driving key events.
+    /// Available only in test builds so private fields stay private in production.
+    #[cfg(test)]
+    pub(crate) fn set_test_state(&mut self, date: &str, lines: &[(AccountId, &str, &str)]) {
+        self.date_input = date.to_string();
+        while self.lines.len() < lines.len() {
+            self.lines.push(LineRow::default());
+        }
+        for (i, (id, debit, credit)) in lines.iter().enumerate() {
+            self.lines[i].account_id = Some(*id);
+            self.lines[i].debit_input = debit.to_string();
+            self.lines[i].credit_input = credit.to_string();
+        }
+    }
+
     /// Returns whether the account picker popup is currently open.
     pub fn is_picker_active(&self) -> bool {
         self.picker_active
@@ -934,6 +949,26 @@ mod tests {
             }
             _ => panic!("Expected Submitted, got {:?}", action),
         }
+    }
+
+    #[test]
+    fn submit_fails_with_fewer_than_two_lines() {
+        let mut form = JeForm::new();
+        let accts = make_accounts();
+
+        form.date_input = "2026-01-15".to_string();
+        form.lines.truncate(1);
+        form.lines[0].account_id = Some(AccountId::from(1));
+        form.lines[0].account_name = "Cash".to_string();
+        form.lines[0].debit_input = "100".to_string();
+
+        let action = form.handle_key(ctrl(KeyCode::Char('s')), &accts);
+        assert!(matches!(action, JeFormAction::Pending));
+        assert!(
+            form.error.as_deref().unwrap_or("").contains("2 line"),
+            "Error should mention 2-line requirement; got: {:?}",
+            form.error
+        );
     }
 
     #[test]
