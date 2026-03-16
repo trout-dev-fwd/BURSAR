@@ -279,9 +279,13 @@ pub fn reverse_journal_entry(
         lines: reversed_lines,
     };
 
+    // Pre-fetch fills for the original JE so we can reverse them inside the transaction.
+    let original_fills = db.envelopes().get_fills_for_je(je_id)?;
+
     let tx = db.conn().unchecked_transaction()?;
     let reversal_id = {
         use crate::db::audit_repo::AuditRepo;
+        use crate::db::envelope_repo::EnvelopeRepo;
         use crate::db::journal_repo::JournalRepo;
 
         let journal = JournalRepo::new(&tx);
@@ -292,6 +296,15 @@ pub fn reverse_journal_entry(
 
         // Mark the original as reversed.
         journal.mark_reversed(je_id, rev_id)?;
+
+        // Reverse any envelope fills that were created when the original JE was posted.
+        if !original_fills.is_empty() {
+            let env = EnvelopeRepo::new(&tx);
+            for fill in &original_fills {
+                // record_reversal stores -amount, effectively undoing the fill.
+                env.record_reversal(fill.account_id, fill.amount, je_id)?;
+            }
+        }
 
         let description = format!(
             "Reversed {}: created reversal {}",
@@ -1021,6 +1034,128 @@ mod tests {
         assert_eq!(
             balance, expected,
             "Capital contribution should trigger fills"
+        );
+    }
+
+    #[test]
+    fn reverse_cash_receipt_creates_reversal_entries_net_zero() {
+        let db = make_entity_db();
+        let (jan_period, _) = setup_fiscal_year(&db);
+
+        let checking = find_account_id(&db, "1110");
+        let revenue = find_account_id(&db, "4100");
+        let envelope_acct = find_account_id(&db, "5100");
+
+        set_ten_pct_allocation(&db, envelope_acct);
+
+        // Post cash receipt: debit Checking $1000, credit Revenue $1000.
+        let amount = Money(100_000_000_000); // $1000.00
+        let entry = NewJournalEntry {
+            entry_date: NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+            memo: None,
+            fiscal_period_id: jan_period,
+            reversal_of_je_id: None,
+            lines: vec![
+                NewJournalEntryLine {
+                    account_id: checking,
+                    debit_amount: amount,
+                    credit_amount: Money(0),
+                    line_memo: None,
+                    sort_order: 0,
+                },
+                NewJournalEntryLine {
+                    account_id: revenue,
+                    debit_amount: Money(0),
+                    credit_amount: amount,
+                    line_memo: None,
+                    sort_order: 1,
+                },
+            ],
+        };
+        let je_id = db.journals().create_draft(&entry).expect("create");
+        post_journal_entry(&db, je_id, "Test Entity").expect("post");
+
+        // Confirm fill was created ($100 earmarked).
+        let balance_after_fill = db.envelopes().get_balance(envelope_acct).expect("balance");
+        assert_eq!(
+            balance_after_fill,
+            Money(10_000_000_000),
+            "Balance should be $100 after fill"
+        );
+
+        // Reverse the entry.
+        let reversal_date = NaiveDate::from_ymd_opt(2026, 1, 20).unwrap();
+        reverse_journal_entry(&db, je_id, reversal_date, "Test Entity").expect("reverse");
+
+        // Net envelope balance should be zero.
+        let balance_after_reversal = db.envelopes().get_balance(envelope_acct).expect("balance");
+        assert_eq!(
+            balance_after_reversal,
+            Money(0),
+            "Net envelope balance should be zero after reversal"
+        );
+
+        // Ledger should have 1 Fill and 1 Reversal.
+        let ledger = db.envelopes().get_ledger(envelope_acct).expect("ledger");
+        assert_eq!(ledger.len(), 2, "Should have Fill + Reversal entries");
+        let types: Vec<_> = ledger.iter().map(|e| e.entry_type).collect();
+        assert!(
+            types.contains(&crate::types::EnvelopeEntryType::Fill),
+            "Fill entry should exist"
+        );
+        assert!(
+            types.contains(&crate::types::EnvelopeEntryType::Reversal),
+            "Reversal entry should exist"
+        );
+    }
+
+    #[test]
+    fn reverse_non_cash_je_creates_no_reversal_entries() {
+        let db = make_entity_db();
+        let (jan_period, _) = setup_fiscal_year(&db);
+
+        let expense = find_account_id(&db, "5100");
+        let ap = find_account_id(&db, "2100");
+        let envelope_acct = find_account_id(&db, "5200");
+
+        set_ten_pct_allocation(&db, envelope_acct);
+
+        // Post non-cash JE (no fills created).
+        let entry = NewJournalEntry {
+            entry_date: NaiveDate::from_ymd_opt(2026, 1, 10).unwrap(),
+            memo: None,
+            fiscal_period_id: jan_period,
+            reversal_of_je_id: None,
+            lines: vec![
+                NewJournalEntryLine {
+                    account_id: expense,
+                    debit_amount: Money(50_000_000_000),
+                    credit_amount: Money(0),
+                    line_memo: None,
+                    sort_order: 0,
+                },
+                NewJournalEntryLine {
+                    account_id: ap,
+                    debit_amount: Money(0),
+                    credit_amount: Money(50_000_000_000),
+                    line_memo: None,
+                    sort_order: 1,
+                },
+            ],
+        };
+        let je_id = db.journals().create_draft(&entry).expect("create");
+        post_journal_entry(&db, je_id, "Test Entity").expect("post");
+
+        // Reverse it.
+        let reversal_date = NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
+        reverse_journal_entry(&db, je_id, reversal_date, "Test Entity").expect("reverse");
+
+        // No envelope entries at all.
+        let ledger = db.envelopes().get_ledger(envelope_acct).expect("ledger");
+        assert_eq!(
+            ledger.len(),
+            0,
+            "Reversing a non-cash JE should create no envelope entries"
         );
     }
 
