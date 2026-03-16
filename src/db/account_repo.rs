@@ -363,6 +363,32 @@ impl<'conn> AccountRepo<'conn> {
             .collect();
         Ok(map)
     }
+
+    /// Returns net debit balances for all accounts with posted JE lines on or before `as_of`.
+    /// Accounts with no activity up to that date are absent (treat absence as `Money(0)`).
+    pub fn get_all_balances_as_of(
+        &self,
+        as_of: chrono::NaiveDate,
+    ) -> Result<HashMap<AccountId, Money>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT jel.account_id,
+                    COALESCE(SUM(jel.debit_amount - jel.credit_amount), 0)
+             FROM journal_entry_lines jel
+             JOIN journal_entries je ON je.id = jel.journal_entry_id
+             WHERE je.status = 'Posted'
+               AND je.entry_date <= ?1
+             GROUP BY jel.account_id",
+        )?;
+        let map = stmt
+            .query_map(params![as_of.to_string()], |row| {
+                let id: i64 = row.get(0)?;
+                let amount: i64 = row.get(1)?;
+                Ok((AccountId::from(id), Money(amount)))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(map)
+    }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
