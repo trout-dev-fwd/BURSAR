@@ -1,17 +1,32 @@
 # Progress Tracker
 
 ## Current State
-- **Active Phase**: Phase 2b (complete — awaiting developer review)
-- **Last Completed Task**: Phase 2b, Task 8
-- **Next Task**: Phase 3 (after developer review)
+- **Active Phase**: Phase 3 (complete — awaiting developer review)
+- **Last Completed Task**: Phase 3, Task 12
+- **Next Task**: Phase 4 (after developer review)
 - **Blockers**: None
 
 ## Completed Phases
 - [x] Phase 1: Foundation (completed 2026-03-15)
 - [x] Phase 2a: Chart of Accounts (completed 2026-03-15, review fixes applied 2026-03-15)
-- [x] Phase 2b: Journal Entries (completed 2026-03-15 — awaiting developer review)
+- [x] Phase 2b: Journal Entries (completed 2026-03-15, review fixes applied 2026-03-15)
+- [x] Phase 3: GL, AR/AP, Fiscal Periods (completed 2026-03-15 — awaiting developer review)
 
 ## Current Phase Progress
+
+### Phase 3: General Ledger, AR/AP, Fiscal Periods
+- [x] Task 1: Implement General Ledger tab
+- [x] Task 2: Wire CoA → GL navigation
+- [x] Task 3: Create ArRepo [TEST-FIRST]
+- [x] Task 4: Create ApRepo [TEST-FIRST]
+- [x] Task 5: Implement Accounts Receivable tab
+- [x] Task 6: Implement Accounts Payable tab
+- [x] Task 7: AR/AP → JE cross-tab navigation
+- [x] Task 8: Implement fiscal period close/reopen [TEST-FIRST]
+- [x] Task 9: Implement year-end close [TEST-FIRST]
+- [x] Task 10: Fiscal period management UI modal (global hotkey `f`)
+- [x] Task 11: Enforce period lock on all mutations (added create_draft check)
+- [x] Task 12: JE detail → GL navigation via `g` key
 
 ### Phase 2b: Journal Entries
 - [x] Task 1: Create JournalRepo [TEST-FIRST]
@@ -54,6 +69,44 @@
 - [x] Task 20: Set up pre-commit hook
 
 ## Decisions & Discoveries
+
+- **[Phase 3, Task 12]**: `g` key in JE detail view returns
+  `TabAction::NavigateTo(TabId::GeneralLedger, RecordId::Account(line.account_id))`. The full
+  navigation loop (CoA → GL → JE → GL) now works. `TabId` was added to the imports in
+  `journal_entries.rs`.
+
+- **[Phase 3, Task 11]**: `create_draft` now rejects closed fiscal periods at creation time
+  (direct SQL check, not via FiscalRepo to avoid circular imports). Rationale: drafts in closed
+  periods can never be posted, so refusing early avoids orphaned un-postable entries. One test
+  added: `create_draft_rejects_closed_period`.
+
+- **[Phase 3, Task 10]**: Fiscal period modal (`FiscalModal`) is a `src/widgets/fiscal_modal.rs`
+  overlay, NOT a separate tab. Opened via global hotkey `f`. State machine: Browsing →
+  ConfirmClose / ConfirmReopen / YearEndReview. Year-end review shows human-readable preview of
+  closing entries, then Enter creates drafts + calls `execute_year_end_close` in one shot.
+  `FiscalYear` struct + `list_fiscal_years()` added to `FiscalRepo`.
+
+- **[Phase 3, Task 9]**: Year-end close implemented as two service functions in
+  `src/services/fiscal.rs`: `generate_closing_entries` (returns `Vec<NewJournalEntry>` for review)
+  and `execute_year_end_close` (creates drafts + posts + marks FY closed). Uses a single combined
+  closing JE rather than 3 Income Summary JEs. Account 1100 "Checking Account" used in tests
+  (not 1100 the placeholder — actually 1110 is Checking Account; 1100 is "Cash & Bank Accounts",
+  a placeholder parent).
+
+- **[Phase 3, Tasks 5-7]**: AR and AP tabs implement `set_entity_name()`, status filter cycling
+  (`s` key), overdue highlighting (red for due_date < today && status != Paid), payment history
+  view (Enter), and `o` key for originating JE navigation. AR account = 1200, AP account = 2100
+  (both looked up by number + !is_placeholder).
+
+- **[Phase 3, Task 3-4]**: `ArRepo` and `ApRepo` mirror `JournalRepo` dynamic SQL filter pattern.
+  `record_payment` recomputes status after each payment: Open → Partial → Paid (terminal).
+  Overpayment guard checks total_paid + new_amount ≤ total_amount.
+
+- **[Phase 3, Task 1]**: GL tab uses `list_lines_for_account(account_id, date_range)` which
+  computes running balance in SQL using `SUM() OVER (ORDER BY entry_date, je_id)`. Debit-normal
+  accounts (Asset, Expense): balance = SUM(debit - credit). Credit-normal accounts (Liability,
+  Equity, Revenue): balance = SUM(credit - debit). The sign flip is applied at display time in
+  the tab based on `AccountType::normal_balance()`.
 
 - **[Phase 2b, Task 8]**: CoA tab `Enter` now differentiates: group accounts (has_children) toggle
   expand/collapse as before; leaf accounts return `TabAction::ShowMessage("General Ledger not yet
