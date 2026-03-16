@@ -426,6 +426,14 @@ impl App {
                     self.active_tab = idx;
                 }
             }
+            // Tab cycling: Ctrl+Right / Ctrl+Left wraps through tabs.
+            KeyCode::Right if key.modifiers == KeyModifiers::CONTROL => {
+                self.active_tab = (self.active_tab + 1) % self.entity.tabs.len();
+            }
+            KeyCode::Left if key.modifiers == KeyModifiers::CONTROL => {
+                self.active_tab =
+                    (self.active_tab + self.entity.tabs.len() - 1) % self.entity.tabs.len();
+            }
             _ => {
                 // Delegate to active tab.
                 let action = self.entity.tabs[self.active_tab].handle_key(key, &self.entity.db);
@@ -679,6 +687,7 @@ fn render_help_overlay(
 ) {
     let global_hotkeys: &[(&str, &str)] = &[
         ("1–9", "Switch to tab"),
+        ("Ctrl+← / Ctrl+→", "Previous / next tab"),
         ("f", "Fiscal period management"),
         ("q", "Quit"),
         ("?", "Show / hide this help"),
