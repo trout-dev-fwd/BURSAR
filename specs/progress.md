@@ -1,9 +1,9 @@
 # Progress Tracker
 
 ## Current State
-- **Active Phase**: Phase 5 — COMPLETE, awaiting developer review
-- **Last Completed Task**: Phase 5, Task 14
-- **Next Task**: Phase 6 (after developer review)
+- **Active Phase**: Phase 5 — COMPLETE, review fixes applied
+- **Last Completed Task**: Phase 5, Task 14 + review fixes
+- **Next Task**: Phase 6
 - **Blockers**: None
 
 ## Completed Phases
@@ -12,6 +12,7 @@
 - [x] Phase 2b: Journal Entries (completed 2026-03-15, review fixes applied 2026-03-15)
 - [x] Phase 3: GL, AR/AP, Fiscal Periods (completed 2026-03-15, review fixes applied 2026-03-16)
 - [x] Phase 4: Envelopes, Fixed Assets, Depreciation (completed 2026-03-16, review fixes applied 2026-03-16)
+- [x] Phase 5: Reports, Recurring, Startup (completed 2026-03-16, review fixes applied 2026-03-16)
 
 ## Current Phase Progress
 
@@ -316,13 +317,22 @@ Applied fixes from the end-of-phase developer review:
 7. **Earmarked available column in JE form** — Added read-only "Avail" column between Account and Debit in `je_form.rs`. Shows `Earmarked − GL Balance` (current FY) for accounts with envelope allocations; "—" for others. Tab key skips the column (no Focus variant added). `JeForm::render()` signature extended with `&HashMap<AccountId, Money>` for the available balances. JE tab computes and passes the data during `refresh()`.
 8. **CoA Avail column shows Available** — Changed from raw earmark total to Available (Earmarked − GL Balance for current FY). Renamed header from "Earmarked" to "Avail". Now consistent with Envelopes tab and JE form.
 
-- **[Phase 5 review]**: Lesson learned: tests use fresh in-memory databases so schema drift
-  between schema.rs and actual entity databases is not caught by tests. When adding columns
-  to repo queries, always update the CREATE TABLE in schema.rs in the same commit. Opus reviews
-  should verify that schema.rs CREATE TABLE statements match the columns referenced in repo SQL
-  queries. A migration was added to `EntityDb::open()` for the `fixed_asset_details` columns
-  (`accum_depreciation_account_id`, `depreciation_expense_account_id`) that were added to
-  schema.rs in Phase 4 Task 7 but would be missing from databases created before that commit.
+## Phase 5 Review Fixes (2026-03-16)
+
+Applied 3 fixes from the end-of-phase developer review:
+
+1. **DB migration for fixed_asset_details columns** — `EntityDb::open()` now runs
+   `PRAGMA table_info(fixed_asset_details)` and adds `accum_depreciation_account_id` and
+   `depreciation_expense_account_id` via `ALTER TABLE ADD COLUMN` if missing. Handles databases
+   created before Phase 4 Task 7. Lesson learned: tests use fresh in-memory DBs so schema drift
+   between `schema.rs` and on-disk entity databases is invisible to tests. Future rule: when
+   adding columns to repo queries, always update CREATE TABLE in `schema.rs` in the same commit.
+2. **Report header: basis + timestamp** — `format_header` now includes "Accrual Basis" and
+   "Generated: [timestamp]" lines. `format_table` appends centered "— End of Report —" marker.
+   All 8 reports inherit both changes automatically via shared formatting.
+3. **Tilde expansion in config paths** — `load_config()` now expands leading `~` to `$HOME` in
+   `report_output_dir` and all entity `db_path` values. TOML file retains `~` for portability;
+   expansion is load-time only. Prevents creation of literal `~` directories.
 
 ## Known Issues
 - None currently.
