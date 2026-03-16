@@ -1,6 +1,7 @@
 pub mod app;
 pub mod config;
 pub mod db;
+pub mod inter_entity;
 pub mod reports;
 pub mod services;
 pub mod startup;

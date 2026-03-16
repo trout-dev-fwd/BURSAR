@@ -1,9 +1,9 @@
 # Progress Tracker
 
 ## Current State
-- **Active Phase**: Phase 5 — COMPLETE, review fixes applied
-- **Last Completed Task**: Phase 5, Task 14 + review fixes
-- **Next Task**: Phase 6
+- **Active Phase**: Phase 6 — Inter-Entity + Polish
+- **Last Completed Task**: Phase 6, Task 1
+- **Next Task**: Phase 6, Task 2
 - **Blockers**: None
 
 ## Completed Phases
@@ -15,6 +15,23 @@
 - [x] Phase 5: Reports, Recurring, Startup (completed 2026-03-16, review fixes applied 2026-03-16)
 
 ## Current Phase Progress
+
+### Phase 6: Inter-Entity Transactions & Polish
+- [x] Task 1: Create InterEntityMode struct
+- [ ] Task 2: Create inter-entity form
+- [ ] Task 3: Implement inter-entity write protocol [TEST-FIRST]
+- [ ] Task 4: Implement inter-entity startup recovery [TEST-FIRST]
+- [ ] Task 5: Wire inter-entity mode into App
+- [ ] Task 6: Auto-create intercompany accounts
+- [ ] Task 7: Edge case — JE form validation polish
+- [ ] Task 8: Edge case — AR/AP payment flow polish
+- [ ] Task 9: Edge case — envelope fill with multiple Cash accounts
+- [ ] Task 10: Edge case — year-end close with envelope balances
+- [ ] Task 11: Edge case — depreciation across fiscal year boundary
+- [ ] Task 12: Comprehensive cross-tab navigation audit
+- [ ] Task 13: Status bar polish
+- [ ] Task 14: Update CLAUDE.md for project specifics
+- [ ] Task 15: Full integration test
 
 ### Phase 5: Reports, Recurring Entries, Startup Checks
 - [x] Task 1: Create report formatting utilities [TEST-FIRST]
@@ -99,6 +116,11 @@
 - [x] Task 20: Set up pre-commit hook
 
 ## Decisions & Discoveries
+
+- **[Phase 6, Task 1]**: `InterEntityMode` in `src/inter_entity/mod.rs` owns `secondary_db: EntityDb`
+  (drops connection when mode exits). Does NOT store a reference to primary `EntityDb` — receives it
+  as `&EntityDb` parameter in methods, consistent with the Tab pattern. `recovery.rs` stub created
+  for Task 4. 4 tests added (318 total).
 
 - **[Phase 5, Task 1]**: `src/reports/mod.rs` defines `Report` trait, `ReportParams`, `Align` enum,
   box-drawing char constants, and four public functions: `format_money`, `format_header`,
