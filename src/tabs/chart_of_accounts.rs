@@ -1493,15 +1493,38 @@ impl Tab for ChartOfAccountsTab {
             }
         }
 
-        // Load envelope earmarked amounts for accounts with allocations.
+        // Load envelope available amounts (Earmarked − GL Balance) for current FY.
         let mut env_bals = HashMap::new();
         if let Ok(allocs) = db.envelopes().get_all_allocations() {
+            let today = chrono::Local::now().date_naive();
+            let fy = db.fiscal().list_fiscal_years().ok().and_then(|years| {
+                years
+                    .into_iter()
+                    .find(|y| today >= y.start_date && today <= y.end_date)
+            });
             for alloc in allocs {
-                if let Ok(bal) = db.envelopes().get_balance(alloc.account_id)
-                    && bal.0 != 0
-                {
-                    env_bals.insert(alloc.account_id, bal);
-                }
+                let earmarked = match &fy {
+                    Some(fy) => db
+                        .envelopes()
+                        .get_balance_for_date_range(alloc.account_id, fy.start_date, fy.end_date)
+                        .unwrap_or(Money(0)),
+                    None => db
+                        .envelopes()
+                        .get_balance(alloc.account_id)
+                        .unwrap_or(Money(0)),
+                };
+                let gl_balance = match &fy {
+                    Some(fy) => db
+                        .accounts()
+                        .get_balance_for_date_range(alloc.account_id, fy.start_date, fy.end_date)
+                        .unwrap_or(Money(0)),
+                    None => db
+                        .accounts()
+                        .get_balance(alloc.account_id)
+                        .unwrap_or(Money(0)),
+                };
+                let available = Money(earmarked.0 - gl_balance.0);
+                env_bals.insert(alloc.account_id, available);
             }
         }
         self.envelope_balances = env_bals;
@@ -1569,8 +1592,7 @@ fn make_account_table<'a>(
         Cell::from("Balance").style(Style::default().add_modifier(Modifier::BOLD)),
     ];
     if show_earmarked {
-        header_cells
-            .push(Cell::from("Earmarked").style(Style::default().add_modifier(Modifier::BOLD)));
+        header_cells.push(Cell::from("Avail").style(Style::default().add_modifier(Modifier::BOLD)));
     }
     header_cells.push(Cell::from("Flags").style(Style::default().add_modifier(Modifier::BOLD)));
     let header = Row::new(header_cells).style(Style::default().bg(Color::DarkGray));
@@ -1648,7 +1670,7 @@ fn make_account_table<'a>(
         Constraint::Length(14), // Balance
     ];
     if show_earmarked {
-        widths.push(Constraint::Length(14)); // Earmarked
+        widths.push(Constraint::Length(14)); // Avail
     }
     widths.push(Constraint::Length(5)); // Flags
 

@@ -290,6 +290,7 @@ Applied fixes from the end-of-phase developer review:
 5. **Available formula fixed** — Envelopes Balances: `Available = Earmarked - GL Balance` (was inverted).
 6. **Fiscal year filter on Balances view** — Added `get_balance_for_date_range()` to both `EnvelopeRepo` and `AccountRepo`. Envelopes Balances view defaults to current fiscal year, left/right arrows cycle years. Block title shows "Envelope Balances — FY 2026". Allocation Config view is unfiltered. 228 total tests passing.
 7. **Earmarked available column in JE form** — Added read-only "Avail" column between Account and Debit in `je_form.rs`. Shows `Earmarked − GL Balance` (current FY) for accounts with envelope allocations; "—" for others. Tab key skips the column (no Focus variant added). `JeForm::render()` signature extended with `&HashMap<AccountId, Money>` for the available balances. JE tab computes and passes the data during `refresh()`.
+8. **CoA Avail column shows Available** — Changed from raw earmark total to Available (Earmarked − GL Balance for current FY). Renamed header from "Earmarked" to "Avail". Now consistent with Envelopes tab and JE form.
 
 ## Known Issues
 - None currently.
