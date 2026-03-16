@@ -9,12 +9,14 @@ use ratatui::{
     widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState},
 };
 
+use chrono::NaiveDate;
+
 use crate::db::{
     EntityDb,
     account_repo::{Account, AccountUpdate, NewAccount},
 };
 use crate::tabs::{RecordId, Tab, TabAction};
-use crate::types::{AccountId, AccountType, Money};
+use crate::types::{AccountId, AccountType, AuditAction, Money};
 use crate::widgets::account_picker::{AccountPicker, PickerAction};
 use crate::widgets::centered_rect;
 use crate::widgets::confirmation::{ConfirmAction, Confirmation};
@@ -98,6 +100,62 @@ enum CoaModal {
     EditForm(EditFormState),
     ConfirmToggle(ConfirmToggleState),
     ConfirmDelete(ConfirmDeleteState),
+    PlaceInService(PlaceInServiceFormState),
+    PlaceInServicePicking(PlaceInServiceFormState, AccountPicker, PisField),
+}
+
+// ── Place-in-Service form ─────────────────────────────────────────────────────
+
+/// Which field is focused in the Place-in-Service form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PisField {
+    Target,
+    Accum,
+    Expense,
+    Date,
+    Months,
+}
+
+impl PisField {
+    const ALL: [PisField; 5] = [
+        PisField::Target,
+        PisField::Accum,
+        PisField::Expense,
+        PisField::Date,
+        PisField::Months,
+    ];
+
+    fn index(self) -> usize {
+        Self::ALL.iter().position(|f| *f == self).unwrap_or(0)
+    }
+
+    fn next(self) -> Self {
+        Self::ALL[(self.index() + 1) % Self::ALL.len()]
+    }
+
+    fn prev(self) -> Self {
+        Self::ALL[(self.index() + Self::ALL.len() - 1) % Self::ALL.len()]
+    }
+
+    /// Returns true for the picker-backed fields (Target, Accum, Expense).
+    fn is_picker(self) -> bool {
+        matches!(self, PisField::Target | PisField::Accum | PisField::Expense)
+    }
+}
+
+struct PlaceInServiceFormState {
+    cip_account_id: AccountId,
+    cip_name: String,
+    target_id: Option<AccountId>,
+    target_name: String,
+    accum_id: Option<AccountId>,
+    accum_name: String,
+    expense_id: Option<AccountId>,
+    expense_name: String,
+    date_input: String,
+    months_input: String,
+    focused_field: PisField,
+    error: Option<String>,
 }
 
 // ── Tab struct ────────────────────────────────────────────────────────────────
@@ -356,6 +414,32 @@ impl ChartOfAccountsTab {
             name: acc.name.clone(),
             currently_active: acc.is_active,
             confirm: Confirmation::new(msg),
+        }));
+    }
+
+    fn open_place_in_service(&mut self) {
+        let acc = match self.selected_account() {
+            Some(a) => a.clone(),
+            None => return,
+        };
+        // Only applicable to CIP accounts (name contains "construction").
+        if !acc.name.to_lowercase().contains("construction") {
+            return;
+        }
+        self.search_active = false;
+        self.modal = Some(CoaModal::PlaceInService(PlaceInServiceFormState {
+            cip_account_id: acc.id,
+            cip_name: acc.name.clone(),
+            target_id: None,
+            target_name: String::new(),
+            accum_id: None,
+            accum_name: String::new(),
+            expense_id: None,
+            expense_name: String::new(),
+            date_input: String::new(),
+            months_input: String::new(),
+            focused_field: PisField::Target,
+            error: None,
         }));
     }
 
@@ -763,6 +847,245 @@ impl ChartOfAccountsTab {
         }
     }
 
+    fn handle_place_in_service_key(&mut self, key: KeyEvent, db: &EntityDb) -> TabAction {
+        // Navigate: Tab/Down/Up/BackTab move between fields.
+        // Picker fields: Enter or any printable char opens picker.
+        // Text fields: chars append, Backspace pops.
+        // Enter on Months (last field): submit.
+
+        match key.code {
+            KeyCode::Esc => {
+                self.modal = None;
+                TabAction::None
+            }
+            KeyCode::Tab | KeyCode::Down => {
+                if let Some(CoaModal::PlaceInService(f)) = &mut self.modal {
+                    f.focused_field = f.focused_field.next();
+                    f.error = None;
+                }
+                TabAction::None
+            }
+            KeyCode::BackTab | KeyCode::Up => {
+                if let Some(CoaModal::PlaceInService(f)) = &mut self.modal {
+                    f.focused_field = f.focused_field.prev();
+                    f.error = None;
+                }
+                TabAction::None
+            }
+            KeyCode::Enter => {
+                let field = match &self.modal {
+                    Some(CoaModal::PlaceInService(f)) => f.focused_field,
+                    _ => return TabAction::None,
+                };
+                if field.is_picker() {
+                    // Open the account picker for this field.
+                    let mut picker = AccountPicker::new();
+                    picker.refresh(&self.all_accounts);
+                    let form_state = match self.modal.take() {
+                        Some(CoaModal::PlaceInService(f)) => f,
+                        _ => return TabAction::None,
+                    };
+                    self.modal = Some(CoaModal::PlaceInServicePicking(form_state, picker, field));
+                    return TabAction::None;
+                }
+                if field == PisField::Months {
+                    // Submit.
+                    return self.submit_place_in_service(db);
+                }
+                // Advance.
+                if let Some(CoaModal::PlaceInService(f)) = &mut self.modal {
+                    f.focused_field = f.focused_field.next();
+                }
+                TabAction::None
+            }
+            KeyCode::Backspace => {
+                if let Some(CoaModal::PlaceInService(f)) = &mut self.modal {
+                    match f.focused_field {
+                        PisField::Target => {
+                            f.target_id = None;
+                            f.target_name.clear();
+                        }
+                        PisField::Accum => {
+                            f.accum_id = None;
+                            f.accum_name.clear();
+                        }
+                        PisField::Expense => {
+                            f.expense_id = None;
+                            f.expense_name.clear();
+                        }
+                        PisField::Date => {
+                            f.date_input.pop();
+                        }
+                        PisField::Months => {
+                            f.months_input.pop();
+                        }
+                    }
+                }
+                TabAction::None
+            }
+            KeyCode::Char(c) => {
+                let field = match &self.modal {
+                    Some(CoaModal::PlaceInService(f)) => f.focused_field,
+                    _ => return TabAction::None,
+                };
+                if field.is_picker() {
+                    // Any char on a picker field opens the picker pre-seeded.
+                    let mut picker = AccountPicker::new();
+                    picker.refresh(&self.all_accounts);
+                    let seed_key =
+                        KeyEvent::new(KeyCode::Char(c), crossterm::event::KeyModifiers::NONE);
+                    picker.handle_key(seed_key, &self.all_accounts);
+                    let form_state = match self.modal.take() {
+                        Some(CoaModal::PlaceInService(f)) => f,
+                        _ => return TabAction::None,
+                    };
+                    self.modal = Some(CoaModal::PlaceInServicePicking(form_state, picker, field));
+                    return TabAction::None;
+                }
+                if let Some(CoaModal::PlaceInService(f)) = &mut self.modal {
+                    match f.focused_field {
+                        PisField::Date => f.date_input.push(c),
+                        PisField::Months => f.months_input.push(c),
+                        _ => {}
+                    }
+                }
+                TabAction::None
+            }
+            _ => TabAction::None,
+        }
+    }
+
+    fn handle_place_in_service_picker_key(&mut self, key: KeyEvent) -> TabAction {
+        let (form, picker, picking_field) = match &mut self.modal {
+            Some(CoaModal::PlaceInServicePicking(f, p, field)) => (f, p, *field),
+            _ => return TabAction::None,
+        };
+
+        match picker.handle_key(key, &self.all_accounts) {
+            PickerAction::Selected(id) => {
+                if let Some(acc) = self.all_accounts.iter().find(|a| a.id == id) {
+                    let display = format!("{} {}", acc.number, acc.name);
+                    match picking_field {
+                        PisField::Target => {
+                            form.target_id = Some(id);
+                            form.target_name = display;
+                        }
+                        PisField::Accum => {
+                            form.accum_id = Some(id);
+                            form.accum_name = display;
+                        }
+                        PisField::Expense => {
+                            form.expense_id = Some(id);
+                            form.expense_name = display;
+                        }
+                        _ => {}
+                    }
+                }
+                let form_state = match self.modal.take() {
+                    Some(CoaModal::PlaceInServicePicking(f, _, _)) => f,
+                    _ => return TabAction::None,
+                };
+                self.modal = Some(CoaModal::PlaceInService(form_state));
+            }
+            PickerAction::Cancelled => {
+                let form_state = match self.modal.take() {
+                    Some(CoaModal::PlaceInServicePicking(f, _, _)) => f,
+                    _ => return TabAction::None,
+                };
+                self.modal = Some(CoaModal::PlaceInService(form_state));
+            }
+            PickerAction::Pending => {}
+        }
+        TabAction::None
+    }
+
+    fn submit_place_in_service(&mut self, db: &EntityDb) -> TabAction {
+        let (cip_id, cip_name, target_id, date_str, months_str, accum_id, expense_id) = {
+            let f = match &self.modal {
+                Some(CoaModal::PlaceInService(f)) => f,
+                _ => return TabAction::None,
+            };
+            (
+                f.cip_account_id,
+                f.cip_name.clone(),
+                f.target_id,
+                f.date_input.trim().to_string(),
+                f.months_input.trim().to_string(),
+                f.accum_id,
+                f.expense_id,
+            )
+        };
+
+        let target_id = match target_id {
+            Some(id) => id,
+            None => {
+                if let Some(CoaModal::PlaceInService(f)) = &mut self.modal {
+                    f.error = Some("Target fixed asset account is required.".to_string());
+                    f.focused_field = PisField::Target;
+                }
+                return TabAction::None;
+            }
+        };
+
+        let in_service_date = match NaiveDate::parse_from_str(&date_str, "%Y-%m-%d") {
+            Ok(d) => d,
+            Err(_) => {
+                if let Some(CoaModal::PlaceInService(f)) = &mut self.modal {
+                    f.error = Some("Date must be YYYY-MM-DD.".to_string());
+                    f.focused_field = PisField::Date;
+                }
+                return TabAction::None;
+            }
+        };
+
+        let useful_life_months: u32 = match months_str.parse::<u32>() {
+            Ok(m) if m > 0 => m,
+            _ => {
+                if let Some(CoaModal::PlaceInService(f)) = &mut self.modal {
+                    f.error = Some("Useful life must be a positive integer (months).".to_string());
+                    f.focused_field = PisField::Months;
+                }
+                return TabAction::None;
+            }
+        };
+
+        match db.assets().place_in_service(
+            cip_id,
+            target_id,
+            in_service_date,
+            useful_life_months,
+            accum_id,
+            expense_id,
+        ) {
+            Err(e) => {
+                if let Some(CoaModal::PlaceInService(f)) = &mut self.modal {
+                    f.error = Some(format!("Failed: {e}"));
+                }
+                TabAction::None
+            }
+            Ok(je_id) => {
+                let desc = format!(
+                    "Placed {} in service → account id {}; life {} mo; JE #{}",
+                    cip_name,
+                    i64::from(target_id),
+                    useful_life_months,
+                    i64::from(je_id),
+                );
+                if let Err(e) = db.audit().append(
+                    AuditAction::PlaceInService,
+                    &self.entity_name,
+                    Some("FixedAsset"),
+                    Some(i64::from(target_id)),
+                    &desc,
+                ) {
+                    tracing::error!("Failed to write audit log: {e}");
+                }
+                self.modal = None;
+                TabAction::RefreshData
+            }
+        }
+    }
+
     // ── Render helpers ────────────────────────────────────────────────────────
 
     fn render_table(&self, frame: &mut Frame, area: Rect) {
@@ -899,6 +1222,80 @@ impl ChartOfAccountsTab {
     fn render_confirm_toggle(&self, frame: &mut Frame, area: Rect, state: &ConfirmToggleState) {
         state.confirm.render(frame, area);
     }
+
+    fn render_place_in_service(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        form: &PlaceInServiceFormState,
+    ) {
+        let modal_area = centered_rect(65, 65, area);
+        frame.render_widget(Clear, modal_area);
+
+        let field_defs: &[(&str, PisField, &str)] = &[
+            ("Target Account", PisField::Target, &form.target_name),
+            ("Accum. Dep. Acct", PisField::Accum, &form.accum_name),
+            ("Dep. Expense Acct", PisField::Expense, &form.expense_name),
+            ("In-Service Date", PisField::Date, &form.date_input),
+            ("Useful Life (mo)", PisField::Months, &form.months_input),
+        ];
+
+        let mut lines = vec![
+            Line::from(Span::raw("")),
+            Line::from(vec![
+                Span::styled("  CIP Account: ", Style::default().fg(Color::DarkGray)),
+                Span::raw(form.cip_name.clone()),
+            ]),
+            Line::from(Span::raw("")),
+        ];
+
+        for (label, field, value) in field_defs {
+            let focused = form.focused_field == *field;
+            let is_optional = matches!(field, PisField::Accum | PisField::Expense);
+            let cursor = if focused { "█" } else { "" };
+            let label_style = if focused {
+                Style::default().fg(Color::Yellow)
+            } else {
+                Style::default()
+            };
+            let hint = if is_optional && value.is_empty() {
+                "(optional — Enter to pick)"
+            } else if field.is_picker() && value.is_empty() {
+                "(Enter to pick)"
+            } else {
+                ""
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {:<20} ", label), label_style),
+                Span::raw((*value).to_string()),
+                Span::styled(hint, Style::default().fg(Color::DarkGray)),
+                Span::styled(cursor, Style::default().fg(Color::Yellow)),
+            ]));
+        }
+
+        if let Some(err) = &form.error {
+            lines.push(Line::from(Span::raw("")));
+            lines.push(Line::from(Span::styled(
+                format!("  {err}"),
+                Style::default().fg(Color::Red),
+            )));
+        }
+        lines.push(Line::from(Span::raw("")));
+        lines.push(Line::from(Span::styled(
+            "  Tab/↑↓: navigate  Enter: pick/next  Esc: cancel",
+            Style::default().fg(Color::DarkGray),
+        )));
+
+        frame.render_widget(
+            Paragraph::new(lines).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Place in Service ")
+                    .style(Style::default().fg(Color::Green)),
+            ),
+            modal_area,
+        );
+    }
 }
 
 // ── Tab trait ─────────────────────────────────────────────────────────────────
@@ -925,6 +1322,12 @@ impl Tab for ChartOfAccountsTab {
             }
             Some(CoaModal::ConfirmDelete(_)) => {
                 return self.handle_confirm_delete_key(key, db);
+            }
+            Some(CoaModal::PlaceInService(_)) => {
+                return self.handle_place_in_service_key(key, db);
+            }
+            Some(CoaModal::PlaceInServicePicking(_, _, _)) => {
+                return self.handle_place_in_service_picker_key(key);
             }
             None => {}
         }
@@ -986,6 +1389,7 @@ impl Tab for ChartOfAccountsTab {
                 KeyCode::Char('e') => self.open_edit_form(),
                 KeyCode::Char('d') => self.open_confirm_toggle(),
                 KeyCode::Char('x') => self.open_confirm_delete(),
+                KeyCode::Char('s') => self.open_place_in_service(),
                 _ => {}
             }
         }
@@ -1026,12 +1430,18 @@ impl Tab for ChartOfAccountsTab {
         } else {
             let count = self.visible.len();
             let selected = self.selected_idx().map(|i| i + 1).unwrap_or(0);
+            let is_cip = self
+                .selected_account()
+                .map(|a| a.name.to_lowercase().contains("construction"))
+                .unwrap_or(false);
+            let hint = if is_cip {
+                " ↑↓/jk: navigate  Enter: expand/GL  /: search  a: add  e: edit  d: toggle active  x: delete  s: place in service"
+            } else {
+                " ↑↓/jk: navigate  Enter: expand/GL  /: search  a: add  e: edit  d: toggle active  x: delete"
+            };
             frame.render_widget(
                 Paragraph::new(Line::from(vec![
-                    Span::styled(
-                        " ↑↓/jk: navigate  Enter: expand/GL  /: search  a: add  e: edit  d: toggle active  x: delete",
-                        Style::default().fg(Color::DarkGray),
-                    ),
+                    Span::styled(hint, Style::default().fg(Color::DarkGray)),
                     Span::styled(
                         format!("  [{}/{}]", selected, count),
                         Style::default().fg(Color::Gray),
@@ -1051,6 +1461,10 @@ impl Tab for ChartOfAccountsTab {
                 CoaModal::EditForm(f) => self.render_edit_form(frame, area, f),
                 CoaModal::ConfirmToggle(s) => self.render_confirm_toggle(frame, area, s),
                 CoaModal::ConfirmDelete(s) => s.confirm.render(frame, area),
+                CoaModal::PlaceInService(f) => self.render_place_in_service(frame, area, f),
+                CoaModal::PlaceInServicePicking(_, picker, _) => {
+                    picker.render(frame, area, &self.all_accounts);
+                }
             }
         }
     }

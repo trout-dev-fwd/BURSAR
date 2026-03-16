@@ -1,9 +1,9 @@
 # Progress Tracker
 
 ## Current State
-- **Active Phase**: Phase 4
-- **Last Completed Task**: Phase 4, Task 8 (Fixed Assets tab)
-- **Next Task**: Phase 4, Task 9 (Place in Service action on CoA tab)
+- **Active Phase**: Phase 4 — COMPLETE (awaiting developer review)
+- **Last Completed Task**: Phase 4, Task 10 (Depreciation rounding test)
+- **Next Task**: Phase 5 (pending developer review of Phase 4)
 - **Blockers**: None
 
 ## Completed Phases
@@ -23,8 +23,8 @@
 - [x] Task 6: Add envelope indicators to Chart of Accounts tab
 - [x] Task 7: Create AssetRepo [TEST-FIRST]
 - [x] Task 8: Implement Fixed Assets tab
-- [ ] Task 9: Place in Service action on CoA tab
-- [ ] Task 10: Depreciation rounding verification [TEST-FIRST]
+- [x] Task 9: Place in Service action on CoA tab
+- [x] Task 10: Depreciation rounding verification [TEST-FIRST]
 
 ### Phase 3: General Ledger, AR/AP, Fiscal Periods
 - [x] Task 1: Implement General Ledger tab
@@ -81,6 +81,17 @@
 - [x] Task 20: Set up pre-commit hook
 
 ## Decisions & Discoveries
+
+- **[Phase 4, Task 10]**: Rounding test uses $10 over 3 months (1_000_000_000 internal units / 3 = 333_333_333 r1).
+  Verifies: sum of all monthly amounts == cost_basis exactly; months 1-(N-1) each = base amount; month N = base + remainder.
+  226 total tests passing.
+
+- **[Phase 4, Task 9]**: `PlaceInServiceFormState` + `CoaModal::PlaceInService/PlaceInServicePicking` added to CoA tab.
+  `s` key opens the form only when selected account name contains "construction" (case-insensitive CIP detection).
+  Form fields: Target Account (required, AccountPicker), Accum. Dep. Acct (optional, AccountPicker),
+  Dep. Expense Acct (optional, AccountPicker), In-Service Date (YYYY-MM-DD text), Useful Life Months (u32 text).
+  On submit: calls `db.assets().place_in_service(...)`, writes `AuditAction::PlaceInService` audit entry,
+  returns `TabAction::RefreshData`. Hint bar shows `s: place in service` only for CIP accounts.
 
 - **[Phase 4, Task 7]**: `AssetRepo` at `src/db/asset_repo.rs`. Schema extended with
   `accum_depreciation_account_id` and `depreciation_expense_account_id` columns on

@@ -105,6 +105,8 @@ impl<'conn> AssetRepo<'conn> {
         target_asset_account_id: AccountId,
         in_service_date: NaiveDate,
         useful_life_months: u32,
+        accum_depreciation_account_id: Option<AccountId>,
+        depreciation_expense_account_id: Option<AccountId>,
     ) -> Result<JournalEntryId> {
         // Determine the CIP account balance (that becomes the cost basis).
         let cost_basis = self.get_gl_balance(cip_account_id)?;
@@ -161,31 +163,34 @@ impl<'conn> AssetRepo<'conn> {
         })?;
         je_repo.update_status(je_id, crate::types::JournalEntryStatus::Posted)?;
 
-        // Update fixed_asset_details for the target account.
+        // Upsert fixed_asset_details for the target account.
         let now = now_str();
-        let updated = self.conn.execute(
-            "UPDATE fixed_asset_details
-             SET cost_basis = ?1,
-                 in_service_date = ?2,
-                 useful_life_months = ?3,
-                 source_cip_account_id = ?4,
-                 updated_at = ?5
-             WHERE account_id = ?6",
+        self.conn.execute(
+            "INSERT INTO fixed_asset_details
+               (account_id, cost_basis, in_service_date, useful_life_months,
+                is_depreciable, source_cip_account_id,
+                accum_depreciation_account_id, depreciation_expense_account_id,
+                created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6, ?7, ?8, ?8)
+             ON CONFLICT(account_id) DO UPDATE SET
+               cost_basis = excluded.cost_basis,
+               in_service_date = excluded.in_service_date,
+               useful_life_months = excluded.useful_life_months,
+               source_cip_account_id = excluded.source_cip_account_id,
+               accum_depreciation_account_id = excluded.accum_depreciation_account_id,
+               depreciation_expense_account_id = excluded.depreciation_expense_account_id,
+               updated_at = excluded.updated_at",
             params![
+                i64::from(target_asset_account_id),
                 cost_basis.0,
                 in_service_date.to_string(),
                 useful_life_months as i64,
                 i64::from(cip_account_id),
+                accum_depreciation_account_id.map(i64::from),
+                depreciation_expense_account_id.map(i64::from),
                 now,
-                i64::from(target_asset_account_id),
             ],
         )?;
-        if updated == 0 {
-            bail!(
-                "No fixed_asset_details row found for account {}",
-                i64::from(target_asset_account_id)
-            );
-        }
 
         Ok(je_id)
     }
@@ -668,6 +673,8 @@ mod tests {
                 asset_acct,
                 NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
                 360,
+                None,
+                None,
             )
             .expect("place_in_service");
 
@@ -756,6 +763,8 @@ mod tests {
                 asset_acct,
                 NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
                 360,
+                None,
+                None,
             )
             .unwrap_err();
         assert!(err.to_string().contains("no positive balance"));
@@ -922,5 +931,90 @@ mod tests {
             .generate_pending_depreciation(FiscalPeriodId::from(p3_id))
             .expect("generate");
         assert_eq!(entries.len(), 1, "only month 3 should be pending");
+    }
+
+    /// Verify that when cost_basis is not evenly divisible by useful_life_months,
+    /// the final month absorbs the rounding remainder so that the sum of all
+    /// monthly depreciation amounts equals cost_basis exactly.
+    #[test]
+    fn generate_depreciation_rounding_totals_cost_basis_exactly() {
+        let (conn, _p1) = setup();
+
+        // $10 (1_000_000_000 internal units) over 3 months.
+        // 1_000_000_000 / 3 = 333_333_333 remainder 1.
+        // Months 1-2: 333_333_333 each; month 3: 333_333_334.
+        // Total must equal exactly 1_000_000_000.
+        let cost_basis = Money(1_000_000_000);
+        let life_months: u32 = 3;
+        let monthly = cost_basis.0 / i64::from(life_months);
+        let remainder = cost_basis.0 % i64::from(life_months);
+        assert_ne!(remainder, 0, "test requires non-zero remainder");
+
+        let asset_acct = make_account(&conn, "1500", "Equipment", "Asset", false, None);
+        let accum = make_account(
+            &conn,
+            "1521",
+            "Accumulated Depreciation",
+            "Asset",
+            true,
+            None,
+        );
+        let expense = make_account(
+            &conn,
+            "5500",
+            "Depreciation Expense",
+            "Expense",
+            false,
+            None,
+        );
+
+        let repo = AssetRepo::new(&conn);
+        repo.create_fixed_asset(
+            asset_acct,
+            &NewFixedAssetDetails {
+                cost_basis,
+                in_service_date: Some(NaiveDate::from_ymd_opt(2025, 12, 31).unwrap()),
+                useful_life_months: Some(life_months),
+                is_depreciable: true,
+                accum_depreciation_account_id: Some(accum),
+                depreciation_expense_account_id: Some(expense),
+            },
+        )
+        .unwrap();
+
+        // Generate through period 3 (March 2026) — all 3 months.
+        let p3_id: i64 = conn
+            .query_row(
+                "SELECT id FROM fiscal_periods WHERE period_number = 3",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        let entries = repo
+            .generate_pending_depreciation(FiscalPeriodId::from(p3_id))
+            .expect("generate");
+
+        assert_eq!(entries.len(), 3, "all 3 months should be generated");
+
+        let total: i64 = entries.iter().map(|e| e.lines[0].debit_amount.0).sum();
+        assert_eq!(
+            total, cost_basis.0,
+            "sum of all monthly depreciation must equal cost basis exactly"
+        );
+
+        // First life_months-1 entries each get `monthly`; last gets `monthly + remainder`.
+        for (i, entry) in entries.iter().enumerate() {
+            let debit = entry.lines[0].debit_amount.0;
+            if i < (life_months as usize) - 1 {
+                assert_eq!(debit, monthly, "month {} should be base amount", i + 1);
+            } else {
+                assert_eq!(
+                    debit,
+                    monthly + remainder,
+                    "final month should absorb remainder"
+                );
+            }
+        }
     }
 }
