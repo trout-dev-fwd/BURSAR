@@ -13,7 +13,7 @@ use crate::db::{
     journal_repo::{JournalEntry, JournalEntryLine, JournalFilter, NewJournalEntry},
 };
 use crate::services::journal::{post_journal_entry, reverse_journal_entry};
-use crate::tabs::{RecordId, Tab, TabAction};
+use crate::tabs::{RecordId, Tab, TabAction, TabId};
 use crate::types::{AccountId, JournalEntryId, JournalEntryStatus, ReconcileState};
 use crate::widgets::{
     JeForm, centered_rect,
@@ -480,7 +480,7 @@ impl JournalEntriesTab {
         };
 
         let title = format!(
-            " {} — {} line(s)  ↑↓: line  [c] toggle Cleared  Esc: close ",
+            " {} — {} line(s)  ↑↓: line  [c] Cleared  [g] GL  Esc: close ",
             entry.je_number,
             d.lines.len()
         );
@@ -653,6 +653,18 @@ impl Tab for JournalEntriesTab {
             KeyCode::Esc => self.close_detail(),
             KeyCode::Char('c') | KeyCode::Char('C') => {
                 return self.toggle_reconcile(db);
+            }
+            // Navigate to the GL for the focused line's account.
+            KeyCode::Char('g') | KeyCode::Char('G') => {
+                if let Some(d) = &self.detail
+                    && let Some(line) = d.lines.get(d.focused_line)
+                {
+                    let account_id = line.account_id;
+                    return TabAction::NavigateTo(
+                        TabId::GeneralLedger,
+                        RecordId::Account(account_id),
+                    );
+                }
             }
             KeyCode::Char('f') | KeyCode::Char('F') => {
                 self.status_filter = self.status_filter.next();
