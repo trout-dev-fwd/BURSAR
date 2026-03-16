@@ -316,5 +316,13 @@ Applied fixes from the end-of-phase developer review:
 7. **Earmarked available column in JE form** — Added read-only "Avail" column between Account and Debit in `je_form.rs`. Shows `Earmarked − GL Balance` (current FY) for accounts with envelope allocations; "—" for others. Tab key skips the column (no Focus variant added). `JeForm::render()` signature extended with `&HashMap<AccountId, Money>` for the available balances. JE tab computes and passes the data during `refresh()`.
 8. **CoA Avail column shows Available** — Changed from raw earmark total to Available (Earmarked − GL Balance for current FY). Renamed header from "Earmarked" to "Avail". Now consistent with Envelopes tab and JE form.
 
+- **[Phase 5 review]**: Lesson learned: tests use fresh in-memory databases so schema drift
+  between schema.rs and actual entity databases is not caught by tests. When adding columns
+  to repo queries, always update the CREATE TABLE in schema.rs in the same commit. Opus reviews
+  should verify that schema.rs CREATE TABLE statements match the columns referenced in repo SQL
+  queries. A migration was added to `EntityDb::open()` for the `fixed_asset_details` columns
+  (`accum_depreciation_account_id`, `depreciation_expense_account_id`) that were added to
+  schema.rs in Phase 4 Task 7 but would be missing from databases created before that commit.
+
 ## Known Issues
 - None currently.

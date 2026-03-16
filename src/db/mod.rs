@@ -34,11 +34,13 @@ pub struct EntityDb {
 
 impl EntityDb {
     /// Opens an existing entity database file. Enables WAL mode and foreign keys.
+    /// Runs any pending migrations for schema drift.
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)
             .with_context(|| format!("Failed to open database: {}", path.display()))?;
         conn.execute_batch("PRAGMA journal_mode=WAL;")?;
         conn.execute_batch("PRAGMA foreign_keys=ON;")?;
+        migrate_fixed_asset_details(&conn)?;
         Ok(Self { conn })
     }
 
@@ -111,6 +113,31 @@ impl EntityDb {
     pub fn recurring(&self) -> RecurringRepo<'_> {
         RecurringRepo::new(&self.conn)
     }
+}
+
+/// Ensures `fixed_asset_details` has the `accum_depreciation_account_id` and
+/// `depreciation_expense_account_id` columns added in Phase 4. Databases created
+/// before that phase have the table but lack these columns.
+fn migrate_fixed_asset_details(conn: &Connection) -> Result<()> {
+    let mut stmt = conn.prepare("PRAGMA table_info(fixed_asset_details)")?;
+    let columns: Vec<String> = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    if !columns.contains(&"accum_depreciation_account_id".to_string()) {
+        conn.execute_batch(
+            "ALTER TABLE fixed_asset_details
+             ADD COLUMN accum_depreciation_account_id INTEGER REFERENCES accounts(id)",
+        )?;
+    }
+    if !columns.contains(&"depreciation_expense_account_id".to_string()) {
+        conn.execute_batch(
+            "ALTER TABLE fixed_asset_details
+             ADD COLUMN depreciation_expense_account_id INTEGER REFERENCES accounts(id)",
+        )?;
+    }
+    Ok(())
 }
 
 /// Returns the current local timestamp as an ISO 8601 string (no timezone).
