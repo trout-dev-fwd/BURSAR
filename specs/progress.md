@@ -2,8 +2,8 @@
 
 ## Current State
 - **Active Phase**: Phase 4
-- **Last Completed Task**: Phase 4, Task 7 (AssetRepo [TEST-FIRST])
-- **Next Task**: Phase 4, Task 8 (Fixed Assets tab)
+- **Last Completed Task**: Phase 4, Task 8 (Fixed Assets tab)
+- **Next Task**: Phase 4, Task 9 (Place in Service action on CoA tab)
 - **Blockers**: None
 
 ## Completed Phases
@@ -22,7 +22,7 @@
 - [x] Task 5: Implement envelope transfers
 - [x] Task 6: Add envelope indicators to Chart of Accounts tab
 - [x] Task 7: Create AssetRepo [TEST-FIRST]
-- [ ] Task 8: Implement Fixed Assets tab
+- [x] Task 8: Implement Fixed Assets tab
 - [ ] Task 9: Place in Service action on CoA tab
 - [ ] Task 10: Depreciation rounding verification [TEST-FIRST]
 

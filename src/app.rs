@@ -63,7 +63,7 @@ impl EntityContext {
             Box::new(ar),
             Box::new(ap),
             Box::new(env),
-            Box::new(FixedAssetsTab),
+            Box::new(FixedAssetsTab::new()),
             Box::new(ReportsTab),
             Box::new(AuditLogTab),
         ];
