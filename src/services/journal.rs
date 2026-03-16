@@ -1250,6 +1250,64 @@ mod tests {
         assert_eq!(fills.len(), 0, "No allocations → no fills");
     }
 
+    // ── Multiple cash accounts ────────────────────────────────────────────────
+
+    #[test]
+    fn post_cash_receipt_with_two_cash_accounts_sums_both_for_fill() {
+        let db = make_entity_db();
+        let (jan_period, _) = setup_fiscal_year(&db);
+
+        let checking = find_account_id(&db, "1110"); // Checking Account (Cash)
+        let savings = find_account_id(&db, "1120"); // Savings Account (Cash)
+        let revenue = find_account_id(&db, "4100"); // Service Revenue
+        let envelope_acct = find_account_id(&db, "5100");
+
+        // 10% allocation.
+        set_ten_pct_allocation(&db, envelope_acct);
+
+        // Post JE: Debit Checking $600 + Debit Savings $400 = $1000 cash total;
+        // Credit Revenue $1000. This verifies fills sum ALL cash lines.
+        let entry = NewJournalEntry {
+            entry_date: NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+            memo: None,
+            fiscal_period_id: jan_period,
+            reversal_of_je_id: None,
+            lines: vec![
+                NewJournalEntryLine {
+                    account_id: checking,
+                    debit_amount: Money(60_000_000_000), // $600
+                    credit_amount: Money(0),
+                    line_memo: None,
+                    sort_order: 0,
+                },
+                NewJournalEntryLine {
+                    account_id: savings,
+                    debit_amount: Money(40_000_000_000), // $400
+                    credit_amount: Money(0),
+                    line_memo: None,
+                    sort_order: 1,
+                },
+                NewJournalEntryLine {
+                    account_id: revenue,
+                    debit_amount: Money(0),
+                    credit_amount: Money(100_000_000_000), // $1000
+                    line_memo: None,
+                    sort_order: 2,
+                },
+            ],
+        };
+        let je_id = db.journals().create_draft(&entry).expect("create");
+        post_journal_entry(&db, je_id, "Test Entity").expect("post");
+
+        // Fill should be 10% of ($600 + $400) = 10% of $1000 = $100.
+        let balance = db.envelopes().get_balance(envelope_acct).expect("balance");
+        assert_eq!(
+            balance,
+            Money(10_000_000_000), // $100
+            "Fill must sum both cash debit lines: 10% of $600+$400 = $100"
+        );
+    }
+
     // ── create_payment_je ─────────────────────────────────────────────────────
 
     #[test]
