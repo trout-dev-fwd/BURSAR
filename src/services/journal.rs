@@ -11,8 +11,11 @@ use chrono::NaiveDate;
 use thiserror::Error;
 
 use crate::db::EntityDb;
-use crate::db::journal_repo::{NewJournalEntry, NewJournalEntryLine};
-use crate::types::{AuditAction, JournalEntryId, JournalEntryStatus, Money};
+use crate::db::account_repo::Account;
+use crate::db::journal_repo::{JournalEntryLine, NewJournalEntry, NewJournalEntryLine};
+use crate::types::{
+    AccountId, AccountType, AuditAction, JournalEntryId, JournalEntryStatus, Money,
+};
 
 // ── Domain errors ─────────────────────────────────────────────────────────────
 
@@ -44,6 +47,66 @@ pub enum JournalError {
 
     #[error("No fiscal period found for date {0}")]
     NoPeriodForDate(NaiveDate),
+}
+
+// ── Cash-receipt detection helpers ────────────────────────────────────────────
+
+/// Returns `true` if the account is a Cash/Bank account eligible for envelope fills.
+///
+/// Identification rule: type = Asset, not a placeholder, and name contains one
+/// of "cash", "bank", "checking", or "savings" (case-insensitive).
+/// This matches the seeded hierarchy (1110 Checking Account, 1120 Savings Account,
+/// 1100 Cash & Bank Accounts). Custom cash accounts should follow similar naming.
+///
+/// Decision [Phase 4, Task 2]: name-based detection chosen over a new `is_cash_account`
+/// DB flag to avoid a schema change. Developer may revisit if finer control is needed.
+fn is_cash_account(acct: &Account) -> bool {
+    if acct.account_type != AccountType::Asset || acct.is_placeholder {
+        return false;
+    }
+    let lower = acct.name.to_lowercase();
+    lower.contains("cash")
+        || lower.contains("bank")
+        || lower.contains("checking")
+        || lower.contains("savings")
+}
+
+/// Returns `true` if the account is Owner's Draw (contra-Equity).
+/// Draws and draw reversals suppress envelope fills.
+fn is_owners_draw(acct: &Account) -> bool {
+    acct.account_type == AccountType::Equity && acct.is_contra
+}
+
+/// Computes the total cash-received amount for a journal entry.
+///
+/// Returns `Some(cash_received)` when envelope fills should be created,
+/// or `None` when fills should be suppressed (no cash debit, or Owner's Draw present).
+fn cash_receipt_amount(lines: &[JournalEntryLine], accounts: &[Account]) -> Option<Money> {
+    let get_acct = |id: AccountId| accounts.iter().find(|a| a.id == id);
+
+    let cash_received: i64 = lines
+        .iter()
+        .filter(|l| {
+            get_acct(l.account_id)
+                .map(|a| is_cash_account(a) && !l.debit_amount.is_zero())
+                .unwrap_or(false)
+        })
+        .map(|l| l.debit_amount.0)
+        .sum();
+
+    if cash_received == 0 {
+        return None;
+    }
+
+    // Suppress fills if Owner's Draw appears on either side of the entry.
+    let has_owners_draw = lines
+        .iter()
+        .any(|l| get_acct(l.account_id).map(is_owners_draw).unwrap_or(false));
+    if has_owners_draw {
+        return None;
+    }
+
+    Some(Money(cash_received))
 }
 
 // ── post_journal_entry ────────────────────────────────────────────────────────
@@ -82,15 +145,18 @@ pub fn post_journal_entry(db: &EntityDb, je_id: JournalEntryId, entity_name: &st
     }
 
     // Validate: all accounts are active and non-placeholder.
-    let accounts = db.accounts();
+    // Collect accounts for later envelope fill detection.
+    let account_repo = db.accounts();
+    let mut line_accounts: Vec<Account> = Vec::with_capacity(lines.len());
     for line in &lines {
-        let acct = accounts.get_by_id(line.account_id)?;
+        let acct = account_repo.get_by_id(line.account_id)?;
         if !acct.is_active {
             return Err(JournalError::InactiveAccount(i64::from(line.account_id)).into());
         }
         if acct.is_placeholder {
             return Err(JournalError::PlaceholderAccount(i64::from(line.account_id)).into());
         }
+        line_accounts.push(acct);
     }
 
     // Validate: fiscal period is open.
@@ -108,20 +174,31 @@ pub fn post_journal_entry(db: &EntityDb, je_id: JournalEntryId, entity_name: &st
         }
     }
 
+    // Pre-compute envelope fill amount (None = no fills needed).
+    let fill_cash = cash_receipt_amount(&lines, &line_accounts);
+
     // Build audit description: summarise the first debit and credit lines.
-    let description = build_post_description(&entry.je_number, &lines, db)?;
+    let description = build_post_description(&entry.je_number, &lines, &line_accounts);
 
     // Execute the transition inside a single transaction.
     let tx = db.conn().unchecked_transaction()?;
     {
         use crate::db::audit_repo::AuditRepo;
+        use crate::db::envelope_repo::EnvelopeRepo;
         use crate::db::journal_repo::JournalRepo;
 
         JournalRepo::new(&tx).update_status(je_id, JournalEntryStatus::Posted)?;
 
-        // TODO(Phase 4): Check for cash receipt and trigger envelope fills
-        // If any debit line targets a Cash/Bank account (and this is not an
-        // Owner's Draw entry), call envelope_repo.trigger_fills(je_id).
+        // Envelope fills: if a cash receipt was detected, apply each allocation.
+        if let Some(cash_received) = fill_cash {
+            let env = EnvelopeRepo::new(&tx);
+            for alloc in env.get_all_allocations()? {
+                let fill = cash_received.apply_percentage(alloc.percentage);
+                if !fill.is_zero() {
+                    env.record_fill(alloc.account_id, fill, je_id)?;
+                }
+            }
+        }
 
         AuditRepo::new(&tx).append(
             AuditAction::JournalEntryPosted,
@@ -239,25 +316,34 @@ pub fn reverse_journal_entry(
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Builds a human-readable description for the post audit log entry.
-/// Shows at most the first debit and first credit line with account names.
+/// Shows all debit and credit lines with account names.
 fn build_post_description(
     je_number: &str,
-    lines: &[crate::db::journal_repo::JournalEntryLine],
-    db: &EntityDb,
-) -> Result<String> {
-    let accounts = db.accounts();
-    let mut parts: Vec<String> = Vec::new();
+    lines: &[JournalEntryLine],
+    accounts: &[Account],
+) -> String {
+    let get_name = |id: AccountId| {
+        accounts
+            .iter()
+            .find(|a| a.id == id)
+            .map(|a| a.name.as_str())
+            .unwrap_or("Unknown")
+    };
 
-    for line in lines {
-        let acct = accounts.get_by_id(line.account_id)?;
-        if !line.debit_amount.is_zero() {
-            parts.push(format!("Dr {} {}", acct.name, line.debit_amount));
-        } else if !line.credit_amount.is_zero() {
-            parts.push(format!("Cr {} {}", acct.name, line.credit_amount));
-        }
-    }
+    let parts: Vec<String> = lines
+        .iter()
+        .filter_map(|l| {
+            if !l.debit_amount.is_zero() {
+                Some(format!("Dr {} {}", get_name(l.account_id), l.debit_amount))
+            } else if !l.credit_amount.is_zero() {
+                Some(format!("Cr {} {}", get_name(l.account_id), l.credit_amount))
+            } else {
+                None
+            }
+        })
+        .collect();
 
-    Ok(format!("Posted {}: {}", je_number, parts.join(", ")))
+    format!("Posted {}: {}", je_number, parts.join(", "))
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -732,5 +818,247 @@ mod tests {
             msg.contains("closed") || msg.contains("Closed"),
             "Error should mention closed period: {msg}"
         );
+    }
+
+    // ── Envelope fill tests ───────────────────────────────────────────────────
+
+    /// Helper: find an account by number in the seeded chart.
+    fn find_account_id(db: &EntityDb, number: &str) -> crate::types::AccountId {
+        db.accounts()
+            .list_all()
+            .expect("list_all")
+            .into_iter()
+            .find(|a| a.number == number)
+            .unwrap_or_else(|| panic!("Account {number} not found in seeded chart"))
+            .id
+    }
+
+    /// Helper: set a 10% allocation on `account_id`.
+    fn set_ten_pct_allocation(db: &EntityDb, account_id: crate::types::AccountId) {
+        db.envelopes()
+            .set_allocation(account_id, crate::types::Percentage(10_000_000))
+            .expect("set allocation");
+    }
+
+    #[test]
+    fn post_cash_receipt_fills_envelopes() {
+        let db = make_entity_db();
+        let (jan_period, _) = setup_fiscal_year(&db);
+
+        let checking = find_account_id(&db, "1110"); // Checking Account (Cash)
+        let revenue = find_account_id(&db, "4100"); // Service Revenue
+        let envelope_acct = find_account_id(&db, "5100"); // some account to earmark
+
+        // Configure 10% allocation.
+        set_ten_pct_allocation(&db, envelope_acct);
+
+        // Post: debit Checking $1000, credit Revenue $1000.
+        let amount = Money(100_000_000_000); // $1000.00
+        let entry = NewJournalEntry {
+            entry_date: NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+            memo: None,
+            fiscal_period_id: jan_period,
+            reversal_of_je_id: None,
+            lines: vec![
+                NewJournalEntryLine {
+                    account_id: checking,
+                    debit_amount: amount,
+                    credit_amount: Money(0),
+                    line_memo: None,
+                    sort_order: 0,
+                },
+                NewJournalEntryLine {
+                    account_id: revenue,
+                    debit_amount: Money(0),
+                    credit_amount: amount,
+                    line_memo: None,
+                    sort_order: 1,
+                },
+            ],
+        };
+        let je_id = db.journals().create_draft(&entry).expect("create");
+        post_journal_entry(&db, je_id, "Test Entity").expect("post");
+
+        // Envelope balance should be 10% of $1000 = $100.
+        let balance = db.envelopes().get_balance(envelope_acct).expect("balance");
+        let expected = Money(10_000_000_000); // $100.00
+        assert_eq!(balance, expected, "10% of $1000 should be earmarked");
+
+        // Fill entry should reference the JE.
+        let fills = db.envelopes().get_fills_for_je(je_id).expect("fills");
+        assert_eq!(fills.len(), 1);
+        assert_eq!(fills[0].source_je_id, Some(je_id));
+    }
+
+    #[test]
+    fn post_non_cash_je_does_not_fill_envelopes() {
+        let db = make_entity_db();
+        let (jan_period, _) = setup_fiscal_year(&db);
+
+        let expense = find_account_id(&db, "5100"); // Rent (Expense)
+        let ap = find_account_id(&db, "2100"); // Accounts Payable
+        let envelope_acct = find_account_id(&db, "5200"); // different account
+
+        set_ten_pct_allocation(&db, envelope_acct);
+
+        // Post: debit Rent Expense, credit AP (no cash debit).
+        let entry = NewJournalEntry {
+            entry_date: NaiveDate::from_ymd_opt(2026, 1, 10).unwrap(),
+            memo: None,
+            fiscal_period_id: jan_period,
+            reversal_of_je_id: None,
+            lines: vec![
+                NewJournalEntryLine {
+                    account_id: expense,
+                    debit_amount: Money(50_000_000_000),
+                    credit_amount: Money(0),
+                    line_memo: None,
+                    sort_order: 0,
+                },
+                NewJournalEntryLine {
+                    account_id: ap,
+                    debit_amount: Money(0),
+                    credit_amount: Money(50_000_000_000),
+                    line_memo: None,
+                    sort_order: 1,
+                },
+            ],
+        };
+        let je_id = db.journals().create_draft(&entry).expect("create");
+        post_journal_entry(&db, je_id, "Test Entity").expect("post");
+
+        let balance = db.envelopes().get_balance(envelope_acct).expect("balance");
+        assert_eq!(balance, Money(0), "Non-cash JE should not trigger fills");
+    }
+
+    #[test]
+    fn post_owners_draw_je_does_not_fill_envelopes() {
+        let db = make_entity_db();
+        let (jan_period, _) = setup_fiscal_year(&db);
+
+        // Owner's Draw (3200, is_contra) debits Owner's Draw and credits Checking.
+        let draw = find_account_id(&db, "3200"); // Owner's Draw (contra-equity)
+        let checking = find_account_id(&db, "1110"); // Checking Account
+        let envelope_acct = find_account_id(&db, "5100");
+
+        set_ten_pct_allocation(&db, envelope_acct);
+
+        // Entry: debit Owner's Draw, credit Checking (draw taken out).
+        let entry = NewJournalEntry {
+            entry_date: NaiveDate::from_ymd_opt(2026, 1, 20).unwrap(),
+            memo: None,
+            fiscal_period_id: jan_period,
+            reversal_of_je_id: None,
+            lines: vec![
+                NewJournalEntryLine {
+                    account_id: draw,
+                    debit_amount: Money(20_000_000_000),
+                    credit_amount: Money(0),
+                    line_memo: None,
+                    sort_order: 0,
+                },
+                NewJournalEntryLine {
+                    account_id: checking,
+                    debit_amount: Money(0),
+                    credit_amount: Money(20_000_000_000),
+                    line_memo: None,
+                    sort_order: 1,
+                },
+            ],
+        };
+        let je_id = db.journals().create_draft(&entry).expect("create");
+        post_journal_entry(&db, je_id, "Test Entity").expect("post");
+
+        // No fills: cash was credited (not debited), and Owner's Draw is present.
+        let balance = db.envelopes().get_balance(envelope_acct).expect("balance");
+        assert_eq!(
+            balance,
+            Money(0),
+            "Owner's Draw JE should not trigger fills"
+        );
+    }
+
+    #[test]
+    fn post_capital_contribution_fills_envelopes() {
+        let db = make_entity_db();
+        let (jan_period, _) = setup_fiscal_year(&db);
+
+        let checking = find_account_id(&db, "1110"); // Checking (cash)
+        let capital = find_account_id(&db, "3100"); // Owner's Capital
+        let envelope_acct = find_account_id(&db, "5100");
+
+        set_ten_pct_allocation(&db, envelope_acct);
+
+        // Capital contribution: debit Checking, credit Owner's Capital.
+        let amount = Money(200_000_000_000); // $2000.00
+        let entry = NewJournalEntry {
+            entry_date: NaiveDate::from_ymd_opt(2026, 1, 5).unwrap(),
+            memo: None,
+            fiscal_period_id: jan_period,
+            reversal_of_je_id: None,
+            lines: vec![
+                NewJournalEntryLine {
+                    account_id: checking,
+                    debit_amount: amount,
+                    credit_amount: Money(0),
+                    line_memo: None,
+                    sort_order: 0,
+                },
+                NewJournalEntryLine {
+                    account_id: capital,
+                    debit_amount: Money(0),
+                    credit_amount: amount,
+                    line_memo: None,
+                    sort_order: 1,
+                },
+            ],
+        };
+        let je_id = db.journals().create_draft(&entry).expect("create");
+        post_journal_entry(&db, je_id, "Test Entity").expect("post");
+
+        let balance = db.envelopes().get_balance(envelope_acct).expect("balance");
+        let expected = Money(20_000_000_000); // 10% of $2000 = $200
+        assert_eq!(
+            balance, expected,
+            "Capital contribution should trigger fills"
+        );
+    }
+
+    #[test]
+    fn post_cash_receipt_with_no_allocations_creates_no_fills() {
+        let db = make_entity_db();
+        let (jan_period, _) = setup_fiscal_year(&db);
+
+        let checking = find_account_id(&db, "1110");
+        let revenue = find_account_id(&db, "4100");
+
+        // No allocations configured.
+        let entry = NewJournalEntry {
+            entry_date: NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+            memo: None,
+            fiscal_period_id: jan_period,
+            reversal_of_je_id: None,
+            lines: vec![
+                NewJournalEntryLine {
+                    account_id: checking,
+                    debit_amount: Money(50_000_000_000),
+                    credit_amount: Money(0),
+                    line_memo: None,
+                    sort_order: 0,
+                },
+                NewJournalEntryLine {
+                    account_id: revenue,
+                    debit_amount: Money(0),
+                    credit_amount: Money(50_000_000_000),
+                    line_memo: None,
+                    sort_order: 1,
+                },
+            ],
+        };
+        let je_id = db.journals().create_draft(&entry).expect("create");
+        post_journal_entry(&db, je_id, "Test Entity").expect("post");
+
+        let fills = db.envelopes().get_fills_for_je(je_id).expect("fills");
+        assert_eq!(fills.len(), 0, "No allocations → no fills");
     }
 }
