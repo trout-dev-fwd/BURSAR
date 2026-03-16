@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use chrono::NaiveDate;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
@@ -14,7 +16,7 @@ use crate::db::{
 };
 use crate::services::journal::{post_journal_entry, reverse_journal_entry};
 use crate::tabs::{RecordId, Tab, TabAction, TabId};
-use crate::types::{AccountId, JournalEntryId, JournalEntryStatus, ReconcileState};
+use crate::types::{AccountId, JournalEntryId, JournalEntryStatus, Money, ReconcileState};
 use crate::widgets::{
     JeForm, centered_rect,
     confirmation::{ConfirmAction, Confirmation},
@@ -104,6 +106,9 @@ pub struct JournalEntriesTab {
     accounts: Vec<Account>,
     modal: Option<Modal>,
     entity_name: String,
+    /// Envelope available balance per account (Earmarked − GL Balance for current FY).
+    /// Accounts without allocations are absent from the map.
+    envelope_avail: HashMap<AccountId, Money>,
 }
 
 impl Default for JournalEntriesTab {
@@ -116,6 +121,7 @@ impl Default for JournalEntriesTab {
             accounts: Vec::new(),
             modal: None,
             entity_name: String::new(),
+            envelope_avail: HashMap::new(),
         }
     }
 }
@@ -128,6 +134,53 @@ impl JournalEntriesTab {
     /// Called from `EntityContext::new` to give this tab the entity name for audit logging.
     pub fn set_entity_name(&mut self, name: &str) {
         self.entity_name = name.to_string();
+    }
+
+    /// Computes available envelope balance (Earmarked − GL Balance) for each allocated
+    /// account in the current fiscal year. Used as read-only context in the JE form.
+    fn reload_envelope_avail(&mut self, db: &EntityDb) {
+        let mut avail = HashMap::new();
+        let allocations = match db.envelopes().get_all_allocations() {
+            Ok(a) => a,
+            Err(e) => {
+                tracing::error!("Failed to load envelope allocations: {e}");
+                self.envelope_avail = avail;
+                return;
+            }
+        };
+
+        // Find current fiscal year for date-range filtering.
+        let today = chrono::Local::now().date_naive();
+        let fy = db.fiscal().list_fiscal_years().ok().and_then(|years| {
+            years
+                .into_iter()
+                .find(|y| today >= y.start_date && today <= y.end_date)
+        });
+
+        for alloc in &allocations {
+            let earmarked = match &fy {
+                Some(fy) => db
+                    .envelopes()
+                    .get_balance_for_date_range(alloc.account_id, fy.start_date, fy.end_date)
+                    .unwrap_or(Money(0)),
+                None => db
+                    .envelopes()
+                    .get_balance(alloc.account_id)
+                    .unwrap_or(Money(0)),
+            };
+            let gl_balance = match &fy {
+                Some(fy) => db
+                    .accounts()
+                    .get_balance_for_date_range(alloc.account_id, fy.start_date, fy.end_date)
+                    .unwrap_or(Money(0)),
+                None => db
+                    .accounts()
+                    .get_balance(alloc.account_id)
+                    .unwrap_or(Money(0)),
+            };
+            avail.insert(alloc.account_id, Money(earmarked.0 - gl_balance.0));
+        }
+        self.envelope_avail = avail;
     }
 
     fn selected_entry(&self) -> Option<&JournalEntry> {
@@ -576,7 +629,7 @@ impl JournalEntriesTab {
             Modal::NewEntry(form) => {
                 let popup = centered_rect(90, 80, area);
                 frame.render_widget(Clear, popup);
-                form.render(frame, popup, &self.accounts);
+                form.render(frame, popup, &self.accounts, &self.envelope_avail);
             }
             Modal::ConfirmPost { confirm, .. } => {
                 confirm.render(frame, area);
@@ -750,6 +803,7 @@ impl Tab for JournalEntriesTab {
             Ok(accts) => self.accounts = accts,
             Err(e) => tracing::error!("Account list refresh failed: {e}"),
         }
+        self.reload_envelope_avail(db);
         // Clamp selection to valid range.
         if self.entries.is_empty() {
             self.table_state.select(None);

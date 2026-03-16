@@ -279,5 +279,17 @@ Applied 3 fixes from post-phase developer review:
    CoA tab `x` key opens confirmation dialog, writes `AccountDeleted` audit entry. `AuditAction::AccountDeleted`
    variant added to the enum.
 
+## Phase 4 Review Fixes (2026-03-16)
+
+Applied fixes from the end-of-phase developer review:
+
+1. **Hardcoded 'Fill' string parameterized** — `envelope_repo.rs` SQL now uses `?2` with `EnvelopeEntryType::Fill.to_string()`.
+2. **Tab bar overflow + column layout** — Tab labels abbreviate on narrow terminals, two-row wrapping; Name column `Min(30)` → `Min(10)` across tabs.
+3. **Earmarked column separated** — CoA tab shows dedicated Earmarked column (was inline in Balance column).
+4. **Transfer modal rendering** — `centered_rect(55, 12, area)` → `centered_rect(55, 40, area)` to ensure popup has visible inner rows.
+5. **Available formula fixed** — Envelopes Balances: `Available = Earmarked - GL Balance` (was inverted).
+6. **Fiscal year filter on Balances view** — Added `get_balance_for_date_range()` to both `EnvelopeRepo` and `AccountRepo`. Envelopes Balances view defaults to current fiscal year, left/right arrows cycle years. Block title shows "Envelope Balances — FY 2026". Allocation Config view is unfiltered. 228 total tests passing.
+7. **Earmarked available column in JE form** — Added read-only "Avail" column between Account and Debit in `je_form.rs`. Shows `Earmarked − GL Balance` (current FY) for accounts with envelope allocations; "—" for others. Tab key skips the column (no Focus variant added). `JeForm::render()` signature extended with `&HashMap<AccountId, Money>` for the available balances. JE tab computes and passes the data during `refresh()`.
+
 ## Known Issues
 - None currently.

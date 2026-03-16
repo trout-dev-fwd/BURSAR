@@ -27,6 +27,8 @@ use ratatui::{
     widgets::{Block, Borders, Cell, Paragraph, Row, Table},
 };
 
+use std::collections::HashMap;
+
 use super::AccountPicker;
 use crate::db::account_repo::Account;
 use crate::db::journal_repo::NewJournalEntryLine;
@@ -436,7 +438,16 @@ impl JeForm {
 
     /// Renders the form into `area`. Renders the account picker popup on top when active.
     /// `accounts` is passed to the account picker.
-    pub fn render(&self, frame: &mut Frame, area: Rect, accounts: &[Account]) {
+    /// `envelope_avail` maps account IDs to their available envelope balance
+    /// (Earmarked − GL Balance for the current fiscal year). Accounts not in the map
+    /// have no envelope allocation and show "—" in the Avail column.
+    pub fn render(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        accounts: &[Account],
+        envelope_avail: &HashMap<AccountId, Money>,
+    ) {
         let block = Block::default()
             .title(" New Journal Entry  Ctrl+S: submit  Esc: cancel  F2: add row  F3: del row ")
             .borders(Borders::ALL)
@@ -463,7 +474,7 @@ impl JeForm {
         let help_area = layout[3];
 
         self.render_header(frame, header_area);
-        self.render_lines(frame, lines_area);
+        self.render_lines(frame, lines_area, envelope_avail);
         self.render_totals(frame, totals_area);
         self.render_help(frame, help_area);
 
@@ -500,51 +511,68 @@ impl JeForm {
         frame.render_widget(memo_text, cols[1]);
     }
 
-    fn render_lines(&self, frame: &mut Frame, area: Rect) {
+    fn render_lines(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        envelope_avail: &HashMap<AccountId, Money>,
+    ) {
         let header_row = Row::new(vec![
             Cell::from("Account").style(Style::default().add_modifier(Modifier::BOLD)),
+            Cell::from("Avail").style(Style::default().add_modifier(Modifier::BOLD)),
             Cell::from("Debit").style(Style::default().add_modifier(Modifier::BOLD)),
             Cell::from("Credit").style(Style::default().add_modifier(Modifier::BOLD)),
             Cell::from("Note").style(Style::default().add_modifier(Modifier::BOLD)),
         ]);
 
-        let rows: Vec<Row> = self
-            .lines
-            .iter()
-            .enumerate()
-            .map(|(i, row)| {
-                let acct_text = if row.account_name.is_empty() {
-                    "(pick account)".to_string()
-                } else {
-                    row.account_name.clone()
-                };
-                let acct_style = if self.focus == Focus::LineAccount(i) {
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD)
-                } else if row.account_id.is_some() {
-                    Style::default().fg(Color::White)
-                } else {
-                    Style::default().fg(Color::DarkGray)
-                };
+        let rows: Vec<Row> =
+            self.lines
+                .iter()
+                .enumerate()
+                .map(|(i, row)| {
+                    let acct_text = if row.account_name.is_empty() {
+                        "(pick account)".to_string()
+                    } else {
+                        row.account_name.clone()
+                    };
+                    let acct_style = if self.focus == Focus::LineAccount(i) {
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD)
+                    } else if row.account_id.is_some() {
+                        Style::default().fg(Color::White)
+                    } else {
+                        Style::default().fg(Color::DarkGray)
+                    };
 
-                Row::new(vec![
-                    Cell::from(acct_text).style(acct_style),
-                    Cell::from(format!("{}_", row.debit_input))
-                        .style(field_style(self.focus == Focus::LineDebit(i))),
-                    Cell::from(format!("{}_", row.credit_input))
-                        .style(field_style(self.focus == Focus::LineCredit(i))),
-                    Cell::from(format!("{}_", row.note_input))
-                        .style(field_style(self.focus == Focus::LineNote(i))),
-                ])
-            })
-            .collect();
+                    let avail_cell = match row.account_id {
+                        Some(id) => match envelope_avail.get(&id) {
+                            Some(avail) => Cell::from(format!("{avail}"))
+                                .style(Style::default().fg(Color::Cyan)),
+                            None => Cell::from("—").style(Style::default().fg(Color::DarkGray)),
+                        },
+                        None => Cell::from(""),
+                    };
+
+                    Row::new(vec![
+                        Cell::from(acct_text).style(acct_style),
+                        avail_cell,
+                        Cell::from(format!("{}_", row.debit_input))
+                            .style(field_style(self.focus == Focus::LineDebit(i))),
+                        Cell::from(format!("{}_", row.credit_input))
+                            .style(field_style(self.focus == Focus::LineCredit(i))),
+                        Cell::from(format!("{}_", row.note_input))
+                            .style(field_style(self.focus == Focus::LineNote(i))),
+                    ])
+                })
+                .collect();
 
         let widths = [
-            Constraint::Percentage(40),
-            Constraint::Percentage(15),
-            Constraint::Percentage(15),
-            Constraint::Percentage(30),
+            Constraint::Percentage(34),
+            Constraint::Length(12),
+            Constraint::Percentage(14),
+            Constraint::Percentage(14),
+            Constraint::Percentage(24),
         ];
 
         let table = Table::new(rows, widths)
