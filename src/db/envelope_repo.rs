@@ -217,6 +217,30 @@ impl<'conn> EnvelopeRepo<'conn> {
 
     // ── Ledger queries ────────────────────────────────────────────────────────
 
+    /// Returns the envelope balance for an account within a date range: `SUM(amount)`
+    /// where `created_at` falls between `start` and `end` (inclusive, date-only comparison).
+    /// Returns `Money(0)` if no entries exist in the range.
+    pub fn get_balance_for_date_range(
+        &self,
+        account_id: AccountId,
+        start: chrono::NaiveDate,
+        end: chrono::NaiveDate,
+    ) -> Result<Money> {
+        let raw: i64 = self
+            .conn
+            .query_row(
+                "SELECT COALESCE(SUM(el.amount), 0)
+                 FROM envelope_ledger el
+                 WHERE el.account_id = ?1
+                   AND date(el.created_at) >= ?2
+                   AND date(el.created_at) <= ?3",
+                params![i64::from(account_id), start.to_string(), end.to_string(),],
+                |row| row.get(0),
+            )
+            .context("Failed to compute envelope balance for date range")?;
+        Ok(Money(raw))
+    }
+
     /// Returns the current envelope balance for an account: `SUM(amount)`.
     /// Returns `Money(0)` if no entries exist.
     pub fn get_balance(&self, account_id: AccountId) -> Result<Money> {
@@ -604,5 +628,35 @@ mod tests {
         let fills_je2 = repo.get_fills_for_je(je2).expect("fills for je2");
         assert_eq!(fills_je2.len(), 1);
         assert_eq!(fills_je2[0].account_id, acct1);
+    }
+
+    // ── get_balance_for_date_range ───────────────────────────────────────────
+
+    #[test]
+    fn get_balance_for_date_range_filters_by_created_at() {
+        let (conn, period_id, acct1, acct2) = setup_db();
+        let je_id = make_je(&conn, period_id, acct1, acct2);
+        let repo = EnvelopeRepo::new(&conn);
+
+        // Fill $50 — created_at is today (2026-ish based on test setup).
+        repo.record_fill(acct1, Money(5_000_000_000), je_id)
+            .expect("fill");
+
+        // Date range that includes today should show the balance.
+        let today = chrono::Local::now().date_naive();
+        let start = today - chrono::Duration::days(1);
+        let end = today + chrono::Duration::days(1);
+        let in_range = repo
+            .get_balance_for_date_range(acct1, start, end)
+            .expect("in range");
+        assert_eq!(in_range, Money(5_000_000_000));
+
+        // Date range in the past should return zero.
+        let old_start = chrono::NaiveDate::from_ymd_opt(2020, 1, 1).expect("date");
+        let old_end = chrono::NaiveDate::from_ymd_opt(2020, 12, 31).expect("date");
+        let out_of_range = repo
+            .get_balance_for_date_range(acct1, old_start, old_end)
+            .expect("out of range");
+        assert_eq!(out_of_range, Money(0));
     }
 }

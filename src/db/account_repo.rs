@@ -297,6 +297,32 @@ impl<'conn> AccountRepo<'conn> {
             .collect()
     }
 
+    /// Returns the net debit balance for an account across posted journal entry lines
+    /// whose `entry_date` falls within the given date range (inclusive).
+    /// Returns `Money(0)` when no posted lines exist in the range.
+    pub fn get_balance_for_date_range(
+        &self,
+        id: AccountId,
+        start: chrono::NaiveDate,
+        end: chrono::NaiveDate,
+    ) -> Result<Money> {
+        let raw: i64 = self
+            .conn
+            .query_row(
+                "SELECT COALESCE(SUM(jel.debit_amount - jel.credit_amount), 0)
+                 FROM journal_entry_lines jel
+                 JOIN journal_entries je ON je.id = jel.journal_entry_id
+                 WHERE jel.account_id = ?1
+                   AND je.status = 'Posted'
+                   AND je.entry_date >= ?2
+                   AND je.entry_date <= ?3",
+                params![i64::from(id), start.to_string(), end.to_string()],
+                |row| row.get(0),
+            )
+            .context("Failed to compute account balance for date range")?;
+        Ok(Money(raw))
+    }
+
     /// Returns the net debit balance for an account across all posted journal entry lines.
     /// Returns `Money(0)` when no posted lines exist (correct query, no data yet).
     pub fn get_balance(&self, id: AccountId) -> Result<Money> {
@@ -941,5 +967,90 @@ mod tests {
             all_balances.get(&cash.id).copied().unwrap_or(Money(0)),
             Money(10_000_000_000)
         );
+    }
+
+    #[test]
+    fn get_balance_for_date_range_filters_by_entry_date() {
+        use crate::db::{
+            entity_db_from_conn,
+            fiscal_repo::FiscalRepo,
+            journal_repo::{NewJournalEntry, NewJournalEntryLine},
+        };
+        use crate::services::journal::post_journal_entry;
+        use chrono::NaiveDate;
+        use rusqlite::Connection;
+
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        crate::db::schema::initialize_schema(&conn).expect("schema");
+        crate::db::schema::seed_default_accounts(&conn).expect("seed");
+        FiscalRepo::new(&conn)
+            .create_fiscal_year(1, 2026)
+            .expect("fiscal year");
+        let db = entity_db_from_conn(conn);
+
+        let accounts: Vec<_> = db
+            .accounts()
+            .list_all()
+            .unwrap()
+            .into_iter()
+            .filter(|a| !a.is_placeholder && a.is_active)
+            .collect();
+        let cash = &accounts[0];
+        let revenue = &accounts[1];
+
+        let period = db
+            .fiscal()
+            .get_period_for_date(NaiveDate::from_ymd_opt(2026, 1, 15).unwrap())
+            .unwrap();
+
+        let je_id = db
+            .journals()
+            .create_draft(&NewJournalEntry {
+                entry_date: NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                memo: None,
+                fiscal_period_id: period.id,
+                reversal_of_je_id: None,
+                lines: vec![
+                    NewJournalEntryLine {
+                        account_id: cash.id,
+                        debit_amount: Money(10_000_000_000),
+                        credit_amount: Money(0),
+                        line_memo: None,
+                        sort_order: 0,
+                    },
+                    NewJournalEntryLine {
+                        account_id: revenue.id,
+                        debit_amount: Money(0),
+                        credit_amount: Money(10_000_000_000),
+                        line_memo: None,
+                        sort_order: 1,
+                    },
+                ],
+            })
+            .unwrap();
+
+        post_journal_entry(&db, je_id, "Test Entity").unwrap();
+
+        // Date range that includes entry_date should show the balance.
+        let in_range = db
+            .accounts()
+            .get_balance_for_date_range(
+                cash.id,
+                NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+                NaiveDate::from_ymd_opt(2026, 12, 31).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(in_range, Money(10_000_000_000));
+
+        // Date range outside entry_date should return zero.
+        let out_of_range = db
+            .accounts()
+            .get_balance_for_date_range(
+                cash.id,
+                NaiveDate::from_ymd_opt(2025, 1, 1).unwrap(),
+                NaiveDate::from_ymd_opt(2025, 12, 31).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(out_of_range, Money(0));
     }
 }

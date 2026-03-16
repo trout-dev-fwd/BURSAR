@@ -13,6 +13,7 @@ use ratatui::{
 
 use crate::db::EntityDb;
 use crate::db::account_repo::Account;
+use crate::db::fiscal_repo::FiscalYear;
 use crate::tabs::{RecordId, Tab, TabAction};
 use crate::types::{AccountId, AuditAction, Money, Percentage};
 use crate::widgets::confirmation::ConfirmAction;
@@ -92,6 +93,10 @@ pub struct EnvelopesTab {
     table_state: TableState,
     modal: Option<EditPercentState>,
     transfer: Option<TransferModal>,
+    /// All fiscal years, ordered by start_date ASC.
+    fiscal_years: Vec<FiscalYear>,
+    /// Index into `fiscal_years` for the currently selected fiscal year in Balances view.
+    selected_fy_index: usize,
 }
 
 impl Default for EnvelopesTab {
@@ -112,6 +117,8 @@ impl EnvelopesTab {
             table_state: TableState::default(),
             modal: None,
             transfer: None,
+            fiscal_years: Vec::new(),
+            selected_fy_index: 0,
         }
     }
 
@@ -147,16 +154,52 @@ impl EnvelopesTab {
     fn reload_balances(&mut self, db: &EntityDb) {
         let mut env_bals = HashMap::new();
         let mut gl_bals = HashMap::new();
+        let fy = self.fiscal_years.get(self.selected_fy_index);
         for &account_id in self.allocations.keys() {
-            if let Ok(b) = db.envelopes().get_balance(account_id) {
+            let env_result = match fy {
+                Some(fy) => db.envelopes().get_balance_for_date_range(
+                    account_id,
+                    fy.start_date,
+                    fy.end_date,
+                ),
+                None => db.envelopes().get_balance(account_id),
+            };
+            if let Ok(b) = env_result {
                 env_bals.insert(account_id, b);
             }
-            if let Ok(b) = db.accounts().get_balance(account_id) {
+            let gl_result = match fy {
+                Some(fy) => {
+                    db.accounts()
+                        .get_balance_for_date_range(account_id, fy.start_date, fy.end_date)
+                }
+                None => db.accounts().get_balance(account_id),
+            };
+            if let Ok(b) = gl_result {
                 gl_bals.insert(account_id, b);
             }
         }
         self.envelope_balances = env_bals;
         self.gl_balances = gl_bals;
+    }
+
+    fn reload_fiscal_years(&mut self, db: &EntityDb) {
+        match db.fiscal().list_fiscal_years() {
+            Ok(years) => {
+                // Find the current FY (today falls within start..=end).
+                let today = chrono::Local::now().date_naive();
+                let current_idx = years
+                    .iter()
+                    .position(|fy| today >= fy.start_date && today <= fy.end_date)
+                    .unwrap_or(years.len().saturating_sub(1));
+                self.fiscal_years = years;
+                self.selected_fy_index = current_idx;
+            }
+            Err(e) => {
+                tracing::error!("Failed to load fiscal years: {e}");
+                self.fiscal_years.clear();
+                self.selected_fy_index = 0;
+            }
+        }
     }
 
     fn clamp_selection(&mut self) {
@@ -683,7 +726,7 @@ impl EnvelopesTab {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title("Envelope Balances"),
+                    .title(self.balances_title()),
             )
             .row_highlight_style(
                 Style::default()
@@ -913,10 +956,17 @@ impl EnvelopesTab {
         }
     }
 
+    fn balances_title(&self) -> String {
+        match self.fiscal_years.get(self.selected_fy_index) {
+            Some(fy) => format!("Envelope Balances — FY {}", fy.start_date.format("%Y")),
+            None => "Envelope Balances".to_string(),
+        }
+    }
+
     fn hint_text(&self) -> &'static str {
         match self.view {
             View::Allocations => "↑↓ Navigate  Enter Edit%  d Remove  Tab→Balances",
-            View::Balances => "↑↓ Navigate  t Transfer  Tab→Allocations",
+            View::Balances => "←→ Fiscal Year  ↑↓ Navigate  t Transfer  Tab→Allocations",
         }
     }
 }
@@ -960,6 +1010,19 @@ impl Tab for EnvelopesTab {
                     self.open_transfer_modal();
                 }
             }
+            KeyCode::Left => {
+                if self.view == View::Balances && !self.fiscal_years.is_empty() {
+                    self.selected_fy_index = self.selected_fy_index.saturating_sub(1);
+                    self.reload_balances(db);
+                }
+            }
+            KeyCode::Right => {
+                if self.view == View::Balances && !self.fiscal_years.is_empty() {
+                    let max = self.fiscal_years.len().saturating_sub(1);
+                    self.selected_fy_index = (self.selected_fy_index + 1).min(max);
+                    self.reload_balances(db);
+                }
+            }
             _ => {}
         }
 
@@ -992,6 +1055,7 @@ impl Tab for EnvelopesTab {
 
     fn refresh(&mut self, db: &EntityDb) {
         self.reload_accounts_and_allocations(db);
+        self.reload_fiscal_years(db);
         self.reload_balances(db);
         self.clamp_selection();
     }
