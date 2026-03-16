@@ -1,16 +1,16 @@
 # Progress Tracker
 
 ## Current State
-- **Active Phase**: Phase 3 (complete — awaiting developer review)
-- **Last Completed Task**: Phase 3, Task 12
-- **Next Task**: Phase 4 (after developer review)
+- **Active Phase**: Phase 3 (complete — developer review applied 2026-03-16)
+- **Last Completed Task**: Phase 3, Task 12 + post-phase bugfixes/enhancements
+- **Next Task**: Phase 4 (after developer sign-off)
 - **Blockers**: None
 
 ## Completed Phases
 - [x] Phase 1: Foundation (completed 2026-03-15)
 - [x] Phase 2a: Chart of Accounts (completed 2026-03-15, review fixes applied 2026-03-15)
 - [x] Phase 2b: Journal Entries (completed 2026-03-15, review fixes applied 2026-03-15)
-- [x] Phase 3: GL, AR/AP, Fiscal Periods (completed 2026-03-15 — awaiting developer review)
+- [x] Phase 3: GL, AR/AP, Fiscal Periods (completed 2026-03-15, review fixes applied 2026-03-16)
 
 ## Current Phase Progress
 
@@ -208,6 +208,20 @@ Applied 3 fixes from the end-of-phase developer review:
    and `reverse_draft_entry_returns_not_posted_error` to `services/journal.rs` tests.
 3. **`get_next_je_number()` cleanup** — replaced chained `.unwrap_or("0").parse().unwrap_or(0)`
    with `.and_then(|suffix| suffix.parse().ok()).unwrap_or(0)` for clarity.
+
+## Phase 3 Review Fixes (2026-03-16)
+
+Applied 3 fixes from post-phase developer review:
+
+1. **AccountPicker placeholder bug** — CoA tab's parent picker now uses `AccountPicker::with_placeholders()`
+   so placeholder accounts appear as valid parent choices. Added `include_placeholders: bool` config to
+   `AccountPicker` (defaults to false, preserving JE form behavior).
+2. **ArApStatus parameterization** — AR/AP INSERT queries now use parameterized enum values instead of
+   hardcoded status strings.
+3. **Account deletion for unused accounts** — `AccountRepo::delete()` permanently removes accounts after
+   six guard checks (journal entries, AR/AP items, child accounts, envelope allocations, fixed assets).
+   CoA tab `x` key opens confirmation dialog, writes `AccountDeleted` audit entry. `AuditAction::AccountDeleted`
+   variant added to the enum.
 
 ## Known Issues
 - None currently.
