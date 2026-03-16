@@ -54,13 +54,15 @@ impl EntityContext {
         ar.set_entity_name(&name);
         let mut ap = AccountsPayableTab::new();
         ap.set_entity_name(&name);
+        let mut env = EnvelopesTab::new();
+        env.set_entity_name(&name);
         let mut tabs: Vec<Box<dyn Tab>> = vec![
             Box::new(coa),
             Box::new(GeneralLedgerTab::new()),
             Box::new(je),
             Box::new(ar),
             Box::new(ap),
-            Box::new(EnvelopesTab),
+            Box::new(env),
             Box::new(FixedAssetsTab),
             Box::new(ReportsTab),
             Box::new(AuditLogTab),
