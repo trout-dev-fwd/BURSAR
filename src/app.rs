@@ -18,6 +18,7 @@ use ratatui::{
 use crate::{
     config::{EntityConfig, WorkspaceConfig, save_config},
     db::EntityDb,
+    inter_entity::{InterEntityMode, form::InterEntityFormAction, write_protocol},
     tabs::{
         Tab, TabAction, TabId, accounts_payable::AccountsPayableTab,
         accounts_receivable::AccountsReceivableTab, audit_log::AuditLogTab,
@@ -31,8 +32,15 @@ use crate::{
 /// Operating mode of the application.
 pub enum AppMode {
     Normal,
-    // TODO(Phase 6): InterEntity(InterEntityMode)
-    // TODO(Phase 1+): Modal(ModalKind)  — used for entity picker / creation prompts
+    /// User is picking the secondary entity for an inter-entity transaction.
+    SecondaryEntityPicker {
+        /// Index into `config.entities`, skipping the active entity.
+        selected: usize,
+        /// Indices of selectable entities (all entities except the active one).
+        candidates: Vec<usize>,
+    },
+    /// Inter-entity form is open.
+    InterEntity(Box<InterEntityMode>),
 }
 
 /// Active entity context: database handle, entity name, and the 9 tab instances.
@@ -148,6 +156,30 @@ impl App {
                 match &self.mode {
                     AppMode::Normal => {
                         self.entity.tabs[self.active_tab].render(frame, chunks[1]);
+                    }
+                    AppMode::SecondaryEntityPicker {
+                        selected,
+                        candidates,
+                    } => {
+                        render_secondary_entity_picker(
+                            frame,
+                            chunks[1],
+                            &self.config,
+                            *selected,
+                            candidates,
+                        );
+                    }
+                    AppMode::InterEntity(mode) => {
+                        mode.form.render(
+                            frame,
+                            chunks[1],
+                            &mode.primary_name,
+                            &mode.secondary_name,
+                            &mode.primary_accounts,
+                            &mode.secondary_accounts,
+                            &std::collections::HashMap::new(),
+                            &std::collections::HashMap::new(),
+                        );
                     }
                 }
 
@@ -307,6 +339,18 @@ impl App {
             return;
         }
 
+        // Inter-entity mode: all input goes to the form.
+        if matches!(self.mode, AppMode::InterEntity(_)) {
+            self.handle_inter_entity_key(key);
+            return;
+        }
+
+        // Secondary entity picker: all input goes to picker.
+        if matches!(self.mode, AppMode::SecondaryEntityPicker { .. }) {
+            self.handle_secondary_picker_key(key);
+            return;
+        }
+
         // If the fiscal modal is open, all input goes to it.
         if self.fiscal_modal.is_some() {
             let action = self
@@ -355,6 +399,114 @@ impl App {
         }
     }
 
+    fn handle_inter_entity_key(&mut self, key: KeyEvent) {
+        let AppMode::InterEntity(ref mut mode) = self.mode else {
+            return;
+        };
+        let action = mode
+            .form
+            .handle_key(key, &mode.primary_accounts, &mode.secondary_accounts);
+
+        match action {
+            InterEntityFormAction::Pending => {}
+            InterEntityFormAction::Cancelled => {
+                self.mode = AppMode::Normal;
+            }
+            InterEntityFormAction::Submitted(output) => {
+                let AppMode::InterEntity(ref mode) = self.mode else {
+                    return;
+                };
+                let input = write_protocol::InterEntityInput {
+                    entry_date: output.entry_date,
+                    memo: output.memo,
+                    primary_lines: output.primary_lines,
+                    secondary_lines: output.secondary_lines,
+                };
+                let result = write_protocol::execute(
+                    &self.entity.db,
+                    &mode.secondary_db,
+                    &mode.primary_name,
+                    &mode.secondary_name,
+                    &input,
+                );
+                match result {
+                    Ok(_) => {
+                        self.mode = AppMode::Normal;
+                        for tab in &mut self.entity.tabs {
+                            tab.refresh(&self.entity.db);
+                        }
+                        self.status_bar
+                            .set_message("Inter-entity transaction posted.".to_owned());
+                    }
+                    Err(e) => {
+                        self.status_bar.set_message(format!("Error: {e}"));
+                    }
+                }
+            }
+        }
+    }
+
+    fn handle_secondary_picker_key(&mut self, key: KeyEvent) {
+        let AppMode::SecondaryEntityPicker {
+            ref mut selected,
+            ref candidates,
+        } = self.mode
+        else {
+            return;
+        };
+        let count = candidates.len();
+
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                *selected = selected.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if *selected + 1 < count {
+                    *selected += 1;
+                }
+            }
+            KeyCode::Esc => {
+                self.mode = AppMode::Normal;
+            }
+            KeyCode::Enter => {
+                let AppMode::SecondaryEntityPicker {
+                    selected,
+                    ref candidates,
+                } = self.mode
+                else {
+                    return;
+                };
+                let cfg_idx = candidates[selected];
+                let secondary_cfg = self.config.entities[cfg_idx].clone();
+                match EntityDb::open(&secondary_cfg.db_path) {
+                    Err(e) => {
+                        self.mode = AppMode::Normal;
+                        self.status_bar
+                            .set_message(format!("Failed to open {}: {e}", secondary_cfg.name));
+                    }
+                    Ok(secondary_db) => {
+                        match InterEntityMode::open(
+                            &self.entity.db,
+                            secondary_db,
+                            self.entity.name.clone(),
+                            secondary_cfg.name,
+                        ) {
+                            Err(e) => {
+                                self.mode = AppMode::Normal;
+                                self.status_bar
+                                    .set_message(format!("Failed to open inter-entity mode: {e}"));
+                            }
+                            Ok(mode) => {
+                                self.mode = AppMode::InterEntity(Box::new(mode));
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn process_fiscal_modal_action(&mut self, action: FiscalModalAction) {
         match action {
             FiscalModalAction::None => {}
@@ -390,9 +542,27 @@ impl App {
                 }
             }
             TabAction::StartInterEntityMode => {
-                // TODO(Phase 6): open inter-entity modal
-                self.status_bar
-                    .set_message("Inter-entity mode not yet implemented".to_owned());
+                // Build candidate list: all entities except the active one.
+                let active_name = &self.entity.name;
+                let candidates: Vec<usize> = self
+                    .config
+                    .entities
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, e)| &e.name != active_name)
+                    .map(|(i, _)| i)
+                    .collect();
+                if candidates.is_empty() {
+                    self.status_bar.set_message(
+                        "Inter-entity mode requires at least two entities in workspace config."
+                            .to_owned(),
+                    );
+                } else {
+                    self.mode = AppMode::SecondaryEntityPicker {
+                        selected: 0,
+                        candidates,
+                    };
+                }
             }
             TabAction::Quit => {
                 self.should_quit = true;
@@ -474,6 +644,39 @@ fn render_help_overlay(
             .style(Style::default().bg(Color::Black)),
         popup_area,
     );
+}
+
+fn render_secondary_entity_picker(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    config: &WorkspaceConfig,
+    selected: usize,
+    candidates: &[usize],
+) {
+    let block = Block::default()
+        .title(" Select Secondary Entity (↑↓ to move, Enter to open, Esc to cancel) ")
+        .borders(Borders::ALL)
+        .style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let lines: Vec<ratatui::text::Line> = candidates
+        .iter()
+        .enumerate()
+        .map(|(i, &cfg_idx)| {
+            let name = &config.entities[cfg_idx].name;
+            if i == selected {
+                ratatui::text::Line::from(vec![Span::styled(
+                    format!("  ▶ {name}"),
+                    Style::default().fg(Color::Yellow).bg(Color::DarkGray),
+                )])
+            } else {
+                ratatui::text::Line::from(vec![Span::raw(format!("    {name}"))])
+            }
+        })
+        .collect();
+
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn tab_id_to_index(tab_id: TabId) -> usize {

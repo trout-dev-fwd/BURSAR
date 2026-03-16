@@ -835,7 +835,7 @@ impl Tab for JournalEntriesTab {
             ("n", "New journal entry"),
             ("p", "Post selected entry"),
             ("r", "Reverse posted entry"),
-            ("c", "Create inter-entity entry"),
+            ("i", "New inter-entity entry"),
             ("g", "Go to General Ledger"),
             ("f", "Cycle fiscal period filter"),
             ("t", "Create recurring template"),
@@ -963,6 +963,10 @@ impl Tab for JournalEntriesTab {
                         );
                     }
                 }
+            }
+            // [i] open inter-entity transaction form.
+            KeyCode::Char('i') | KeyCode::Char('I') => {
+                return TabAction::StartInterEntityMode;
             }
             _ => {}
         }
