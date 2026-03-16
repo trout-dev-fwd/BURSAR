@@ -2,6 +2,7 @@ pub mod account_repo;
 pub mod ap_repo;
 pub mod ar_repo;
 pub mod audit_repo;
+pub mod envelope_repo;
 pub mod fiscal_repo;
 pub mod journal_repo;
 pub mod schema;
@@ -16,6 +17,7 @@ use crate::db::account_repo::AccountRepo;
 use crate::db::ap_repo::ApRepo;
 use crate::db::ar_repo::ArRepo;
 use crate::db::audit_repo::AuditRepo;
+use crate::db::envelope_repo::EnvelopeRepo;
 use crate::db::fiscal_repo::FiscalRepo;
 use crate::db::journal_repo::JournalRepo;
 use crate::db::schema::{initialize_schema, seed_default_accounts};
@@ -91,8 +93,12 @@ impl EntityDb {
         ApRepo::new(&self.conn)
     }
 
+    /// Returns an EnvelopeRepo borrowing this connection.
+    pub fn envelopes(&self) -> EnvelopeRepo<'_> {
+        EnvelopeRepo::new(&self.conn)
+    }
+
     // ── Stub repo accessors (filled in later phases) ──────────────────────────
-    // TODO(Phase 4):  fn envelopes(&self) -> EnvelopeRepo<'_>
     // TODO(Phase 4):  fn assets(&self) -> AssetRepo<'_>
     // TODO(Phase 5):  fn recurring(&self) -> RecurringRepo<'_>
 }
