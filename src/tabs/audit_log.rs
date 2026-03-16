@@ -325,6 +325,15 @@ impl Tab for AuditLogTab {
         "Audit Log"
     }
 
+    fn hotkey_help(&self) -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("↑/↓ or k/j", "Scroll entries"),
+            ("←/→", "Cycle action type filter"),
+            ("d", "Set date range filter"),
+            ("c", "Clear all filters"),
+        ]
+    }
+
     fn handle_key(&mut self, key: KeyEvent, db: &EntityDb) -> TabAction {
         if self.date_modal.is_some() {
             return self.handle_date_modal_key(key, db);

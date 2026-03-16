@@ -111,4 +111,10 @@ pub trait Tab {
     fn navigate_to(&mut self, record_id: RecordId, db: &EntityDb) {
         let _ = (record_id, db);
     }
+
+    /// Returns (key, description) pairs for this tab's context-specific hotkeys.
+    /// Shown in the `?` help overlay. Default returns an empty list.
+    fn hotkey_help(&self) -> Vec<(&'static str, &'static str)> {
+        vec![]
+    }
 }

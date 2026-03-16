@@ -829,6 +829,19 @@ impl Tab for JournalEntriesTab {
         "Journal Entries"
     }
 
+    fn hotkey_help(&self) -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("↑/↓ or k/j", "Navigate"),
+            ("n", "New journal entry"),
+            ("p", "Post selected entry"),
+            ("r", "Reverse posted entry"),
+            ("c", "Create inter-entity entry"),
+            ("g", "Go to General Ledger"),
+            ("f", "Cycle fiscal period filter"),
+            ("t", "Create recurring template"),
+        ]
+    }
+
     fn handle_key(&mut self, key: KeyEvent, db: &EntityDb) -> TabAction {
         // Route all keys to the active modal first.
         if self.modal.is_some() {

@@ -796,6 +796,16 @@ impl Tab for AccountsReceivableTab {
         "Accounts Receivable"
     }
 
+    fn hotkey_help(&self) -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("↑/↓ or k/j", "Navigate"),
+            ("n", "New receivable item"),
+            ("p", "Record payment"),
+            ("o", "Open in General Ledger"),
+            ("s / f", "Search / filter"),
+        ]
+    }
+
     fn handle_key(&mut self, key: KeyEvent, db: &EntityDb) -> TabAction {
         // Modal dispatch first.
         match &self.modal {

@@ -976,6 +976,15 @@ impl Tab for EnvelopesTab {
         "Envelopes"
     }
 
+    fn hotkey_help(&self) -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("Tab", "Switch view (Balances / Budget)"),
+            ("↑/↓", "Navigate"),
+            ("d", "Distribute funds to envelope"),
+            ("t", "Transfer between envelopes"),
+        ]
+    }
+
     fn handle_key(&mut self, key: KeyEvent, db: &EntityDb) -> TabAction {
         if self.transfer.is_some() {
             return self.handle_transfer_key(key, db);

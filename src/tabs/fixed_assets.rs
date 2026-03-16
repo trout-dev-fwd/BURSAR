@@ -323,6 +323,15 @@ impl Tab for FixedAssetsTab {
         "Fixed Assets"
     }
 
+    fn hotkey_help(&self) -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("↑/↓", "Navigate assets"),
+            ("Enter", "View depreciation schedule"),
+            ("Esc", "Back to asset list"),
+            ("g", "Generate pending depreciation"),
+        ]
+    }
+
     fn handle_key(&mut self, key: KeyEvent, db: &EntityDb) -> TabAction {
         self.status = None;
 

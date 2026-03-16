@@ -9,10 +9,10 @@ use crossterm::{
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
-    layout::{Alignment, Constraint, Direction, Layout},
-    style::{Color, Style},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Tabs},
+    widgets::{Block, Borders, Clear, Paragraph, Tabs},
 };
 
 use crate::{
@@ -86,6 +86,7 @@ pub struct App {
     mode: AppMode,
     status_bar: StatusBar,
     fiscal_modal: Option<FiscalModal>,
+    show_help: bool,
     should_quit: bool,
 }
 
@@ -99,6 +100,7 @@ impl App {
             mode: AppMode::Normal,
             status_bar,
             fiscal_modal: None,
+            show_help: false,
             should_quit: false,
         }
     }
@@ -152,6 +154,15 @@ impl App {
                 // Fiscal period modal overlay (rendered on top of tab content).
                 if let Some(ref mut modal) = self.fiscal_modal {
                     modal.render(frame, chunks[1]);
+                }
+
+                // Help overlay (rendered topmost).
+                if self.show_help {
+                    render_help_overlay(
+                        frame,
+                        chunks[1],
+                        self.entity.tabs[self.active_tab].hotkey_help(),
+                    );
                 }
 
                 self.status_bar.render(frame, chunks[2]);
@@ -287,6 +298,15 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
+        // Help overlay: Esc or ? dismisses it; all other keys are consumed.
+        if self.show_help {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('?') => self.show_help = false,
+                _ => {}
+            }
+            return;
+        }
+
         // If the fiscal modal is open, all input goes to it.
         if self.fiscal_modal.is_some() {
             let action = self
@@ -310,6 +330,10 @@ impl App {
         match key.code {
             KeyCode::Char('q') if key.modifiers == KeyModifiers::NONE => {
                 self.should_quit = true;
+            }
+            // Show help overlay.
+            KeyCode::Char('?') => {
+                self.show_help = true;
             }
             // Open fiscal period management modal.
             KeyCode::Char('f') if key.modifiers == KeyModifiers::NONE => {
@@ -375,6 +399,81 @@ impl App {
             }
         }
     }
+}
+
+/// Renders a centered help overlay showing global and tab-specific hotkeys.
+fn render_help_overlay(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    tab_hotkeys: Vec<(&'static str, &'static str)>,
+) {
+    let global_hotkeys: &[(&str, &str)] = &[
+        ("1–9", "Switch to tab"),
+        ("f", "Fiscal period management"),
+        ("q", "Quit"),
+        ("?", "Show / hide this help"),
+    ];
+
+    // Calculate popup size: width = 60, height = rows + borders + section headers.
+    let row_count = global_hotkeys.len() + tab_hotkeys.len() + 3; // +3: two headers + blank line
+    let popup_height = (row_count + 2).min(area.height as usize) as u16;
+    let popup_width = 62u16.min(area.width);
+
+    // Center the popup.
+    let x = area.x + area.width.saturating_sub(popup_width) / 2;
+    let y = area.y + area.height.saturating_sub(popup_height) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    // Build content lines.
+    let mut lines: Vec<Line> = Vec::new();
+
+    lines.push(Line::from(Span::styled(
+        " Global",
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    )));
+    for (key, desc) in global_hotkeys {
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {key:<12}"), Style::default().fg(Color::Cyan)),
+            Span::raw(*desc),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+
+    lines.push(Line::from(Span::styled(
+        " Tab-specific",
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    )));
+    if tab_hotkeys.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  (none)",
+            Style::default().fg(Color::DarkGray),
+        )));
+    } else {
+        for (key, desc) in &tab_hotkeys {
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {key:<12}"), Style::default().fg(Color::Cyan)),
+                Span::raw(*desc),
+            ]));
+        }
+    }
+
+    let block = Block::default()
+        .title(" Help (Esc or ? to close) ")
+        .borders(Borders::ALL)
+        .style(Style::default().fg(Color::White).bg(Color::Black));
+
+    frame.render_widget(Clear, popup_area);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .style(Style::default().bg(Color::Black)),
+        popup_area,
+    );
 }
 
 fn tab_id_to_index(tab_id: TabId) -> usize {

@@ -1305,6 +1305,18 @@ impl Tab for ChartOfAccountsTab {
         "Chart of Accounts"
     }
 
+    fn hotkey_help(&self) -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("↑/↓ or k/j", "Navigate"),
+            ("/", "Search"),
+            ("a", "Add account"),
+            ("e", "Edit account"),
+            ("d", "Toggle active/inactive"),
+            ("x", "Delete account"),
+            ("s", "Place in service as fixed asset"),
+        ]
+    }
+
     fn handle_key(&mut self, key: KeyEvent, db: &EntityDb) -> TabAction {
         // Modal takes priority.
         match &self.modal {

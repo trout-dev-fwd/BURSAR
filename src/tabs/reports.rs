@@ -524,6 +524,16 @@ impl Tab for ReportsTab {
         "Reports"
     }
 
+    fn hotkey_help(&self) -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("↑/↓ or k/j", "Select report"),
+            ("Enter", "Configure parameters"),
+            ("F9", "Generate and save report"),
+            ("Esc", "Back to menu"),
+            ("Tab", "Next parameter field"),
+        ]
+    }
+
     fn handle_key(&mut self, key: KeyEvent, db: &EntityDb) -> TabAction {
         match self.phase {
             Phase::SelectReport => self.handle_select_phase(key),

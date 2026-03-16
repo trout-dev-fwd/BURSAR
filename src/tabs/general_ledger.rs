@@ -403,6 +403,14 @@ impl Tab for GeneralLedgerTab {
         "General Ledger"
     }
 
+    fn hotkey_help(&self) -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("↑/↓ or k/j", "Scroll entries"),
+            ("p", "Pick account"),
+            ("f", "Set date range filter"),
+        ]
+    }
+
     fn handle_key(&mut self, key: KeyEvent, db: &EntityDb) -> TabAction {
         // Modal dispatch takes priority over normal navigation.
         match &self.modal {

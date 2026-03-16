@@ -1,9 +1,9 @@
 # Progress Tracker
 
 ## Current State
-- **Active Phase**: Phase 5
-- **Last Completed Task**: Phase 5, Task 13
-- **Next Task**: Phase 5, Task 14
+- **Active Phase**: Phase 5 — COMPLETE, awaiting developer review
+- **Last Completed Task**: Phase 5, Task 14
+- **Next Task**: Phase 6 (after developer review)
 - **Blockers**: None
 
 ## Completed Phases
@@ -29,7 +29,7 @@
 - [x] Task 11: Create RecurringRepo and wire into JE tab
 - [x] Task 12: Create startup sequence
 - [x] Task 13: Implement Audit Log tab
-- [ ] Task 14: Implement `?` help overlay
+- [x] Task 14: Implement `?` help overlay
 
 ### Phase 4: Envelopes, Fixed Assets, Depreciation
 - [x] Task 1: Create EnvelopeRepo [TEST-FIRST]
