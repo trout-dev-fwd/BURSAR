@@ -270,10 +270,14 @@ impl<'conn> AssetRepo<'conn> {
     ///
     /// Rounding: the final month absorbs the remainder so the total exactly equals
     /// `cost_basis`.
+    ///
+    /// Returns `(entries, warning)`.  If a depreciation month falls in a fiscal
+    /// year that has no periods yet, generation stops at the last known period and
+    /// `warning` is set to a human-readable message.
     pub fn generate_pending_depreciation(
         &self,
         as_of_period: FiscalPeriodId,
-    ) -> Result<Vec<NewJournalEntry>> {
+    ) -> Result<(Vec<NewJournalEntry>, Option<String>)> {
         // Get the end date of the as_of_period to determine coverage.
         let fiscal_repo = FiscalRepo::new(self.conn);
         let period_end: NaiveDate = self
@@ -345,8 +349,9 @@ impl<'conn> AssetRepo<'conn> {
             .collect();
 
         let mut new_entries: Vec<NewJournalEntry> = Vec::new();
+        let mut warning: Option<String> = None;
 
-        for asset in assets {
+        'assets: for asset in assets {
             // Count months already generated (any status, non-reversed) for this accum account.
             // Assumption: each accum_depreciation_account is dedicated to one asset.
             let months_generated: i64 = self.conn.query_row(
@@ -377,8 +382,24 @@ impl<'conn> AssetRepo<'conn> {
             for month_idx in months_generated..total_to_generate {
                 let je_date = month_start_after(asset.in_service_date, month_idx + 1);
 
-                // Find or look up the fiscal period for this date.
-                let period = fiscal_repo.get_period_for_date(je_date)?;
+                // Look up the fiscal period for this date.  If none exists (e.g. the
+                // next fiscal year has not been created yet) stop generation for this
+                // asset and surface a warning — do NOT error out.
+                let period = match fiscal_repo.get_period_for_date(je_date) {
+                    Ok(p) => p,
+                    Err(_) => {
+                        warning = Some(format!(
+                            "Depreciation for '{}' stopped at month {} of {} — \
+                             no fiscal period exists for {}. \
+                             Create the next fiscal year to continue.",
+                            asset.name,
+                            month_idx + 1,
+                            asset.useful_life_months,
+                            je_date,
+                        ));
+                        continue 'assets;
+                    }
+                };
 
                 // Final month absorbs remainder.
                 let is_final = month_idx + 1 == asset.useful_life_months;
@@ -420,7 +441,7 @@ impl<'conn> AssetRepo<'conn> {
             }
         }
 
-        Ok(new_entries)
+        Ok((new_entries, warning))
     }
 
     // ── Private helpers ────────────────────────────────────────────────────────
@@ -588,7 +609,7 @@ mod tests {
             )
             .unwrap();
 
-        let entries = repo
+        let (entries, _warn) = repo
             .generate_pending_depreciation(FiscalPeriodId::from(p_id))
             .expect("generate");
         assert_eq!(entries.len(), 0, "land should generate no depreciation");
@@ -817,7 +838,7 @@ mod tests {
             )
             .unwrap();
 
-        let entries = repo
+        let (entries, _warn) = repo
             .generate_pending_depreciation(FiscalPeriodId::from(p3_id))
             .expect("generate");
 
@@ -927,7 +948,7 @@ mod tests {
             )
             .unwrap();
 
-        let entries = repo
+        let (entries, _warn) = repo
             .generate_pending_depreciation(FiscalPeriodId::from(p3_id))
             .expect("generate");
         assert_eq!(entries.len(), 1, "only month 3 should be pending");
@@ -991,7 +1012,7 @@ mod tests {
             )
             .unwrap();
 
-        let entries = repo
+        let (entries, _warn) = repo
             .generate_pending_depreciation(FiscalPeriodId::from(p3_id))
             .expect("generate");
 
@@ -1016,5 +1037,189 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Asset placed in service Nov 2025, useful life 3 months (Dec 2025, Jan 2026, Feb 2026).
+    /// Only fiscal year 2026 exists; no 2025 periods.
+    ///
+    /// Part A — cross-year with second year: asset placed in service Nov 2026, 3-month life.
+    ///   Month 1 = Dec 2026 (FY 2026 period), months 2-3 = Jan/Feb 2027 (FY 2027 periods).
+    ///   All three entries should reference the correct year's fiscal period.
+    ///
+    /// Part B — stop-and-warn: same asset layout but only FY 2026 exists.
+    ///   Month 1 (Dec 2026) has a period; months 2-3 fall into 2027 which has no periods.
+    ///   Because as_of_period = Dec 2026, period_end = 2026-12-31, only month 1 is in range →
+    ///   no warning needed for that asset.
+    ///   A separate asset placed in service 2025-11-30, life 3 months:
+    ///     Month 1 = Dec 2025 (no period) → warning, generation stops for this asset.
+    #[test]
+    fn depreciation_across_fiscal_year_boundary() {
+        let (conn, _p1) = setup(); // creates 2026 FY + all 12 periods
+
+        // ── Part A: cross-year boundary, both years exist ──────────────────────
+
+        // Add fiscal year 2027 with Jan and Feb periods.
+        conn.execute(
+            "INSERT INTO fiscal_years (start_date, end_date, is_closed, created_at)
+             VALUES ('2027-01-01', '2027-12-31', 0, '2027-01-01')",
+            [],
+        )
+        .unwrap();
+        let fy2027_id = conn.last_insert_rowid();
+        let fy2027_period_ids: Vec<i64> = {
+            let mut ids = Vec::new();
+            for (m, start, end) in [
+                (1u32, "2027-01-01", "2027-01-31"),
+                (2u32, "2027-02-01", "2027-02-28"),
+            ] {
+                conn.execute(
+                    "INSERT INTO fiscal_periods (fiscal_year_id, period_number, start_date, end_date, is_closed, created_at)
+                     VALUES (?1, ?2, ?3, ?4, 0, '2027-01-01')",
+                    params![fy2027_id, m as i64, start, end],
+                )
+                .unwrap();
+                ids.push(conn.last_insert_rowid());
+            }
+            ids
+        };
+
+        // Get 2026 period IDs for later assertions.
+        let fy2026_period_ids: Vec<i64> = conn
+            .prepare("SELECT id FROM fiscal_periods WHERE fiscal_year_id = (SELECT id FROM fiscal_years WHERE start_date = '2026-01-01')")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+
+        // Asset placed in service 2026-11-30: month 1=Dec 2026, month 2=Jan 2027, month 3=Feb 2027.
+        let monthly = 1_000 * 100_000_000_i64;
+        let repo = AssetRepo::new(&conn);
+        let cross_asset = make_account(&conn, "1500", "Equipment", "Asset", false, None);
+        let cross_accum = make_account(
+            &conn,
+            "1521",
+            "Accumulated Depreciation",
+            "Asset",
+            true,
+            None,
+        );
+        let cross_expense = make_account(
+            &conn,
+            "5500",
+            "Depreciation Expense",
+            "Expense",
+            false,
+            None,
+        );
+        repo.create_fixed_asset(
+            cross_asset,
+            &NewFixedAssetDetails {
+                cost_basis: Money(3 * monthly),
+                in_service_date: Some(NaiveDate::from_ymd_opt(2026, 11, 30).unwrap()),
+                useful_life_months: Some(3),
+                is_depreciable: true,
+                accum_depreciation_account_id: Some(cross_accum),
+                depreciation_expense_account_id: Some(cross_expense),
+            },
+        )
+        .unwrap();
+
+        // Generate through Feb 2027 — all 3 months should appear, no warning.
+        let p_feb27_id: i64 = conn
+            .query_row(
+                "SELECT id FROM fiscal_periods WHERE start_date = '2027-02-01'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let p_feb27 = FiscalPeriodId::from(p_feb27_id);
+
+        let (entries, warn) = repo
+            .generate_pending_depreciation(p_feb27)
+            .expect("generate cross-year");
+        assert_eq!(entries.len(), 3, "all 3 months should be generated");
+        assert!(warn.is_none(), "no warning: all periods exist");
+
+        // Month 1 (Dec 2026) should reference a 2026 period.
+        assert!(
+            fy2026_period_ids.contains(&i64::from(entries[0].fiscal_period_id)),
+            "month 1 (Dec 2026) must reference a 2026 period"
+        );
+        // Months 2-3 (Jan, Feb 2027) should reference 2027 periods.
+        for entry in &entries[1..] {
+            assert!(
+                fy2027_period_ids.contains(&i64::from(entry.fiscal_period_id)),
+                "entry date {:?} must reference a 2027 period",
+                entry.entry_date,
+            );
+        }
+
+        // ── Part B: stop-and-warn when period is missing ───────────────────────
+
+        // An asset placed in service 2025-11-30, life 3 months.
+        // Month 1 = Dec 2025 — no fiscal period exists for 2025.
+        // Generate through Feb 2026 (period_end = Feb 28, 2026).
+        // total_to_generate = 3 months (Dec 2025, Jan 2026, Feb 2026).
+        // Dec 2025 → get_period_for_date fails → warning set, asset skipped.
+        let legacy_asset = make_account(&conn, "1501", "Legacy Asset", "Asset", false, None);
+        let legacy_accum = make_account(&conn, "1522", "Accum Depr - Legacy", "Asset", true, None);
+        let legacy_expense = make_account(
+            &conn,
+            "5501",
+            "Depr Expense - Legacy",
+            "Expense",
+            false,
+            None,
+        );
+        repo.create_fixed_asset(
+            legacy_asset,
+            &NewFixedAssetDetails {
+                cost_basis: Money(3 * monthly),
+                in_service_date: Some(NaiveDate::from_ymd_opt(2025, 11, 30).unwrap()),
+                useful_life_months: Some(3),
+                is_depreciable: true,
+                accum_depreciation_account_id: Some(legacy_accum),
+                depreciation_expense_account_id: Some(legacy_expense),
+            },
+        )
+        .unwrap();
+
+        // Post the cross-year entries so they're counted as already-generated.
+        let je_repo = JournalRepo::new(&conn);
+        for entry in &entries {
+            let je_id = je_repo.create_draft(entry).unwrap();
+            je_repo
+                .update_status(je_id, JournalEntryStatus::Posted)
+                .unwrap();
+        }
+
+        let p_feb26_id: i64 = conn
+            .query_row(
+                "SELECT id FROM fiscal_periods WHERE start_date = '2026-02-01'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let (entries_warn, warn_msg) = repo
+            .generate_pending_depreciation(FiscalPeriodId::from(p_feb26_id))
+            .expect("generate with warning");
+
+        // The legacy asset's first month (Dec 2025) has no period → warning fired, asset skipped.
+        // cross_asset's 3 months are already posted → 0 pending entries for it.
+        assert_eq!(
+            entries_warn.len(),
+            0,
+            "no entries: legacy asset skipped due to missing 2025 period"
+        );
+        assert!(
+            warn_msg.is_some(),
+            "warning should be set when Dec 2025 period is missing"
+        );
+        let msg = warn_msg.unwrap();
+        assert!(
+            msg.contains("fiscal period"),
+            "warning should mention fiscal period: {msg}"
+        );
     }
 }

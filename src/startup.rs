@@ -72,7 +72,7 @@ pub fn collect_findings(db: &EntityDb) -> Result<StartupFindings> {
     // 3. Pending depreciation: find the open fiscal period for today, then count.
     let pending_depreciation_count = match db.fiscal().get_period_for_date(today) {
         Ok(period) => {
-            let entries = db.assets().generate_pending_depreciation(period.id)?;
+            let (entries, _warn) = db.assets().generate_pending_depreciation(period.id)?;
             entries.len()
         }
         Err(_) => 0, // No open period → nothing to generate.
@@ -163,7 +163,7 @@ fn run_check_loop<B: ratatui::backend::Backend>(
         if show_yes_no(terminal, entity_name, "Pending Depreciation", &msg)? {
             let today = Local::now().date_naive();
             if let Ok(period) = db.fiscal().get_period_for_date(today) {
-                let entries = db.assets().generate_pending_depreciation(period.id)?;
+                let (entries, _warn) = db.assets().generate_pending_depreciation(period.id)?;
                 let je_repo = db.journals();
                 for entry in entries {
                     let _ = je_repo.create_draft(&entry);

@@ -152,8 +152,8 @@ impl FixedAssetsTab {
     }
 
     fn generate_for_period(&mut self, period_id: FiscalPeriodId, db: &EntityDb) {
-        let entries = match db.assets().generate_pending_depreciation(period_id) {
-            Ok(e) => e,
+        let (entries, warn) = match db.assets().generate_pending_depreciation(period_id) {
+            Ok(pair) => pair,
             Err(e) => {
                 self.status = Some(format!("Failed to generate depreciation: {e}"));
                 return;
@@ -161,7 +161,8 @@ impl FixedAssetsTab {
         };
 
         if entries.is_empty() {
-            self.status = Some("No pending depreciation to generate.".to_string());
+            self.status =
+                Some(warn.unwrap_or_else(|| "No pending depreciation to generate.".to_string()));
             return;
         }
 
@@ -175,9 +176,14 @@ impl FixedAssetsTab {
             }
         }
 
-        self.status = Some(format!(
-            "Generated {created}/{total} depreciation draft JEs — review and post from JE tab."
-        ));
+        self.status = Some(match warn {
+            Some(w) => format!(
+                "Generated {created}/{total} depreciation draft JEs — review and post from JE tab. Warning: {w}"
+            ),
+            None => format!(
+                "Generated {created}/{total} depreciation draft JEs — review and post from JE tab."
+            ),
+        });
     }
 
     // ── Rendering ─────────────────────────────────────────────────────────────
