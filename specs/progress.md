@@ -1,9 +1,9 @@
 # Progress Tracker
 
 ## Current State
-- **Active Phase**: Phase 6 — Inter-Entity + Polish
-- **Last Completed Task**: Phase 6, Task 2
-- **Next Task**: Phase 6, Task 3
+- **Active Phase**: Phase 6 — Complete
+- **Last Completed Task**: Phase 6, Task 15
+- **Next Task**: None — all phases complete. Application ready for daily use.
 - **Blockers**: None
 
 ## Completed Phases
@@ -13,25 +13,26 @@
 - [x] Phase 3: GL, AR/AP, Fiscal Periods (completed 2026-03-15, review fixes applied 2026-03-16)
 - [x] Phase 4: Envelopes, Fixed Assets, Depreciation (completed 2026-03-16, review fixes applied 2026-03-16)
 - [x] Phase 5: Reports, Recurring, Startup (completed 2026-03-16, review fixes applied 2026-03-16)
+- [x] Phase 6: Inter-Entity Transactions & Polish (completed 2026-03-16)
 
 ## Current Phase Progress
 
 ### Phase 6: Inter-Entity Transactions & Polish
 - [x] Task 1: Create InterEntityMode struct
 - [x] Task 2: Create inter-entity form
-- [ ] Task 3: Implement inter-entity write protocol [TEST-FIRST]
-- [ ] Task 4: Implement inter-entity startup recovery [TEST-FIRST]
-- [ ] Task 5: Wire inter-entity mode into App
-- [ ] Task 6: Auto-create intercompany accounts
-- [ ] Task 7: Edge case — JE form validation polish
-- [ ] Task 8: Edge case — AR/AP payment flow polish
-- [ ] Task 9: Edge case — envelope fill with multiple Cash accounts
-- [ ] Task 10: Edge case — year-end close with envelope balances
-- [ ] Task 11: Edge case — depreciation across fiscal year boundary
-- [ ] Task 12: Comprehensive cross-tab navigation audit
-- [ ] Task 13: Status bar polish
-- [ ] Task 14: Update CLAUDE.md for project specifics
-- [ ] Task 15: Full integration test
+- [x] Task 3: Implement inter-entity write protocol [TEST-FIRST]
+- [x] Task 4: Implement inter-entity startup recovery [TEST-FIRST]
+- [x] Task 5: Wire inter-entity mode into App
+- [x] Task 6: Auto-create intercompany accounts
+- [x] Task 7: Edge case — JE form validation polish
+- [x] Task 8: Edge case — AR/AP payment flow polish
+- [x] Task 9: Edge case — envelope fill with multiple Cash accounts
+- [x] Task 10: Edge case — year-end close with envelope balances
+- [x] Task 11: Edge case — depreciation across fiscal year boundary
+- [x] Task 12: Comprehensive cross-tab navigation audit
+- [x] Task 13: Status bar polish
+- [x] Task 14: Update CLAUDE.md for project specifics
+- [x] Task 15: Full integration test
 
 ### Phase 5: Reports, Recurring Entries, Startup Checks
 - [x] Task 1: Create report formatting utilities [TEST-FIRST]

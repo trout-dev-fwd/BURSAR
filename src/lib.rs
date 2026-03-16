@@ -8,3 +8,6 @@ pub mod startup;
 pub mod tabs;
 pub mod types;
 pub mod widgets;
+
+#[cfg(test)]
+mod integration_tests;
