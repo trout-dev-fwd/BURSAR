@@ -139,6 +139,28 @@ impl<'conn> JournalRepo<'conn> {
     /// Creates a draft journal entry with its lines in a single operation.
     /// Returns the new JE's ID.
     pub fn create_draft(&self, entry: &NewJournalEntry) -> Result<JournalEntryId> {
+        // Reject if the target fiscal period is closed — drafts in closed periods cannot
+        // be posted, so we refuse at creation to avoid orphaned un-postable entries.
+        let is_closed: i32 = self
+            .conn
+            .query_row(
+                "SELECT is_closed FROM fiscal_periods WHERE id = ?1",
+                params![i64::from(entry.fiscal_period_id)],
+                |row| row.get(0),
+            )
+            .with_context(|| {
+                format!(
+                    "Fiscal period {} not found",
+                    i64::from(entry.fiscal_period_id)
+                )
+            })?;
+        if is_closed != 0 {
+            anyhow::bail!(
+                "Cannot create journal entry in closed fiscal period {}",
+                i64::from(entry.fiscal_period_id)
+            );
+        }
+
         let je_number = self.get_next_je_number()?;
         let now = now_str();
         let date_str = entry.entry_date.to_string();
@@ -1288,5 +1310,45 @@ mod tests {
             msg.contains("closed"),
             "Error should mention closed period: {msg}"
         );
+    }
+
+    #[test]
+    fn create_draft_rejects_closed_period() {
+        let (conn, period_id, acct1, acct2) = db_with_fiscal_year();
+        let repo = JournalRepo::new(&conn);
+
+        // Close the fiscal period.
+        conn.execute(
+            "UPDATE fiscal_periods SET is_closed = 1 WHERE id = ?1",
+            params![i64::from(period_id)],
+        )
+        .expect("close period");
+
+        let result = repo.create_draft(&NewJournalEntry {
+            entry_date: NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+            memo: None,
+            fiscal_period_id: period_id,
+            reversal_of_je_id: None,
+            lines: vec![
+                NewJournalEntryLine {
+                    account_id: acct1,
+                    debit_amount: Money(10_000_000_000),
+                    credit_amount: Money(0),
+                    line_memo: None,
+                    sort_order: 0,
+                },
+                NewJournalEntryLine {
+                    account_id: acct2,
+                    debit_amount: Money(0),
+                    credit_amount: Money(10_000_000_000),
+                    line_memo: None,
+                    sort_order: 1,
+                },
+            ],
+        });
+
+        assert!(result.is_err(), "create_draft should reject closed period");
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("closed"), "Error should mention closed: {msg}");
     }
 }
