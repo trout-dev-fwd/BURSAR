@@ -6,6 +6,15 @@ use crate::db::audit_repo::AuditRepo;
 use crate::db::now_str;
 use crate::types::{AuditAction, FiscalPeriodId, FiscalYearId};
 
+/// A fiscal year row loaded from the database.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FiscalYear {
+    pub id: FiscalYearId,
+    pub start_date: NaiveDate,
+    pub end_date: NaiveDate,
+    pub is_closed: bool,
+}
+
 /// A fiscal period row loaded from the database.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FiscalPeriod {
@@ -269,6 +278,36 @@ impl<'conn> FiscalRepo<'conn> {
             })
             .collect::<Result<Vec<_>>>()?;
         Ok(periods)
+    }
+
+    /// Returns all fiscal years ordered by start_date ascending.
+    pub fn list_fiscal_years(&self) -> Result<Vec<FiscalYear>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, start_date, end_date, is_closed
+             FROM fiscal_years
+             ORDER BY start_date ASC",
+        )?;
+        let years = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i32>(3)?,
+                ))
+            })?
+            .map(|r| {
+                r.map_err(anyhow::Error::from).and_then(|row| {
+                    Ok(FiscalYear {
+                        id: FiscalYearId::from(row.0),
+                        start_date: NaiveDate::parse_from_str(&row.1, "%Y-%m-%d")?,
+                        end_date: NaiveDate::parse_from_str(&row.2, "%Y-%m-%d")?,
+                        is_closed: row.3 != 0,
+                    })
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(years)
     }
 
     /// Returns all 12 periods for the given fiscal year, ordered by period number.

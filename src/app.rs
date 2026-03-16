@@ -25,7 +25,7 @@ use crate::{
         fixed_assets::FixedAssetsTab, general_ledger::GeneralLedgerTab,
         journal_entries::JournalEntriesTab, reports::ReportsTab,
     },
-    widgets::StatusBar,
+    widgets::{FiscalModal, FiscalModalAction, StatusBar},
 };
 
 /// Operating mode of the application.
@@ -81,6 +81,7 @@ pub struct App {
     active_tab: usize,
     mode: AppMode,
     status_bar: StatusBar,
+    fiscal_modal: Option<FiscalModal>,
     should_quit: bool,
 }
 
@@ -93,6 +94,7 @@ impl App {
             active_tab: 0,
             mode: AppMode::Normal,
             status_bar,
+            fiscal_modal: None,
             should_quit: false,
         }
     }
@@ -142,6 +144,11 @@ impl App {
                     }
                 }
 
+                // Fiscal period modal overlay (rendered on top of tab content).
+                if let Some(ref mut modal) = self.fiscal_modal {
+                    modal.render(frame, chunks[1]);
+                }
+
                 self.status_bar.render(frame, chunks[2]);
             })?;
 
@@ -189,6 +196,17 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
+        // If the fiscal modal is open, all input goes to it.
+        if self.fiscal_modal.is_some() {
+            let action = self
+                .fiscal_modal
+                .as_mut()
+                .expect("checked above")
+                .handle_key(key, &self.entity.db);
+            self.process_fiscal_modal_action(action);
+            return;
+        }
+
         // When the active tab has a form, modal, or search field open,
         // delegate all input directly — suppress global hotkeys.
         if self.entity.tabs[self.active_tab].wants_input() {
@@ -202,6 +220,11 @@ impl App {
             KeyCode::Char('q') if key.modifiers == KeyModifiers::NONE => {
                 self.should_quit = true;
             }
+            // Open fiscal period management modal.
+            KeyCode::Char('f') if key.modifiers == KeyModifiers::NONE => {
+                self.fiscal_modal =
+                    Some(FiscalModal::new(self.entity.name.clone(), &self.entity.db));
+            }
             // Tab switching: 1–9 keys select tabs by number.
             KeyCode::Char(c @ '1'..='9') if key.modifiers == KeyModifiers::NONE => {
                 let idx = (c as usize) - ('1' as usize);
@@ -213,6 +236,22 @@ impl App {
                 // Delegate to active tab.
                 let action = self.entity.tabs[self.active_tab].handle_key(key, &self.entity.db);
                 self.process_action(action);
+            }
+        }
+    }
+
+    fn process_fiscal_modal_action(&mut self, action: FiscalModalAction) {
+        match action {
+            FiscalModalAction::None => {}
+            FiscalModalAction::Close => {
+                self.fiscal_modal = None;
+            }
+            FiscalModalAction::Mutated(msg) => {
+                // Refresh all tabs so lock indicators and lists reflect the new state.
+                for tab in &mut self.entity.tabs {
+                    tab.refresh(&self.entity.db);
+                }
+                self.status_bar.set_message(msg);
             }
         }
     }
