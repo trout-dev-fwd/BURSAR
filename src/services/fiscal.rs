@@ -581,6 +581,59 @@ mod tests {
     }
 
     #[test]
+    fn envelope_balances_persist_after_year_end_close() {
+        // Envelope allocations are budgetary and must NOT be cleared by year-end close.
+        let (db, fy_id, jan) = setup();
+        let date = NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
+
+        let cash = find_account_by_number(&db, "1110"); // Checking Account (Cash)
+        let revenue = create_revenue_account(&db);
+        let expense = create_expense_account(&db);
+
+        // Set a 10% envelope allocation on the expense account.
+        db.envelopes()
+            .set_allocation(expense, crate::types::Percentage(10_000_000))
+            .expect("set allocation");
+
+        // Post: cash receipt $1000 (triggers a fill of 10% = $100).
+        post_balanced_je(&db, cash, revenue, 100_000_000_000, jan, date);
+
+        // Verify fill was created ($100).
+        let balance_before = db.envelopes().get_balance(expense).expect("balance");
+        assert_eq!(
+            balance_before,
+            Money(10_000_000_000),
+            "$100 earmarked before close"
+        );
+
+        // Post an expense too so closing entries are non-trivial.
+        post_balanced_je(&db, expense, cash, 20_000_000_000, jan, date);
+
+        // Execute year-end close.
+        let closing_jes = generate_closing_entries(&db, fy_id).expect("generate");
+        let closing_ids: Vec<JournalEntryId> = closing_jes
+            .iter()
+            .map(|je| db.journals().create_draft(je).expect("draft"))
+            .collect();
+        execute_year_end_close(&db, fy_id, &closing_ids, "Test Entity").expect("close");
+
+        // Verify GL balances for expense zeroed out by year-end close.
+        assert_eq!(
+            fy_balance(&db, expense, fy_id),
+            Money(0),
+            "Year-end close should zero out expense GL balance"
+        );
+
+        // Envelope balance must still be $100 — it is independent of the GL close.
+        let balance_after = db.envelopes().get_balance(expense).expect("balance");
+        assert_eq!(
+            balance_after,
+            Money(10_000_000_000),
+            "Envelope earmark must persist after year-end close"
+        );
+    }
+
+    #[test]
     fn execute_year_end_close_writes_audit_entry() {
         use crate::db::audit_repo::{AuditFilter, AuditRepo};
 
