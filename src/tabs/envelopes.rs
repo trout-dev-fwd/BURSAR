@@ -649,7 +649,7 @@ impl EnvelopesTab {
                     .copied()
                     .unwrap_or(Money(0));
                 let gl_balance = self.gl_balances.get(&acct.id).copied().unwrap_or(Money(0));
-                let available = Money(gl_balance.0 - earmarked.0);
+                let available = Money(earmarked.0 - gl_balance.0);
 
                 Row::new(vec![
                     Cell::from(acct.name.as_str()),
