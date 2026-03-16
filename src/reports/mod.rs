@@ -121,13 +121,16 @@ pub fn format_money(amount: Money) -> String {
     amount.to_string()
 }
 
-/// Generates a box-drawing header block with the entity name, report title, and date line.
+/// Generates a box-drawing header block with the entity name, report title, date line,
+/// accounting basis, and generation timestamp.
 ///
 /// ```text
 /// ┌──────────────────────────────────────────────┐
 /// │               Acme Land LLC                  │
 /// │               Trial Balance                  │
 /// │           As of March 31, 2026               │
+/// │              Accrual Basis                   │
+/// │       Generated: Mar 31, 2026 4:11 PM        │
 /// └──────────────────────────────────────────────┘
 /// ```
 ///
@@ -136,8 +139,13 @@ pub fn format_money(amount: Money) -> String {
 pub fn format_header(entity: &str, title: &str, date_info: &str) -> String {
     const MIN_INNER: usize = 40;
 
+    let basis = "Accrual Basis";
+    let generated = chrono::Local::now()
+        .format("Generated: %b %-d, %Y %-I:%M %p")
+        .to_string();
+
     // Inner width = max content length, at least MIN_INNER, plus 4 (2 spaces each side).
-    let content_max = [entity, title, date_info]
+    let content_max = [entity, title, date_info, basis, &generated]
         .iter()
         .map(|s| s.chars().count())
         .max()
@@ -168,6 +176,8 @@ pub fn format_header(entity: &str, title: &str, date_info: &str) -> String {
         center_line(entity),
         center_line(title),
         center_line(date_info),
+        center_line(basis),
+        center_line(&generated),
         bottom,
     ]
     .join("\n")
@@ -223,6 +233,14 @@ pub fn format_table(headers: &[&str], rows: &[Vec<String>], alignments: &[Align]
 
     // Bottom border.
     lines.push(h_border(&widths, BOX_BL, BOX_BM, BOX_BR));
+
+    // End-of-report marker.
+    lines.push(String::new());
+    let marker = "— End of Report —";
+    let table_width: usize = lines[0].chars().count();
+    let marker_len = marker.chars().count();
+    let left_pad = table_width.saturating_sub(marker_len) / 2;
+    lines.push(format!("{}{}", " ".repeat(left_pad), marker));
 
     lines.join("\n")
 }
@@ -290,13 +308,18 @@ mod tests {
         assert!(h.contains("Acme LLC"), "entity name missing");
         assert!(h.contains("Balance Sheet"), "title missing");
         assert!(h.contains("As of 2026-03-31"), "date info missing");
+        assert!(h.contains("Accrual Basis"), "basis line missing");
+        assert!(h.contains("Generated:"), "generated timestamp missing");
     }
 
     #[test]
     fn format_header_all_lines_equal_char_width() {
         let h = format_header("Acme Land LLC", "Income Statement", "Jan 1 – Dec 31, 2026");
         let lines: Vec<&str> = h.lines().collect();
-        assert!(lines.len() >= 5, "expected at least 5 lines");
+        assert!(
+            lines.len() >= 7,
+            "expected at least 7 lines (top + 5 content + bottom)"
+        );
         let widths: Vec<usize> = lines.iter().map(|l| l.chars().count()).collect();
         let first = widths[0];
         assert!(
@@ -395,13 +418,29 @@ mod tests {
         let lines: Vec<&str> = t.lines().collect();
         assert!(lines[0].contains('┌'), "top-left corner missing");
         assert!(lines[0].contains('┐'), "top-right corner missing");
-        let last = lines.last().expect("no lines");
-        assert!(last.contains('└'), "bottom-left corner missing");
-        assert!(last.contains('┘'), "bottom-right corner missing");
+        // The bottom border is before the blank line and end-of-report marker.
+        let border_line = lines
+            .iter()
+            .rfind(|l| l.contains('└'))
+            .expect("no bottom border");
+        assert!(border_line.contains('└'), "bottom-left corner missing");
+        assert!(border_line.contains('┘'), "bottom-right corner missing");
     }
 
     #[test]
-    fn format_table_all_lines_equal_char_width() {
+    fn format_table_has_end_of_report_marker() {
+        let headers = ["Col"];
+        let rows: Vec<Vec<String>> = vec![];
+        let alignments = [Align::Left];
+        let t = format_table(&headers, &rows, &alignments);
+        assert!(
+            t.contains("— End of Report —"),
+            "end-of-report marker missing"
+        );
+    }
+
+    #[test]
+    fn format_table_box_lines_equal_char_width() {
         let headers = ["Account", "Debit", "Credit"];
         let rows = vec![
             vec!["Cash".to_owned(), "1,000.00".to_owned(), "0.00".to_owned()],
@@ -413,11 +452,18 @@ mod tests {
         ];
         let alignments = [Align::Left, Align::Right, Align::Right];
         let t = format_table(&headers, &rows, &alignments);
-        let widths: Vec<usize> = t.lines().map(|l| l.chars().count()).collect();
+        // Only check box-drawing lines (ignore trailing blank + end-of-report marker).
+        let widths: Vec<usize> = t
+            .lines()
+            .filter(|l| {
+                l.starts_with('┌') || l.starts_with('│') || l.starts_with('├') || l.starts_with('└')
+            })
+            .map(|l| l.chars().count())
+            .collect();
         let first = widths[0];
         assert!(
             widths.iter().all(|&w| w == first),
-            "table lines have unequal widths: {:?}",
+            "table box lines have unequal widths: {:?}",
             widths
         );
     }
