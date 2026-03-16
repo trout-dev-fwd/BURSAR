@@ -25,15 +25,17 @@ pub fn initialize_schema(conn: &Connection) -> Result<()> {
         );
 
         CREATE TABLE IF NOT EXISTS fixed_asset_details (
-            id                    INTEGER PRIMARY KEY,
-            account_id            INTEGER NOT NULL UNIQUE REFERENCES accounts(id),
-            cost_basis            INTEGER NOT NULL,
-            in_service_date       TEXT,
-            useful_life_months    INTEGER,
-            is_depreciable        INTEGER NOT NULL DEFAULT 1,
-            source_cip_account_id INTEGER REFERENCES accounts(id),
-            created_at            TEXT    NOT NULL,
-            updated_at            TEXT    NOT NULL
+            id                              INTEGER PRIMARY KEY,
+            account_id                      INTEGER NOT NULL UNIQUE REFERENCES accounts(id),
+            cost_basis                      INTEGER NOT NULL,
+            in_service_date                 TEXT,
+            useful_life_months              INTEGER,
+            is_depreciable                  INTEGER NOT NULL DEFAULT 1,
+            source_cip_account_id           INTEGER REFERENCES accounts(id),
+            accum_depreciation_account_id   INTEGER REFERENCES accounts(id),
+            depreciation_expense_account_id INTEGER REFERENCES accounts(id),
+            created_at                      TEXT    NOT NULL,
+            updated_at                      TEXT    NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS fiscal_years (

@@ -1,6 +1,7 @@
 pub mod account_repo;
 pub mod ap_repo;
 pub mod ar_repo;
+pub mod asset_repo;
 pub mod audit_repo;
 pub mod envelope_repo;
 pub mod fiscal_repo;
@@ -16,6 +17,7 @@ use rusqlite::Connection;
 use crate::db::account_repo::AccountRepo;
 use crate::db::ap_repo::ApRepo;
 use crate::db::ar_repo::ArRepo;
+use crate::db::asset_repo::AssetRepo;
 use crate::db::audit_repo::AuditRepo;
 use crate::db::envelope_repo::EnvelopeRepo;
 use crate::db::fiscal_repo::FiscalRepo;
@@ -98,8 +100,12 @@ impl EntityDb {
         EnvelopeRepo::new(&self.conn)
     }
 
+    /// Returns an AssetRepo borrowing this connection.
+    pub fn assets(&self) -> AssetRepo<'_> {
+        AssetRepo::new(&self.conn)
+    }
+
     // ── Stub repo accessors (filled in later phases) ──────────────────────────
-    // TODO(Phase 4):  fn assets(&self) -> AssetRepo<'_>
     // TODO(Phase 5):  fn recurring(&self) -> RecurringRepo<'_>
 }
 

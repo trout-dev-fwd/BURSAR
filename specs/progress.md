@@ -2,8 +2,8 @@
 
 ## Current State
 - **Active Phase**: Phase 4
-- **Last Completed Task**: Phase 4, Task 6 (envelope indicators on CoA tab)
-- **Next Task**: Phase 4, Task 7 (AssetRepo [TEST-FIRST])
+- **Last Completed Task**: Phase 4, Task 7 (AssetRepo [TEST-FIRST])
+- **Next Task**: Phase 4, Task 8 (Fixed Assets tab)
 - **Blockers**: None
 
 ## Completed Phases
@@ -21,7 +21,7 @@
 - [x] Task 4: Implement Envelopes tab — allocation config + balances
 - [x] Task 5: Implement envelope transfers
 - [x] Task 6: Add envelope indicators to Chart of Accounts tab
-- [ ] Task 7: Create AssetRepo [TEST-FIRST]
+- [x] Task 7: Create AssetRepo [TEST-FIRST]
 - [ ] Task 8: Implement Fixed Assets tab
 - [ ] Task 9: Place in Service action on CoA tab
 - [ ] Task 10: Depreciation rounding verification [TEST-FIRST]
@@ -81,6 +81,15 @@
 - [x] Task 20: Set up pre-commit hook
 
 ## Decisions & Discoveries
+
+- **[Phase 4, Task 7]**: `AssetRepo` at `src/db/asset_repo.rs`. Schema extended with
+  `accum_depreciation_account_id` and `depreciation_expense_account_id` columns on
+  `fixed_asset_details` (required for generate_pending_depreciation — not in original schema spec).
+  `place_in_service` reads CIP GL balance, creates+posts transfer JE (Debit asset acct, Credit CIP),
+  then updates `fixed_asset_details`. Depreciation generation counts existing JEs crediting
+  `accum_depreciation_account_id` to determine months already generated (assumes each
+  AccumDepreciation account is dedicated to one asset). Final-month rounding implemented.
+  6 tests added.
 
 - **[Phase 4, Task 5]**: Transfer modal uses a `TransferStep` enum state machine (SelectSource →
   SelectDest → EnterAmount → Confirm) stored in a `TransferModal` struct on `EnvelopesTab`.
