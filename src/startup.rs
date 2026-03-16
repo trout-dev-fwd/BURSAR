@@ -28,8 +28,13 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 
+use crate::config::WorkspaceConfig;
 use crate::db::EntityDb;
 use crate::db::recurring_repo::RecurringTemplate;
+use crate::inter_entity::recovery::{
+    PeerStatus, classify_peer, find_orphaned_drafts, resolve_complete, resolve_delete_both,
+    resolve_delete_orphan, resolve_post_both, resolve_rollback,
+};
 
 // ── Findings collection ───────────────────────────────────────────────────────
 
@@ -85,7 +90,11 @@ pub fn collect_findings(db: &EntityDb) -> Result<StartupFindings> {
 /// Runs all startup checks in the terminal, presenting prompts to the user.
 /// Returns `Ok(())` when all checks have been acknowledged or resolved.
 /// Call this after the entity is opened but before `App::run()`.
-pub fn run_startup_checks(db: &EntityDb, entity_name: &str) -> Result<()> {
+pub fn run_startup_checks(
+    db: &EntityDb,
+    entity_name: &str,
+    config: &WorkspaceConfig,
+) -> Result<()> {
     let findings = collect_findings(db)?;
 
     // Fast path: nothing to report.
@@ -103,7 +112,7 @@ pub fn run_startup_checks(db: &EntityDb, entity_name: &str) -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = run_check_loop(&mut terminal, db, entity_name, &findings);
+    let result = run_check_loop(&mut terminal, db, entity_name, config, &findings);
 
     let _ = disable_raw_mode();
     let _ = execute!(io::stdout(), LeaveAlternateScreen);
@@ -114,23 +123,12 @@ fn run_check_loop<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     db: &EntityDb,
     entity_name: &str,
+    config: &WorkspaceConfig,
     findings: &StartupFindings,
 ) -> Result<()> {
-    // ── Check 1: orphaned inter-entity drafts (acknowledge only) ──────────────
+    // ── Check 1: orphaned inter-entity drafts (full recovery) ─────────────────
     if findings.orphaned_draft_count > 0 {
-        let msg = format!(
-            "Found {} Draft journal entr{} with an inter-entity UUID.\n\n\
-             These may be orphaned from a previous inter-entity transaction.\n\
-             Full recovery is available in Phase 6.\n\n\
-             Press Enter to acknowledge.",
-            findings.orphaned_draft_count,
-            if findings.orphaned_draft_count == 1 {
-                "y"
-            } else {
-                "ies"
-            },
-        );
-        show_acknowledge(terminal, entity_name, "Orphaned Inter-Entity Drafts", &msg)?;
+        run_inter_entity_recovery(terminal, db, entity_name, config)?;
     }
 
     // ── Check 2: recurring entries due ────────────────────────────────────────
@@ -177,6 +175,163 @@ fn run_check_loop<B: ratatui::backend::Backend>(
     Ok(())
 }
 
+// ── Inter-entity recovery ─────────────────────────────────────────────────────
+
+/// Iterates orphaned inter-entity drafts and prompts the user to resolve each.
+fn run_inter_entity_recovery<B: ratatui::backend::Backend>(
+    terminal: &mut Terminal<B>,
+    active_db: &EntityDb,
+    active_name: &str,
+    config: &WorkspaceConfig,
+) -> Result<()> {
+    let orphans = find_orphaned_drafts(active_db)?;
+    for orphan in &orphans {
+        let uuid = match &orphan.inter_entity_uuid {
+            Some(u) => u.clone(),
+            None => continue, // Shouldn't happen — query guarantees non-null
+        };
+        let peer_entity_name = orphan.source_entity_name.as_deref().unwrap_or("(unknown)");
+
+        // Look up the peer entity in workspace config by name.
+        let peer_cfg = config.entities.iter().find(|e| e.name == peer_entity_name);
+        let Some(peer_cfg) = peer_cfg else {
+            // Peer not in config — offer to delete the orphan.
+            let msg = format!(
+                "Orphaned inter-entity draft {} (UUID: {}).\n\n\
+                 The peer entity '{}' was not found in workspace config.\n\n\
+                 D — delete this orphan  Enter — skip",
+                orphan.je_number, uuid, peer_entity_name,
+            );
+            if show_key_choice(
+                terminal,
+                active_name,
+                "Orphaned Inter-Entity Draft",
+                &msg,
+                &[('d', true), ('\n', false)],
+            )? {
+                let _ = resolve_delete_orphan(active_db, orphan.id);
+            }
+            continue;
+        };
+
+        // Open the peer entity's database.
+        let peer_db = match EntityDb::open(&peer_cfg.db_path) {
+            Ok(db) => db,
+            Err(_) => {
+                let msg = format!(
+                    "Orphaned inter-entity draft {} (UUID: {}).\n\n\
+                     Could not open peer entity '{}' at {}.\n\n\
+                     D — delete this orphan  Enter — skip",
+                    orphan.je_number,
+                    uuid,
+                    peer_entity_name,
+                    peer_cfg.db_path.display(),
+                );
+                if show_key_choice(
+                    terminal,
+                    active_name,
+                    "Orphaned Inter-Entity Draft",
+                    &msg,
+                    &[('d', true), ('\n', false)],
+                )? {
+                    let _ = resolve_delete_orphan(active_db, orphan.id);
+                }
+                continue;
+            }
+        };
+
+        // Classify the scenario.
+        let peer_status = classify_peer(&peer_db, &uuid)?;
+
+        match peer_status {
+            PeerStatus::Draft(peer_je_id) => {
+                // BothDraft: offer to post both or delete both.
+                let msg = format!(
+                    "Inter-entity transaction (UUID: {}) has BOTH entries as Draft:\n\
+                     • This entity ({}) — Draft JE {}\n\
+                     • Peer entity ({}) — Draft JE\n\n\
+                     P — post both entries\n\
+                     D — delete both drafts",
+                    uuid, active_name, orphan.je_number, peer_entity_name,
+                );
+                let posted = show_key_choice(
+                    terminal,
+                    active_name,
+                    "Recovery: Both Drafts",
+                    &msg,
+                    &[('p', true), ('d', false)],
+                )?;
+                if posted {
+                    if let Err(e) = resolve_post_both(
+                        active_db,
+                        active_name,
+                        &peer_db,
+                        peer_entity_name,
+                        orphan.id,
+                        peer_je_id,
+                    ) {
+                        let err_msg = format!("Post both failed: {e}\n\nPress Enter to continue.");
+                        show_acknowledge(terminal, active_name, "Recovery Error", &err_msg)?;
+                    }
+                } else if let Err(e) =
+                    resolve_delete_both(active_db, &peer_db, orphan.id, peer_je_id)
+                {
+                    let err_msg = format!("Delete both failed: {e}\n\nPress Enter to continue.");
+                    show_acknowledge(terminal, active_name, "Recovery Error", &err_msg)?;
+                }
+            }
+            PeerStatus::Posted(peer_je_id) => {
+                // ActiveDraftOtherPosted: complete or roll back.
+                let msg = format!(
+                    "Inter-entity transaction (UUID: {}):\n\
+                     • This entity ({}) — still DRAFT JE {}\n\
+                     • Peer entity ({}) — already POSTED\n\n\
+                     C — complete (post this draft)\n\
+                     R — roll back (reverse peer + delete this draft)",
+                    uuid, active_name, orphan.je_number, peer_entity_name,
+                );
+                let complete = show_key_choice(
+                    terminal,
+                    active_name,
+                    "Recovery: Incomplete Transaction",
+                    &msg,
+                    &[('c', true), ('r', false)],
+                )?;
+                if complete {
+                    if let Err(e) = resolve_complete(active_db, active_name, orphan.id) {
+                        let err_msg = format!("Complete failed: {e}\n\nPress Enter to continue.");
+                        show_acknowledge(terminal, active_name, "Recovery Error", &err_msg)?;
+                    }
+                } else if let Err(e) =
+                    resolve_rollback(active_db, &peer_db, peer_entity_name, orphan.id, peer_je_id)
+                {
+                    let err_msg = format!("Rollback failed: {e}\n\nPress Enter to continue.");
+                    show_acknowledge(terminal, active_name, "Recovery Error", &err_msg)?;
+                }
+            }
+            PeerStatus::NotFound => {
+                // Peer has no matching entry — offer to delete the orphan.
+                let msg = format!(
+                    "Orphaned inter-entity draft {} (UUID: {}).\n\
+                     No matching entry found in peer entity '{}'.\n\n\
+                     D — delete this orphan  Enter — skip",
+                    orphan.je_number, uuid, peer_entity_name,
+                );
+                if show_key_choice(
+                    terminal,
+                    active_name,
+                    "Recovery: Orphan Not Found in Peer",
+                    &msg,
+                    &[('d', true), ('\n', false)],
+                )? {
+                    let _ = resolve_delete_orphan(active_db, orphan.id);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 // ── Screen helpers ────────────────────────────────────────────────────────────
 
 /// Shows an acknowledgement screen. Waits for Enter (or Esc/q) to continue.
@@ -215,6 +370,36 @@ fn show_yes_no<B: ratatui::backend::Backend>(
                 KeyCode::Char('y') | KeyCode::Char('Y') => return Ok(true),
                 KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => return Ok(false),
                 _ => {}
+            }
+        }
+    }
+}
+
+/// Shows a key-choice prompt. Returns `true` if user pressed the first key in `choices`
+/// (first choice is the "positive" answer), `false` if they press the second key.
+/// `choices` is a slice of `(char, is_positive)` pairs; matches case-insensitively.
+fn show_key_choice<B: ratatui::backend::Backend>(
+    terminal: &mut Terminal<B>,
+    entity_name: &str,
+    title: &str,
+    body: &str,
+    choices: &[(char, bool)],
+) -> Result<bool> {
+    loop {
+        terminal.draw(|frame| render_screen(frame, entity_name, title, body))?;
+        if event::poll(std::time::Duration::from_millis(500))?
+            && let Event::Key(key) = event::read()?
+        {
+            let ch = match key.code {
+                KeyCode::Char(c) => c.to_ascii_lowercase(),
+                KeyCode::Enter => '\n',
+                KeyCode::Esc => return Ok(false),
+                _ => continue,
+            };
+            for (choice_char, is_positive) in choices {
+                if ch == *choice_char {
+                    return Ok(*is_positive);
+                }
             }
         }
     }

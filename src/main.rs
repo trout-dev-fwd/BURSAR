@@ -39,7 +39,7 @@ fn main() -> Result<()> {
 
     // Run startup checks (recurring entries due, pending depreciation, orphaned drafts).
     let entity_name = entity.name.clone();
-    accounting::startup::run_startup_checks(&entity.db, &entity_name)?;
+    accounting::startup::run_startup_checks(&entity.db, &entity_name, &config)?;
 
     let mut app = accounting::app::App::new(entity, config);
     app.run()

@@ -530,7 +530,7 @@ impl<'conn> JournalRepo<'conn> {
 
 // ── Row mappers ───────────────────────────────────────────────────────────────
 
-fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<JournalEntry> {
+pub(crate) fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<JournalEntry> {
     let status_str: String = row.get(4)?;
     let status = status_str.parse::<JournalEntryStatus>().map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(e))
