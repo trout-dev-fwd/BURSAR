@@ -1,9 +1,9 @@
 # Progress Tracker
 
 ## Current State
-- **Active Phase**: Phase 4 (complete — developer review applied 2026-03-16)
-- **Last Completed Task**: Phase 4, Task 10 + post-phase bugfixes/enhancements
-- **Next Task**: Phase 5 (after developer sign-off)
+- **Active Phase**: Phase 5
+- **Last Completed Task**: Phase 5, Task 1
+- **Next Task**: Phase 5, Task 2
 - **Blockers**: None
 
 ## Completed Phases
@@ -14,6 +14,22 @@
 - [x] Phase 4: Envelopes, Fixed Assets, Depreciation (completed 2026-03-16, review fixes applied 2026-03-16)
 
 ## Current Phase Progress
+
+### Phase 5: Reports, Recurring Entries, Startup Checks
+- [x] Task 1: Create report formatting utilities [TEST-FIRST]
+- [ ] Task 2: Implement Trial Balance report
+- [ ] Task 3: Implement Balance Sheet report
+- [ ] Task 4: Implement Income Statement report
+- [ ] Task 5: Implement Cash Flow Statement report
+- [ ] Task 6: Implement Account Detail report
+- [ ] Task 7: Implement AR Aging report
+- [ ] Task 8: Implement AP Aging report
+- [ ] Task 9: Implement Fixed Asset Schedule report
+- [ ] Task 10: Implement Reports tab
+- [ ] Task 11: Create RecurringRepo and wire into JE tab
+- [ ] Task 12: Create startup sequence
+- [ ] Task 13: Implement Audit Log tab
+- [ ] Task 14: Implement `?` help overlay
 
 ### Phase 4: Envelopes, Fixed Assets, Depreciation
 - [x] Task 1: Create EnvelopeRepo [TEST-FIRST]
@@ -82,6 +98,13 @@
 - [x] Task 20: Set up pre-commit hook
 
 ## Decisions & Discoveries
+
+- **[Phase 5, Task 1]**: `src/reports/mod.rs` defines `Report` trait, `ReportParams`, `Align` enum,
+  box-drawing char constants, and four public functions: `format_money`, `format_header`,
+  `format_table`, `write_report`. `format_header` centers text with min-40-char inner width.
+  `format_table` auto-expands column widths from header/data max. All box-drawing borders are
+  consistent multi-byte Unicode chars — widths measured with `chars().count()`. 8 sub-module
+  stubs created (one per report, Tasks 2-9). 17 tests, 245 total passing.
 
 - **[Phase 4, Task 10]**: Rounding test uses $10 over 3 months (1_000_000_000 internal units / 3 = 333_333_333 r1).
   Verifies: sum of all monthly amounts == cost_basis exactly; months 1-(N-1) each = base amount; month N = base + remainder.
