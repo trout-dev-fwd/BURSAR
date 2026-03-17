@@ -128,6 +128,8 @@ pub struct App {
     pending_slash_command: Option<SlashCommand>,
     /// Active CSV import wizard state (Some while import is in progress).
     import_flow: Option<ImportFlowState>,
+    /// Set when NewBankDetection step begins; consumed by event_loop to run the API call.
+    pending_bank_detection: bool,
 }
 
 impl App {
@@ -156,6 +158,7 @@ impl App {
             pending_ai_messages: None,
             pending_slash_command: None,
             import_flow: None,
+            pending_bank_detection: false,
         }
     }
 
@@ -203,6 +206,12 @@ impl App {
             // 2c. If a SlashCommand was queued, execute it now.
             if let Some(cmd) = self.pending_slash_command.take() {
                 self.execute_slash_command(terminal, cmd);
+            }
+
+            // 2d. If bank format detection is pending, run it now (blocking API call).
+            if self.pending_bank_detection {
+                self.pending_bank_detection = false;
+                self.run_bank_detection(terminal);
             }
 
             // 3. Tick: advance typewriter, update status bar timeout + unsaved indicator.
@@ -502,6 +511,120 @@ impl App {
             Err(e) => {
                 self.status_bar
                     .set_error(format!("The Call Dropped \u{2639}: {e}"));
+            }
+        }
+    }
+
+    /// Runs bank format detection: reads first 4 CSV lines, sends to Claude, parses response.
+    /// Updates `import_flow` with the detected config or moves to Failed step on error.
+    fn run_bank_detection<B: ratatui::backend::Backend>(&mut self, terminal: &mut Terminal<B>) {
+        // Ensure import_flow is active and in the NewBankDetection step.
+        let Some(ref flow) = self.import_flow else {
+            return;
+        };
+        if flow.step != ImportFlowStep::NewBankDetection {
+            return;
+        }
+
+        let file_path = match &flow.file_path {
+            Some(p) => p.clone(),
+            None => {
+                if let Some(ref mut f) = self.import_flow {
+                    f.step = ImportFlowStep::Failed("No file path set".to_string());
+                }
+                return;
+            }
+        };
+        let bank_name = flow.new_bank_name.clone().unwrap_or_default();
+
+        // Force render so user sees "Initializing ↻" before blocking.
+        let _ = terminal.draw(|frame| self.render_frame(frame));
+
+        // Read first 4 lines of the CSV file.
+        let csv_sample = match std::fs::read_to_string(&file_path) {
+            Ok(contents) => contents.lines().take(4).collect::<Vec<_>>().join("\n"),
+            Err(e) => {
+                if let Some(ref mut f) = self.import_flow {
+                    f.step = ImportFlowStep::Failed(format!("Failed to read file: {e}"));
+                }
+                return;
+            }
+        };
+
+        // Lazy-init AI client.
+        if let Err(msg) = self.ensure_ai_client() {
+            if let Some(ref mut f) = self.import_flow {
+                f.step = ImportFlowStep::Failed(format!("Failed \u{2328}: {msg}"));
+            }
+            return;
+        }
+
+        let system = "You are a CSV format analyzer. Respond ONLY with valid JSON, no other text.";
+        let prompt = format!(
+            "Analyze this CSV header and sample rows from a bank statement named \"{bank_name}\".\n\
+             Identify: date column name, date format (chrono-compatible like %m/%d/%Y or %Y-%m-%d),\n\
+             description/memo column name, and either a single amount column (with sign convention)\n\
+             or separate debit/credit columns.\n\
+             Respond ONLY with JSON containing these exact fields:\n\
+             {{\"date_column\": \"...\", \"date_format\": \"...\", \"description_column\": \"...\",\n\
+             \"amount_column\": \"...\" or null, \"debit_column\": \"...\" or null,\n\
+             \"credit_column\": \"...\" or null, \"debit_is_negative\": true/false}}\n\n\
+             CSV sample:\n{csv_sample}"
+        );
+
+        let messages = vec![ApiMessage {
+            role: ApiRole::User,
+            content: ApiContent::Text(prompt),
+        }];
+
+        let result = {
+            let client = self.ai_client.as_ref().expect("just initialized");
+            client.send_simple(system, &messages)
+        };
+
+        match result {
+            Ok(json_str) => {
+                // Extract JSON from response (Claude may wrap it in markdown).
+                let json_str = extract_json_block(&json_str);
+                match serde_json::from_str::<serde_json::Value>(&json_str) {
+                    Ok(v) => {
+                        let cfg = crate::config::BankAccountConfig {
+                            name: bank_name,
+                            linked_account: String::new(), // filled in Task 5
+                            date_column: v["date_column"].as_str().unwrap_or("Date").to_string(),
+                            date_format: v["date_format"]
+                                .as_str()
+                                .unwrap_or("%m/%d/%Y")
+                                .to_string(),
+                            description_column: v["description_column"]
+                                .as_str()
+                                .unwrap_or("Description")
+                                .to_string(),
+                            amount_column: v["amount_column"].as_str().map(|s| s.to_string()),
+                            debit_column: v["debit_column"].as_str().map(|s| s.to_string()),
+                            credit_column: v["credit_column"].as_str().map(|s| s.to_string()),
+                            debit_is_negative: v["debit_is_negative"].as_bool().unwrap_or(true),
+                        };
+                        if let Some(ref mut f) = self.import_flow {
+                            f.detected_config = Some(cfg);
+                            f.step = ImportFlowStep::NewBankConfirmation;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to parse bank detection JSON: {e}\nRaw: {json_str}");
+                        if let Some(ref mut f) = self.import_flow {
+                            f.step = ImportFlowStep::Failed(
+                                "Failed \u{2328}: invalid JSON response".to_string(),
+                            );
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Bank detection API error: {e}");
+                if let Some(ref mut f) = self.import_flow {
+                    f.step = ImportFlowStep::Failed("Failed \u{2328}".to_string());
+                }
             }
         }
     }
@@ -1280,6 +1403,33 @@ impl App {
                 }
                 _ => {}
             },
+            ImportFlowStep::NewBankName => match key.code {
+                KeyCode::Esc => return,
+                KeyCode::Enter => {
+                    let name = flow.input_buffer.trim().to_string();
+                    if !name.is_empty() {
+                        flow.new_bank_name = Some(name);
+                        flow.input_buffer = String::new();
+                        flow.step = ImportFlowStep::NewBankDetection;
+                        self.pending_bank_detection = true;
+                    }
+                }
+                KeyCode::Backspace => {
+                    flow.input_buffer.pop();
+                }
+                KeyCode::Char(c) => {
+                    flow.input_buffer.push(c);
+                }
+                _ => {}
+            },
+            // NewBankDetection: UI shows "Initializing ↻" while event_loop calls the API.
+            // Keys are consumed (user must wait for detection to complete).
+            ImportFlowStep::NewBankDetection => {
+                if key.code == KeyCode::Esc {
+                    self.pending_bank_detection = false;
+                    return;
+                }
+            }
             // Placeholder dispatch for subsequent steps (implemented in later tasks).
             _ => {
                 if key.code == KeyCode::Esc {
@@ -1291,6 +1441,33 @@ impl App {
         // Restore the flow (it was taken above).
         self.import_flow = Some(flow);
     }
+}
+
+/// Extracts a JSON object from a string that may be wrapped in markdown code fences.
+fn extract_json_block(s: &str) -> String {
+    // Look for ```json ... ``` or ``` ... ``` fences.
+    let stripped = if let Some(start) = s.find("```json") {
+        let after = &s[start + 7..];
+        after
+            .find("```")
+            .map(|end| after[..end].trim().to_string())
+            .unwrap_or_else(|| s.to_string())
+    } else if let Some(start) = s.find("```") {
+        let after = &s[start + 3..];
+        after
+            .find("```")
+            .map(|end| after[..end].trim().to_string())
+            .unwrap_or_else(|| s.to_string())
+    } else {
+        s.to_string()
+    };
+    // Find first `{` to last `}`.
+    if let Some(start) = stripped.find('{')
+        && let Some(end) = stripped.rfind('}')
+    {
+        return stripped[start..=end].to_string();
+    }
+    stripped
 }
 
 /// Expands a leading `~` to the user's `$HOME` directory.
@@ -1312,6 +1489,11 @@ fn render_import_modal(
     match &flow.step {
         ImportFlowStep::FilePathInput => render_file_path_modal(frame, area, flow),
         ImportFlowStep::BankSelection => render_bank_selection_modal(frame, area, flow),
+        ImportFlowStep::NewBankName => render_new_bank_name_modal(frame, area, flow),
+        ImportFlowStep::NewBankDetection => {
+            render_new_bank_detection_modal(frame, area, "Initializing \u{21BB}")
+        }
+        ImportFlowStep::Failed(msg) => render_new_bank_detection_modal(frame, area, msg),
         // Future steps render their own modals (implemented in later tasks).
         _ => {}
     }
@@ -1423,6 +1605,83 @@ fn render_bank_selection_modal(
             Block::default()
                 .borders(Borders::ALL)
                 .title(" Select Bank Account ")
+                .style(Style::default().fg(Color::Cyan)),
+        ),
+        modal,
+    );
+}
+
+/// Renders the new bank name input step.
+fn render_new_bank_name_modal(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    flow: &crate::ai::csv_import::ImportFlowState,
+) {
+    use ratatui::{
+        style::{Color, Style},
+        text::{Line, Span},
+        widgets::{Block, Borders, Clear, Paragraph},
+    };
+
+    let modal = crate::widgets::centered_rect(70, 30, area);
+    frame.render_widget(Clear, modal);
+
+    let input_line = format!(" > {}", flow.input_buffer);
+    let lines = vec![
+        Line::from(Span::raw("")),
+        Line::from(Span::styled(
+            "  Bank account name:",
+            Style::default().fg(Color::Gray),
+        )),
+        Line::from(Span::raw("")),
+        Line::from(Span::styled(input_line, Style::default().fg(Color::White))),
+        Line::from(Span::raw("")),
+        Line::from(Span::styled(
+            "  Enter: confirm   Esc: cancel",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" New Bank Account ")
+                .style(Style::default().fg(Color::Cyan)),
+        ),
+        modal,
+    );
+}
+
+/// Renders a status-only modal (used for Initializing/Failed steps).
+fn render_new_bank_detection_modal(frame: &mut ratatui::Frame, area: Rect, message: &str) {
+    use ratatui::{
+        style::{Color, Style},
+        text::{Line, Span},
+        widgets::{Block, Borders, Clear, Paragraph},
+    };
+
+    let modal = crate::widgets::centered_rect(50, 20, area);
+    frame.render_widget(Clear, modal);
+
+    let lines = vec![
+        Line::from(Span::raw("")),
+        Line::from(Span::styled(
+            format!("  {message}"),
+            Style::default().fg(Color::Cyan),
+        )),
+        Line::from(Span::raw("")),
+        Line::from(Span::styled(
+            "  Esc: cancel",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Bank Format Detection ")
                 .style(Style::default().fg(Color::Cyan)),
         ),
         modal,
