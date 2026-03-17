@@ -26,7 +26,11 @@ use crate::{
         fixed_assets::FixedAssetsTab, general_ledger::GeneralLedgerTab,
         journal_entries::JournalEntriesTab, reports::ReportsTab,
     },
-    widgets::{FiscalModal, FiscalModalAction, StatusBar, UserGuide, UserGuideAction},
+    types::FocusTarget,
+    widgets::{
+        FiscalModal, FiscalModalAction, StatusBar, UserGuide, UserGuideAction,
+        chat_panel::{ChatAction, ChatPanel},
+    },
 };
 
 /// Operating mode of the application.
@@ -102,11 +106,19 @@ pub struct App {
     show_help: bool,
     user_guide: Option<UserGuide>,
     should_quit: bool,
+    chat_panel: ChatPanel,
+    focus: FocusTarget,
 }
 
 impl App {
     pub fn new(entity: EntityContext, config: WorkspaceConfig) -> Self {
         let status_bar = StatusBar::new(entity.name.clone(), String::new());
+        let persona = config
+            .ai
+            .as_ref()
+            .map(|ai| ai.persona.clone())
+            .unwrap_or_else(|| "Professional Tax Accountant".to_string());
+        let chat_panel = ChatPanel::new(&entity.name, &persona);
         Self {
             entity,
             config,
@@ -117,6 +129,8 @@ impl App {
             show_help: false,
             user_guide: None,
             should_quit: false,
+            chat_panel,
+            focus: FocusTarget::MainTab,
         }
     }
 
@@ -160,9 +174,20 @@ impl App {
 
                 self.render_tab_bar(frame, chunks[0]);
 
+                // Split content area when the AI panel is visible (70% tab / 30% panel).
+                let (tab_area, panel_area) = if self.chat_panel.is_visible() {
+                    let split = Layout::default()
+                        .direction(Direction::Horizontal)
+                        .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
+                        .split(chunks[1]);
+                    (split[0], Some(split[1]))
+                } else {
+                    (chunks[1], None)
+                };
+
                 match &self.mode {
                     AppMode::Normal => {
-                        self.entity.tabs[self.active_tab].render(frame, chunks[1]);
+                        self.entity.tabs[self.active_tab].render(frame, tab_area);
                     }
                     AppMode::SecondaryEntityPicker {
                         selected,
@@ -170,7 +195,7 @@ impl App {
                     } => {
                         render_secondary_entity_picker(
                             frame,
-                            chunks[1],
+                            tab_area,
                             &self.config,
                             *selected,
                             candidates,
@@ -180,7 +205,7 @@ impl App {
                         // Render the form underneath, confirmation overlay on top.
                         mode.form.render(
                             frame,
-                            chunks[1],
+                            tab_area,
                             &mode.primary_name,
                             &mode.secondary_name,
                             &mode.primary_accounts,
@@ -189,11 +214,10 @@ impl App {
                             &std::collections::HashMap::new(),
                         );
                         // Center a small confirmation popup.
-                        let area = chunks[1];
-                        let popup_w = 60u16.min(area.width);
-                        let popup_h = 6u16.min(area.height);
-                        let px = area.x + area.width.saturating_sub(popup_w) / 2;
-                        let py = area.y + area.height.saturating_sub(popup_h) / 2;
+                        let popup_w = 60u16.min(tab_area.width);
+                        let popup_h = 6u16.min(tab_area.height);
+                        let px = tab_area.x + tab_area.width.saturating_sub(popup_w) / 2;
+                        let py = tab_area.y + tab_area.height.saturating_sub(popup_h) / 2;
                         let popup_area = ratatui::layout::Rect::new(px, py, popup_w, popup_h);
                         frame.render_widget(ratatui::widgets::Clear, popup_area);
                         confirm.render(frame, popup_area);
@@ -201,7 +225,7 @@ impl App {
                     AppMode::InterEntity(mode) => {
                         mode.form.render(
                             frame,
-                            chunks[1],
+                            tab_area,
                             &mode.primary_name,
                             &mode.secondary_name,
                             &mode.primary_accounts,
@@ -214,21 +238,27 @@ impl App {
 
                 // Fiscal period modal overlay (rendered on top of tab content).
                 if let Some(ref mut modal) = self.fiscal_modal {
-                    modal.render(frame, chunks[1]);
+                    modal.render(frame, tab_area);
                 }
 
                 // Help overlay (rendered topmost).
                 if self.show_help {
                     render_help_overlay(
                         frame,
-                        chunks[1],
+                        tab_area,
                         self.entity.tabs[self.active_tab].hotkey_help(),
                     );
                 }
 
                 // User guide overlay (rendered above everything else).
                 if let Some(guide) = &self.user_guide {
-                    guide.render(frame, chunks[1]);
+                    guide.render(frame, tab_area);
+                }
+
+                // AI chat panel (rendered in right column when open).
+                if let Some(area) = panel_area {
+                    let is_focused = matches!(self.focus, FocusTarget::ChatPanel);
+                    self.chat_panel.render(frame, area, is_focused);
                 }
 
                 self.status_bar.render(frame, chunks[2]);
@@ -241,7 +271,8 @@ impl App {
                 self.handle_key(key);
             }
 
-            // 3. Tick: update status bar timeout + unsaved indicator.
+            // 3. Tick: advance typewriter, update status bar timeout + unsaved indicator.
+            self.chat_panel.tick();
             self.status_bar.tick();
             let unsaved = self.entity.tabs[self.active_tab].has_unsaved_changes();
             self.status_bar.set_unsaved(unsaved);
@@ -394,6 +425,42 @@ impl App {
             return;
         }
 
+        // Chat panel focus model.
+        if self.chat_panel.is_visible() {
+            if matches!(self.focus, FocusTarget::ChatPanel) {
+                // Tab → switch focus back to main tab (not forwarded to panel).
+                if key.code == KeyCode::Tab {
+                    self.focus = FocusTarget::MainTab;
+                    return;
+                }
+                // All other keys go to the panel.
+                let action = self.chat_panel.handle_key(key);
+                match action {
+                    ChatAction::None => {}
+                    ChatAction::Close => {
+                        self.chat_panel.toggle_visible();
+                        self.focus = FocusTarget::MainTab;
+                    }
+                    ChatAction::SkipTypewriter => {
+                        self.chat_panel.skip_typewriter();
+                    }
+                    // SendMessage and SlashCommand will be wired in Task 9/10.
+                    ChatAction::SendMessage(_) | ChatAction::SlashCommand(_) => {}
+                }
+                return;
+            } else {
+                // Panel visible, focus on MainTab.
+                // Tab or Ctrl+K → hand focus to chat panel.
+                let switch_focus = key.code == KeyCode::Tab
+                    || (key.code == KeyCode::Char('k')
+                        && key.modifiers.contains(KeyModifiers::CONTROL));
+                if switch_focus {
+                    self.focus = FocusTarget::ChatPanel;
+                    return;
+                }
+            }
+        }
+
         // Inter-entity mode: all input goes to the form.
         if matches!(self.mode, AppMode::InterEntity(_)) {
             self.handle_inter_entity_key(key);
@@ -444,6 +511,15 @@ impl App {
             KeyCode::Char('f') if key.modifiers == KeyModifiers::NONE => {
                 self.fiscal_modal =
                     Some(FiscalModal::new(self.entity.name.clone(), &self.entity.db));
+            }
+            // Ctrl+K — open AI chat panel and give it focus.
+            KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.chat_panel.toggle_visible();
+                if self.chat_panel.is_visible() {
+                    self.focus = FocusTarget::ChatPanel;
+                } else {
+                    self.focus = FocusTarget::MainTab;
+                }
             }
             // Tab switching: 1–9 keys select tabs by number.
             KeyCode::Char(c @ '1'..='9') if key.modifiers == KeyModifiers::NONE => {
