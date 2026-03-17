@@ -12,6 +12,7 @@ dependencies = [
  "ratatui",
  "rusqlite",
  "serde",
+ "serde_json",
  "thiserror",
  "toml",
  "tracing",
