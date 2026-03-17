@@ -2,9 +2,9 @@
 
 ## Current State
 
-- **Active Phase:** Phase 1 — Foundation
-- **Last Completed Task:** Phase 1, Task 12 — CSV Parser Stub
-- **Next Task:** Phase 2, Task 1 — Add ureq Dependency
+- **Active Phase:** Phase 2 — AI Client & Chat Panel
+- **Last Completed Task:** Phase 2, Task 11 — Help Overlay Update
+- **Next Task:** Phase 2, Task 12 — Loading State Status Bar Messages
 - **Blockers:** None
 - **Prerequisites:** V1 complete (372 tests passing), draft editing feature merged
 
@@ -29,19 +29,19 @@
 
 ---
 
-## Phase 2 — AI Client & Chat Panel (0/12)
+## Phase 2 — AI Client & Chat Panel (11/12)
 
-- [ ] Task 1: Add ureq Dependency
-- [ ] Task 2: AI Client — Core Request/Response [TEST-FIRST]
-- [ ] Task 3: AI Client — Tool Use Loop [TEST-FIRST]
-- [ ] Task 4: Tool Definitions [TEST-FIRST]
-- [ ] Task 5: Tool Fulfillment Handlers
-- [ ] Task 6: Chat Panel Widget — Structure and Rendering
-- [ ] Task 7: Chat Panel Widget — Key Handling
-- [ ] Task 8: App Integration — Focus Model and Layout
-- [ ] Task 9: App Integration — AI Request Orchestration
-- [ ] Task 10: Slash Command Execution
-- [ ] Task 11: Help Overlay Update
+- [x] Task 1: Add ureq Dependency
+- [x] Task 2: AI Client — Core Request/Response [TEST-FIRST]
+- [x] Task 3: AI Client — Tool Use Loop [TEST-FIRST]
+- [x] Task 4: Tool Definitions [TEST-FIRST]
+- [x] Task 5: Tool Fulfillment Handlers
+- [x] Task 6: Chat Panel Widget — Structure and Rendering
+- [x] Task 7: Chat Panel Widget — Key Handling
+- [x] Task 8: App Integration — Focus Model and Layout
+- [x] Task 9: App Integration — AI Request Orchestration
+- [x] Task 10: Slash Command Execution
+- [x] Task 11: Help Overlay Update
 - [ ] Task 12: Loading State Status Bar Messages
 
 **Phase 2 Review:** ⬜ Pending
@@ -98,5 +98,5 @@ _Track bugs, edge cases, or technical debt discovered during implementation._
 |-------|-----------|---------------|
 | V1 | 372 | 372 |
 | V2 Phase 1 | 115 | 487 |
-| V2 Phase 2 | — | — |
+| V2 Phase 2 (Tasks 1–11) | 97 | 584 |
 | V2 Phase 3 | — | — |

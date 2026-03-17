@@ -39,6 +39,7 @@ These work from any tab:
 |-----|--------|
 | `1`–`9` | Jump to tab by number (only when no form/modal is open) |
 | `Ctrl+←` / `Ctrl+→` | Cycle to the previous / next tab (wraps around) |
+| `Ctrl+K` | Open / close the AI Accountant panel |
 | `f` | Open fiscal period management (close/reopen periods, year-end close) |
 | `?` | Show hotkey quick-reference for the current tab |
 | `Ctrl+H` | Open this user guide |
@@ -455,6 +456,50 @@ Access from any tab by pressing `f`.
 
 **When to do this:** At the end of your fiscal year, after all entries for the year are posted
 and reviewed. This resets Revenue and Expense accounts to zero for the new year.
+
+---
+
+## AI Accountant Panel
+
+Press `Ctrl+K` from any tab to open the AI Accountant panel on the right side of the screen.
+The panel gives you a conversational AI assistant with read-only access to your books.
+
+### Opening and Closing
+- `Ctrl+K` — toggle the panel open or closed from any screen
+- `Esc` or `Ctrl+K` while the panel is focused — close the panel
+
+### Focus Switching
+When the panel is open, the keyboard focus can be on either the panel or the main tab:
+- `Tab` — switch focus between the panel and the main tab
+- When focus is on the panel, all typing goes to the chat input
+- When focus is on the main tab, all hotkeys work normally
+
+### Sending Messages
+1. Type your question or request in the input area at the bottom of the panel
+2. Press `Enter` to send
+3. If a response is still being typed out (typewriter animation), press `Enter` to skip to the end
+
+### Slash Commands
+Type a slash command in the input area and press `Enter`:
+
+| Command | Action |
+|---------|--------|
+| `/clear` | Reset the conversation history |
+| `/context` | Refresh the context snapshot sent with messages (re-reads current tab data) |
+| `/compact` | Compress conversation history to save space while keeping key context |
+| `/persona [text]` | View or update the AI persona for this entity |
+| `/match` | Re-match the selected draft journal entry against import rules |
+
+### What the AI Can Do
+- Answer questions about your accounts, balances, and transactions
+- Explain journal entries or account history
+- Help with accounting questions specific to your books
+- Suggest how to categorize a transaction
+
+### What the AI Cannot Do
+- Post, edit, or delete journal entries (read-only access)
+- Modify accounts, envelopes, or any other data
+- Access data outside the currently open entity
 
 ---
 

@@ -295,6 +295,7 @@ impl App {
                 frame,
                 tab_area,
                 self.entity.tabs[self.active_tab].hotkey_help(),
+                self.chat_panel.is_visible(),
             );
         }
         if let Some(guide) = &self.user_guide {
@@ -1119,22 +1120,40 @@ impl App {
 }
 
 /// Renders a centered help overlay showing global and tab-specific hotkeys.
+/// When `panel_visible` is true, also renders the Chat Panel section.
 fn render_help_overlay(
     frame: &mut ratatui::Frame,
     area: Rect,
     tab_hotkeys: Vec<(&'static str, &'static str)>,
+    panel_visible: bool,
 ) {
     let global_hotkeys: &[(&str, &str)] = &[
         ("1–9", "Switch to tab"),
         ("Ctrl+← / Ctrl+→", "Previous / next tab"),
+        ("Ctrl+K", "AI Accountant panel"),
         ("f", "Fiscal period management"),
         ("Ctrl+H", "Open user guide"),
         ("q", "Quit"),
         ("?", "Show / hide this help"),
     ];
 
+    let chat_hotkeys: &[(&str, &str)] = &[
+        ("Ctrl+K / Esc", "Open / close panel"),
+        ("Tab", "Switch focus (panel ↔ tab)"),
+        ("/clear", "Reset conversation"),
+        ("/context", "Refresh tab data"),
+        ("/compact", "Compress history"),
+        ("/persona", "View / change persona"),
+        ("/match", "Re-match selected draft"),
+    ];
+
     // Calculate popup size: width = 60, height = rows + borders + section headers.
-    let row_count = global_hotkeys.len() + tab_hotkeys.len() + 3; // +3: two headers + blank line
+    let chat_section_rows = if panel_visible {
+        chat_hotkeys.len() + 2 // header + blank line before
+    } else {
+        0
+    };
+    let row_count = global_hotkeys.len() + tab_hotkeys.len() + 3 + chat_section_rows; // +3: two headers + blank line
     let popup_height = (row_count + 2).min(area.height as usize) as u16;
     let popup_width = 66u16.min(area.width);
 
@@ -1174,6 +1193,22 @@ fn render_help_overlay(
         )));
     } else {
         for (key, desc) in &tab_hotkeys {
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {key:<16}"), Style::default().fg(Color::Cyan)),
+                Span::raw(*desc),
+            ]));
+        }
+    }
+
+    if panel_visible {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            " Chat Panel",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )));
+        for (key, desc) in chat_hotkeys {
             lines.push(Line::from(vec![
                 Span::styled(format!("  {key:<16}"), Style::default().fg(Color::Cyan)),
                 Span::raw(*desc),
