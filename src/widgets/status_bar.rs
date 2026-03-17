@@ -140,7 +140,7 @@ impl StatusBar {
         frame.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::raw(format!(" {}{}", self.entity_name, unsaved_marker)),
-                Span::styled("  ? help", Style::default().fg(Color::DarkGray)),
+                Span::styled("  │  ? help", Style::default().fg(Color::Gray)),
             ]))
             .style(bg_style),
             chunks[0],
