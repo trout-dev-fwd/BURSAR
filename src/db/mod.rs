@@ -121,6 +121,19 @@ impl EntityDb {
     pub fn import_mappings(&self) -> ImportMappingRepo<'_> {
         ImportMappingRepo::new(&self.conn)
     }
+
+    /// Create an in-memory database with schema and default accounts.
+    /// Only available in tests so production code cannot accidentally use it.
+    #[cfg(test)]
+    pub fn open_in_memory() -> Result<Self> {
+        use crate::db::schema::{initialize_schema, seed_default_accounts};
+        let conn =
+            Connection::open_in_memory().with_context(|| "Failed to open in-memory database")?;
+        conn.execute_batch("PRAGMA foreign_keys=ON;")?;
+        initialize_schema(&conn)?;
+        seed_default_accounts(&conn)?;
+        Ok(Self { conn })
+    }
 }
 
 /// Ensures `fixed_asset_details` has the `accum_depreciation_account_id` and
