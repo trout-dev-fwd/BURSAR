@@ -268,6 +268,15 @@ impl JeForm {
                 }
             }
 
+            // ── Arrow navigation ──────────────────────────────────────────────
+            // Down/Up move between rows; Left/Right move between columns in a row.
+            // These mirror Tab/BackTab as a fallback when Tab is intercepted by
+            // the chat panel (V2 focus model).
+            KeyCode::Down => self.move_focus_down(),
+            KeyCode::Up => self.move_focus_up(),
+            KeyCode::Right => self.move_focus_right(),
+            KeyCode::Left => self.move_focus_left(),
+
             // ── Text input ────────────────────────────────────────────────────
             KeyCode::Backspace => self.handle_backspace(),
             KeyCode::Char(c) => self.handle_char(c),
@@ -344,6 +353,78 @@ impl JeForm {
                 Focus::LineCredit(i) => Focus::LineDebit(i),
                 Focus::LineNote(i) => Focus::LineCredit(i),
             }
+        };
+    }
+
+    /// Move down one row. From the header (Date/Memo), jumps to LineAccount(0).
+    /// From a line row, moves to the same column type on the next row.
+    fn move_focus_down(&mut self) {
+        match self.focus {
+            Focus::Date | Focus::Memo => {
+                if !self.lines.is_empty() {
+                    self.focus = Focus::LineAccount(0);
+                }
+            }
+            Focus::LineAccount(i) => {
+                if i + 1 < self.lines.len() {
+                    self.focus = Focus::LineAccount(i + 1);
+                }
+            }
+            Focus::LineDebit(i) => {
+                if i + 1 < self.lines.len() {
+                    self.focus = Focus::LineDebit(i + 1);
+                }
+            }
+            Focus::LineCredit(i) => {
+                if i + 1 < self.lines.len() {
+                    self.focus = Focus::LineCredit(i + 1);
+                }
+            }
+            Focus::LineNote(i) => {
+                if i + 1 < self.lines.len() {
+                    self.focus = Focus::LineNote(i + 1);
+                }
+            }
+        }
+    }
+
+    /// Move up one row. From LineX(0), jumps back to Date. From LineX(i), moves
+    /// to the same column type on the previous row.
+    fn move_focus_up(&mut self) {
+        match self.focus {
+            Focus::Date | Focus::Memo => {}
+            Focus::LineAccount(0)
+            | Focus::LineDebit(0)
+            | Focus::LineCredit(0)
+            | Focus::LineNote(0) => {
+                self.focus = Focus::Date;
+            }
+            Focus::LineAccount(i) => self.focus = Focus::LineAccount(i - 1),
+            Focus::LineDebit(i) => self.focus = Focus::LineDebit(i - 1),
+            Focus::LineCredit(i) => self.focus = Focus::LineCredit(i - 1),
+            Focus::LineNote(i) => self.focus = Focus::LineNote(i - 1),
+        }
+    }
+
+    /// Move right one column within the same line row.
+    /// Column order: Account → Debit → Credit → Note. Does nothing at Note or on header fields.
+    fn move_focus_right(&mut self) {
+        self.focus = match self.focus {
+            Focus::LineAccount(i) => Focus::LineDebit(i),
+            Focus::LineDebit(i) => Focus::LineCredit(i),
+            Focus::LineCredit(i) => Focus::LineNote(i),
+            other => other,
+        };
+    }
+
+    /// Move left one column within the same line row.
+    /// Column order: Note → Credit → Debit → Account. Does nothing at Account or on header fields.
+    fn move_focus_left(&mut self) {
+        self.focus = match self.focus {
+            Focus::LineNote(i) => Focus::LineCredit(i),
+            Focus::LineCredit(i) => Focus::LineDebit(i),
+            Focus::LineDebit(i) => Focus::LineAccount(i),
+            other => other,
         };
     }
 
@@ -1114,5 +1195,100 @@ mod tests {
         form.handle_key(key(KeyCode::Esc), &accts); // close picker
         assert!(!form.picker_active);
         assert!(form.lines[0].account_id.is_none(), "No account selected");
+    }
+
+    // ── Arrow key navigation ──────────────────────────────────────────────────
+
+    #[test]
+    fn down_from_date_moves_to_first_line_account() {
+        let mut form = JeForm::new();
+        let accts = make_accounts();
+        assert_eq!(form.focus, Focus::Date);
+        form.handle_key(key(KeyCode::Down), &accts);
+        assert_eq!(form.focus, Focus::LineAccount(0));
+    }
+
+    #[test]
+    fn down_from_memo_moves_to_first_line_account() {
+        let mut form = JeForm::new();
+        let accts = make_accounts();
+        form.focus = Focus::Memo;
+        form.handle_key(key(KeyCode::Down), &accts);
+        assert_eq!(form.focus, Focus::LineAccount(0));
+    }
+
+    #[test]
+    fn up_from_first_line_moves_to_date() {
+        let mut form = JeForm::new();
+        let accts = make_accounts();
+        form.focus = Focus::LineAccount(0);
+        form.handle_key(key(KeyCode::Up), &accts);
+        assert_eq!(form.focus, Focus::Date);
+    }
+
+    #[test]
+    fn down_and_up_navigate_rows_preserving_column() {
+        let mut form = JeForm::new();
+        let accts = make_accounts();
+        // new() starts with 2 rows already
+        assert_eq!(form.lines.len(), 2);
+
+        form.focus = Focus::LineDebit(0);
+        form.handle_key(key(KeyCode::Down), &accts);
+        assert_eq!(
+            form.focus,
+            Focus::LineDebit(1),
+            "Down preserves column type"
+        );
+
+        form.handle_key(key(KeyCode::Up), &accts);
+        assert_eq!(form.focus, Focus::LineDebit(0), "Up preserves column type");
+    }
+
+    #[test]
+    fn right_moves_through_columns_in_row() {
+        let mut form = JeForm::new();
+        let accts = make_accounts();
+        form.focus = Focus::LineAccount(0);
+        form.handle_key(key(KeyCode::Right), &accts);
+        assert_eq!(form.focus, Focus::LineDebit(0));
+        form.handle_key(key(KeyCode::Right), &accts);
+        assert_eq!(form.focus, Focus::LineCredit(0));
+        form.handle_key(key(KeyCode::Right), &accts);
+        assert_eq!(form.focus, Focus::LineNote(0));
+        // Right at Note does nothing
+        form.handle_key(key(KeyCode::Right), &accts);
+        assert_eq!(form.focus, Focus::LineNote(0));
+    }
+
+    #[test]
+    fn left_moves_through_columns_in_row() {
+        let mut form = JeForm::new();
+        let accts = make_accounts();
+        form.focus = Focus::LineNote(0);
+        form.handle_key(key(KeyCode::Left), &accts);
+        assert_eq!(form.focus, Focus::LineCredit(0));
+        form.handle_key(key(KeyCode::Left), &accts);
+        assert_eq!(form.focus, Focus::LineDebit(0));
+        form.handle_key(key(KeyCode::Left), &accts);
+        assert_eq!(form.focus, Focus::LineAccount(0));
+        // Left at Account does nothing
+        form.handle_key(key(KeyCode::Left), &accts);
+        assert_eq!(form.focus, Focus::LineAccount(0));
+    }
+
+    #[test]
+    fn arrow_keys_ignored_when_picker_is_active() {
+        let mut form = JeForm::new();
+        let accts = make_accounts();
+        form.focus = Focus::LineAccount(0);
+        form.handle_key(key(KeyCode::Enter), &accts); // open picker
+        assert!(form.picker_active);
+
+        // Arrow keys should go to picker, not move JE form focus
+        form.handle_key(key(KeyCode::Down), &accts);
+        // Focus should still be LineAccount(0) — picker handled the key
+        assert_eq!(form.focus, Focus::LineAccount(0));
+        assert!(form.picker_active, "Picker still active");
     }
 }

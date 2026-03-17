@@ -149,6 +149,10 @@ is recorded here.
 5. Watch the totals at the bottom — Debits must equal Credits (shows green ✓ when balanced)
 6. Press `Ctrl+S` to submit the entry as a Draft
 
+**Form navigation:** Use `Tab` / `Shift+Tab` to move forward/backward through fields. You can
+also use arrow keys: `↑`/`↓` move between rows, `←`/`→` move between columns (Account, Debit,
+Credit, Note) within the same row. `Enter` advances to the next field (same as `Tab`).
+
 **The Avail column** shows your remaining envelope budget for that account. This helps you
 see if you're about to overspend a budgeted category.
 
