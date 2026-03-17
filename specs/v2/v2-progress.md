@@ -3,8 +3,8 @@
 ## Current State
 
 - **Active Phase:** Phase 2 — AI Client & Chat Panel
-- **Last Completed Task:** Phase 2, Task 11 — Help Overlay Update
-- **Next Task:** Phase 2, Task 12 — Loading State Status Bar Messages
+- **Last Completed Task:** Phase 2, Task 12 — Loading State Status Bar Messages
+- **Next Task:** Phase 2 Developer Review Gate (manual testing with real API key)
 - **Blockers:** None
 - **Prerequisites:** V1 complete (372 tests passing), draft editing feature merged
 
@@ -29,7 +29,7 @@
 
 ---
 
-## Phase 2 — AI Client & Chat Panel (11/12)
+## Phase 2 — AI Client & Chat Panel (12/12) ✅
 
 - [x] Task 1: Add ureq Dependency
 - [x] Task 2: AI Client — Core Request/Response [TEST-FIRST]
@@ -42,9 +42,9 @@
 - [x] Task 9: App Integration — AI Request Orchestration
 - [x] Task 10: Slash Command Execution
 - [x] Task 11: Help Overlay Update
-- [ ] Task 12: Loading State Status Bar Messages
+- [x] Task 12: Loading State Status Bar Messages
 
-**Phase 2 Review:** ⬜ Pending
+**Phase 2 Review:** ⏳ Awaiting manual testing with real API key
 
 ---
 
@@ -79,6 +79,7 @@ _Record architectural decisions, trade-offs, and unexpected findings during impl
 | 2026-03-17 | 1.10 | Down/Up navigate between rows (same column type); Left/Right navigate between columns within a row |
 | 2026-03-17 | 1.12 | parse_money_str uses integer arithmetic only (no f64 intermediate) per spec |
 | 2026-03-17 | Review | **Phase 3 draft creation strategy: single-line drafts (Option A).** Unmatched imports create a draft JE with only the bank account line (one line). The contra line is added after matching resolves (via update_draft or manual edit). Rationale: drafts don't require balanced debits/credits (enforced at post time only); `get_incomplete_imports` correctly identifies these as entries with < 2 lines; no schema changes needed (`account_id` stays NOT NULL); no sentinel accounts polluting the CoA. |
+| 2026-03-17 | 2.12 | FulfillingTools status update uses `take()`/`replace` pattern to break the `ai_client` borrow so the callback closure can split-borrow `status_bar` (mutable) and `entity.db` (immutable) simultaneously. No visual render between tool rounds (single-threaded limitation); UI shows "Calling Accountant ☏" for the full duration. |
 
 ---
 
@@ -98,5 +99,5 @@ _Track bugs, edge cases, or technical debt discovered during implementation._
 |-------|-----------|---------------|
 | V1 | 372 | 372 |
 | V2 Phase 1 | 115 | 487 |
-| V2 Phase 2 (Tasks 1–11) | 97 | 584 |
+| V2 Phase 2 (Tasks 1–12) | 97 | 584 |
 | V2 Phase 3 | — | — |
