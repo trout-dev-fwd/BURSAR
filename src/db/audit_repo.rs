@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use chrono::NaiveDate;
 use rusqlite::{Connection, params};
 
 use super::now_str;
@@ -68,6 +69,113 @@ impl<'conn> AuditRepo<'conn> {
         Ok(AuditLogId::from(self.conn.last_insert_rowid()))
     }
 
+    // ── AI convenience methods ─────────────────────────────────────────────────
+
+    /// Logs an AI prompt. `description` is truncated to 500 characters.
+    pub fn log_ai_prompt(&self, entity_name: &str, description: &str) -> Result<()> {
+        let truncated = truncate_chars(description, 500);
+        self.append(AuditAction::AiPrompt, entity_name, None, None, truncated)?;
+        Ok(())
+    }
+
+    /// Logs an AI response summary (single-line summary extracted from the response).
+    pub fn log_ai_response(&self, entity_name: &str, summary: &str) -> Result<()> {
+        self.append(AuditAction::AiResponse, entity_name, None, None, summary)?;
+        Ok(())
+    }
+
+    /// Logs an AI tool use. Description format: "Used {tool_name}({key_params})".
+    pub fn log_ai_tool_use(
+        &self,
+        entity_name: &str,
+        tool_name: &str,
+        key_params: &str,
+    ) -> Result<()> {
+        let description = format!("Used {tool_name}({key_params})");
+        self.append(
+            AuditAction::AiToolUse,
+            entity_name,
+            None,
+            None,
+            &description,
+        )?;
+        Ok(())
+    }
+
+    /// Logs a CSV import summary.
+    pub fn log_csv_import(
+        &self,
+        entity_name: &str,
+        bank_name: &str,
+        total: usize,
+        matched: usize,
+        ai_matched: usize,
+        manual: usize,
+    ) -> Result<()> {
+        let description = format!(
+            "Imported {total} rows from {bank_name}: {matched} matched ({ai_matched} AI, {manual} manual)"
+        );
+        self.append(
+            AuditAction::CsvImport,
+            entity_name,
+            None,
+            None,
+            &description,
+        )?;
+        Ok(())
+    }
+
+    /// Logs a learned import mapping.
+    pub fn log_mapping_learned(
+        &self,
+        entity_name: &str,
+        description: &str,
+        account_number: &str,
+        account_name: &str,
+        source: &str,
+    ) -> Result<()> {
+        let entry = format!(
+            "Learned mapping: '{description}' → {account_number} {account_name} ({source})"
+        );
+        self.append(AuditAction::MappingLearned, entity_name, None, None, &entry)?;
+        Ok(())
+    }
+
+    /// Returns audit entries for AI actions (AiPrompt, AiResponse, AiToolUse),
+    /// optionally filtered by date range and capped by `limit`.
+    pub fn get_ai_entries(
+        &self,
+        start_date: Option<NaiveDate>,
+        end_date: Option<NaiveDate>,
+        limit: Option<usize>,
+    ) -> Result<Vec<AuditEntry>> {
+        let from_str = start_date
+            .map(|d| format!("{}T00:00:00", d))
+            .unwrap_or_default();
+        let to_str = end_date
+            .map(|d| format!("{}T23:59:59", d))
+            .unwrap_or_default();
+
+        let limit_clause = match limit {
+            Some(n) => format!("LIMIT {n}"),
+            None => String::new(),
+        };
+
+        let sql = format!(
+            "SELECT id, action_type, entity_name, record_type, record_id, description, created_at
+             FROM audit_log
+             WHERE action_type IN ('AiPrompt', 'AiResponse', 'AiToolUse')
+               AND (?1 = '' OR created_at >= ?1)
+               AND (?2 = '' OR created_at <= ?2)
+             ORDER BY created_at ASC
+             {limit_clause}"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        stmt.query_map(params![from_str, to_str], row_to_entry)?
+            .map(|r| r.map_err(anyhow::Error::from))
+            .collect()
+    }
+
     /// Returns audit log entries matching `filter`, ordered by `created_at` ascending.
     /// With an empty `AuditFilter` (all None) all entries are returned.
     ///
@@ -101,6 +209,14 @@ impl<'conn> AuditRepo<'conn> {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Truncates a string to at most `max_chars` Unicode scalar values.
+fn truncate_chars(s: &str, max_chars: usize) -> &str {
+    match s.char_indices().nth(max_chars) {
+        Some((byte_idx, _)) => &s[..byte_idx],
+        None => s,
+    }
+}
 
 fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuditEntry> {
     let action_str: String = row.get(1)?;
@@ -331,5 +447,114 @@ mod tests {
         let _repo = AuditRepo::new(&conn);
         // If someone adds update/delete, this test won't catch it — but the boundaries
         // spec and code review are the enforcement mechanism.
+    }
+
+    // ── AI convenience methods ─────────────────────────────────────────────────
+
+    #[test]
+    fn log_ai_prompt_truncates_long_description() {
+        let conn = db();
+        let repo = AuditRepo::new(&conn);
+        let long = "x".repeat(600);
+        repo.log_ai_prompt("Ent", &long).expect("log_ai_prompt");
+        let entries = repo.list(&AuditFilter::default()).expect("list");
+        assert_eq!(entries[0].description.len(), 500);
+        assert_eq!(entries[0].action_type, AuditAction::AiPrompt);
+    }
+
+    #[test]
+    fn log_ai_prompt_short_description_stored_as_is() {
+        let conn = db();
+        let repo = AuditRepo::new(&conn);
+        repo.log_ai_prompt("Ent", "short prompt").expect("log");
+        let entries = repo.list(&AuditFilter::default()).expect("list");
+        assert_eq!(entries[0].description, "short prompt");
+    }
+
+    #[test]
+    fn log_ai_tool_use_formats_description() {
+        let conn = db();
+        let repo = AuditRepo::new(&conn);
+        repo.log_ai_tool_use("Ent", "get_account", "5100")
+            .expect("log");
+        let entries = repo.list(&AuditFilter::default()).expect("list");
+        assert_eq!(entries[0].description, "Used get_account(5100)");
+        assert_eq!(entries[0].action_type, AuditAction::AiToolUse);
+    }
+
+    #[test]
+    fn log_csv_import_formats_description() {
+        let conn = db();
+        let repo = AuditRepo::new(&conn);
+        repo.log_csv_import("Ent", "SoFi Checking", 10, 8, 5, 3)
+            .expect("log");
+        let entries = repo.list(&AuditFilter::default()).expect("list");
+        assert!(entries[0].description.contains("SoFi Checking"));
+        assert!(entries[0].description.contains("10 rows"));
+        assert_eq!(entries[0].action_type, AuditAction::CsvImport);
+    }
+
+    #[test]
+    fn get_ai_entries_filters_by_ai_action_types() {
+        let conn = db();
+        let repo = AuditRepo::new(&conn);
+        repo.log_ai_prompt("Ent", "a prompt").expect("log prompt");
+        repo.log_ai_response("Ent", "a response")
+            .expect("log response");
+        repo.log_ai_tool_use("Ent", "tool", "arg")
+            .expect("log tool");
+        repo.log_csv_import("Ent", "Bank", 1, 1, 0, 1)
+            .expect("log import");
+
+        let ai = repo.get_ai_entries(None, None, None).expect("get_ai");
+        assert_eq!(ai.len(), 3, "Should only return AI-action entries");
+        let types: Vec<_> = ai.iter().map(|e| e.action_type).collect();
+        assert!(types.contains(&AuditAction::AiPrompt));
+        assert!(types.contains(&AuditAction::AiResponse));
+        assert!(types.contains(&AuditAction::AiToolUse));
+    }
+
+    #[test]
+    fn get_ai_entries_no_entries_returns_empty() {
+        let conn = db();
+        let repo = AuditRepo::new(&conn);
+        let ai = repo.get_ai_entries(None, None, None).expect("get_ai");
+        assert!(ai.is_empty());
+    }
+
+    #[test]
+    fn get_ai_entries_respects_limit() {
+        let conn = db();
+        let repo = AuditRepo::new(&conn);
+        for i in 0..5 {
+            repo.log_ai_prompt("Ent", &format!("prompt {i}"))
+                .expect("log");
+        }
+        let ai = repo.get_ai_entries(None, None, Some(3)).expect("get_ai");
+        assert_eq!(ai.len(), 3);
+    }
+
+    #[test]
+    fn get_ai_entries_filters_by_date_range() {
+        let conn = db();
+        let repo = AuditRepo::new(&conn);
+
+        conn.execute(
+            "INSERT INTO audit_log (action_type, entity_name, record_type, record_id, description, created_at)
+             VALUES ('AiPrompt', 'Ent', NULL, NULL, 'old prompt', '2025-01-01T00:00:00')",
+            [],
+        ).expect("insert old");
+        conn.execute(
+            "INSERT INTO audit_log (action_type, entity_name, record_type, record_id, description, created_at)
+             VALUES ('AiPrompt', 'Ent', NULL, NULL, 'new prompt', '2026-01-01T00:00:00')",
+            [],
+        ).expect("insert new");
+
+        let start = NaiveDate::from_ymd_opt(2025, 6, 1).unwrap();
+        let ai = repo
+            .get_ai_entries(Some(start), None, None)
+            .expect("get_ai");
+        assert_eq!(ai.len(), 1);
+        assert_eq!(ai[0].description, "new prompt");
     }
 }
