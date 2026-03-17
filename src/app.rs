@@ -1021,6 +1021,7 @@ fn wizard_handle_key(
                         config.entities.push(EntityConfig {
                             name: entity_name.clone(),
                             db_path: db_path.clone(),
+                            config_path: None,
                         });
                         if let Err(e) = save_config(config_path, config) {
                             form.error = Some(format!("Failed to save config: {e}"));

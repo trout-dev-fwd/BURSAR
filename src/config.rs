@@ -1,13 +1,53 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+
+// ── Default value helpers for serde ──────────────────────────────────────────
+
+fn default_ai_persona() -> String {
+    "Professional Tax Accountant".to_string()
+}
+
+fn default_ai_model() -> String {
+    "claude-sonnet-4-20250514".to_string()
+}
+
+fn default_debit_is_negative() -> bool {
+    true
+}
+
+// ── Workspace configuration ───────────────────────────────────────────────────
 
 /// Parsed from `workspace.toml`. Shared across all entities.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceConfig {
     pub report_output_dir: PathBuf,
     pub entities: Vec<EntityConfig>,
+    /// Optional AI configuration section `[ai]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai: Option<WorkspaceAiConfig>,
+    /// Directory where entity context `.md` files are stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_dir: Option<String>,
+}
+
+/// The `[ai]` section of `workspace.toml`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkspaceAiConfig {
+    #[serde(default = "default_ai_persona")]
+    pub persona: String,
+    #[serde(default = "default_ai_model")]
+    pub model: String,
+}
+
+impl Default for WorkspaceAiConfig {
+    fn default() -> Self {
+        Self {
+            persona: default_ai_persona(),
+            model: default_ai_model(),
+        }
+    }
 }
 
 /// One entry per entity database in the workspace.
@@ -15,6 +55,9 @@ pub struct WorkspaceConfig {
 pub struct EntityConfig {
     pub name: String,
     pub db_path: PathBuf,
+    /// Path to the per-entity TOML file (relative to workspace dir or absolute).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_path: Option<String>,
 }
 
 impl Default for WorkspaceConfig {
@@ -22,9 +65,146 @@ impl Default for WorkspaceConfig {
         Self {
             report_output_dir: PathBuf::from("~/accounting/reports"),
             entities: Vec::new(),
+            ai: None,
+            context_dir: None,
         }
     }
 }
+
+// ── Per-entity TOML configuration ─────────────────────────────────────────────
+
+/// Contents of a per-entity `.toml` file.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct EntityTomlConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai_persona: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_import_dir: Option<String>,
+    #[serde(default)]
+    pub bank_accounts: Vec<BankAccountConfig>,
+}
+
+/// A single `[[bank_accounts]]` entry in the entity TOML file.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BankAccountConfig {
+    pub name: String,
+    /// Chart-of-accounts account number (TEXT) linked to this bank account.
+    pub linked_account: String,
+    pub date_column: String,
+    pub description_column: String,
+    /// Single-amount format column name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount_column: Option<String>,
+    /// Split-format debit column name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub debit_column: Option<String>,
+    /// Split-format credit column name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credit_column: Option<String>,
+    /// For single-amount format: whether a negative value means a debit from the account.
+    #[serde(default = "default_debit_is_negative")]
+    pub debit_is_negative: bool,
+    /// Chrono format string for parsing dates (e.g. `"%m/%d/%Y"`).
+    pub date_format: String,
+}
+
+impl BankAccountConfig {
+    /// Returns `true` if the column configuration is valid:
+    /// either `amount_column` is `Some`, or both `debit_column` and `credit_column` are `Some`.
+    pub fn is_valid(&self) -> bool {
+        match &self.amount_column {
+            Some(_) => true,
+            None => self.debit_column.is_some() && self.credit_column.is_some(),
+        }
+    }
+}
+
+// ── Secrets configuration ─────────────────────────────────────────────────────
+
+/// Loaded from `~/.config/bookkeeper/secrets.toml`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SecretsConfig {
+    pub anthropic_api_key: String,
+}
+
+/// Returns the canonical path to the secrets file.
+pub fn secrets_file_path() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+    PathBuf::from(home)
+        .join(".config")
+        .join("bookkeeper")
+        .join("secrets.toml")
+}
+
+/// Loads the API key from `~/.config/bookkeeper/secrets.toml`.
+/// Auto-creates the directory if it does not exist.
+/// Returns an error if the file is missing or the key is empty.
+pub fn load_secrets() -> Result<SecretsConfig> {
+    let path = secrets_file_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create secrets directory: {}", parent.display()))?;
+    }
+    if !path.exists() {
+        bail!(
+            "No API key configured. Create {} with:\n\
+             anthropic_api_key = \"sk-ant-...\"",
+            path.display()
+        );
+    }
+    let contents = std::fs::read_to_string(&path)
+        .with_context(|| format!("Failed to read secrets file: {}", path.display()))?;
+    let secrets: SecretsConfig = toml::from_str(&contents)
+        .with_context(|| format!("Failed to parse secrets file: {}", path.display()))?;
+    if secrets.anthropic_api_key.is_empty() {
+        bail!("anthropic_api_key is empty in {}", path.display());
+    }
+    Ok(secrets)
+}
+
+// ── Entity TOML I/O ───────────────────────────────────────────────────────────
+
+/// Resolves a config path (possibly relative or tilde-prefixed) against the workspace directory.
+fn resolve_config_path(config_path: &str, workspace_dir: &Path) -> PathBuf {
+    let expanded = expand_tilde(Path::new(config_path));
+    if expanded.is_absolute() {
+        expanded
+    } else {
+        workspace_dir.join(expanded)
+    }
+}
+
+/// Loads an entity TOML from `config_path` (relative to `workspace_dir` or absolute).
+/// Returns an empty `EntityTomlConfig` if the file does not exist.
+pub fn load_entity_toml(config_path: &str, workspace_dir: &Path) -> Result<EntityTomlConfig> {
+    let path = resolve_config_path(config_path, workspace_dir);
+    if !path.exists() {
+        return Ok(EntityTomlConfig::default());
+    }
+    let contents = std::fs::read_to_string(&path)
+        .with_context(|| format!("Failed to read entity config: {}", path.display()))?;
+    toml::from_str(&contents)
+        .with_context(|| format!("Failed to parse entity config: {}", path.display()))
+}
+
+/// Serializes `config` and writes it to `config_path` (relative to `workspace_dir` or absolute).
+/// Creates parent directories if needed.
+pub fn save_entity_toml(
+    config_path: &str,
+    workspace_dir: &Path,
+    config: &EntityTomlConfig,
+) -> Result<()> {
+    let path = resolve_config_path(config_path, workspace_dir);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create config directory: {}", parent.display()))?;
+    }
+    let contents = toml::to_string_pretty(config).context("Failed to serialize entity config")?;
+    std::fs::write(&path, contents)
+        .with_context(|| format!("Failed to write entity config: {}", path.display()))
+}
+
+// ── Workspace config I/O ──────────────────────────────────────────────────────
 
 /// Expands a leading `~` in a path to the user's home directory.
 fn expand_tilde(p: &Path) -> PathBuf {
@@ -80,6 +260,8 @@ mod tests {
     use super::*;
     use std::fs;
 
+    // ── Existing workspace config tests ──────────────────────────────────────
+
     #[test]
     fn round_trip_with_two_entities() {
         let dir = std::env::temp_dir().join("accounting_test_config");
@@ -91,12 +273,16 @@ mod tests {
                 EntityConfig {
                     name: "Entity One".to_owned(),
                     db_path: PathBuf::from("/tmp/entity_one.sqlite"),
+                    config_path: None,
                 },
                 EntityConfig {
                     name: "Entity Two".to_owned(),
                     db_path: PathBuf::from("/tmp/entity_two.sqlite"),
+                    config_path: None,
                 },
             ],
+            ai: None,
+            context_dir: None,
         };
 
         save_config(&path, &config).expect("save_config failed");
@@ -160,7 +346,10 @@ mod tests {
             entities: vec![EntityConfig {
                 name: "Test".to_owned(),
                 db_path: PathBuf::from("~/data/test.sqlite"),
+                config_path: None,
             }],
+            ai: None,
+            context_dir: None,
         };
         save_config(&path, &config).expect("save");
         let loaded = load_config(&path).expect("load");
@@ -186,11 +375,269 @@ mod tests {
             entities: vec![EntityConfig {
                 name: "Acme LLC".to_owned(),
                 db_path: PathBuf::from("~/accounting/database/acme.sqlite"),
+                config_path: None,
             }],
+            ai: None,
+            context_dir: None,
         };
         let toml_str = toml::to_string_pretty(&config).expect("serialization failed");
         assert!(toml_str.contains("report_output_dir"));
         assert!(toml_str.contains("[[entities]]"));
         assert!(toml_str.contains("Acme LLC"));
+    }
+
+    // ── New V2 workspace config tests ─────────────────────────────────────────
+
+    #[test]
+    fn workspace_config_with_ai_section_round_trips() {
+        let dir = std::env::temp_dir().join("accounting_test_ai_config");
+        let path = dir.join("workspace.toml");
+
+        let config = WorkspaceConfig {
+            report_output_dir: PathBuf::from("/tmp/reports"),
+            entities: vec![],
+            ai: Some(WorkspaceAiConfig {
+                persona: "Senior CPA".to_string(),
+                model: "claude-sonnet-4-20250514".to_string(),
+            }),
+            context_dir: Some("~/context".to_string()),
+        };
+
+        save_config(&path, &config).expect("save");
+        let loaded = load_config(&path).expect("load");
+
+        assert_eq!(loaded.ai.as_ref().unwrap().persona, "Senior CPA");
+        assert_eq!(loaded.context_dir.as_deref(), Some("~/context"));
+
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn workspace_config_without_ai_section_is_backwards_compatible() {
+        let dir = std::env::temp_dir().join("accounting_test_no_ai_config");
+        let path = dir.join("workspace.toml");
+
+        // Write a V1-style workspace.toml with no [ai] section
+        let toml = r#"
+report_output_dir = "/tmp/reports"
+
+[[entities]]
+name = "Acme LLC"
+db_path = "/tmp/acme.sqlite"
+"#;
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(&path, toml).unwrap();
+
+        let loaded = load_config(&path).expect("load should succeed without [ai] section");
+        assert!(loaded.ai.is_none());
+        assert!(loaded.context_dir.is_none());
+        assert_eq!(loaded.entities[0].name, "Acme LLC");
+
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn workspace_ai_config_defaults() {
+        let ai = WorkspaceAiConfig::default();
+        assert_eq!(ai.persona, "Professional Tax Accountant");
+        assert_eq!(ai.model, "claude-sonnet-4-20250514");
+    }
+
+    // ── Entity TOML tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn entity_toml_single_amount_bank_account_round_trips() {
+        let dir = std::env::temp_dir().join("accounting_test_entity_toml_single");
+        let path = dir.join("entity.toml");
+        fs::create_dir_all(&dir).unwrap();
+
+        let config = EntityTomlConfig {
+            ai_persona: Some("Tax Expert".to_string()),
+            last_import_dir: Some("/tmp/imports".to_string()),
+            bank_accounts: vec![BankAccountConfig {
+                name: "SoFi Checking".to_string(),
+                linked_account: "1010".to_string(),
+                date_column: "Date".to_string(),
+                description_column: "Description".to_string(),
+                amount_column: Some("Amount".to_string()),
+                debit_column: None,
+                credit_column: None,
+                debit_is_negative: true,
+                date_format: "%m/%d/%Y".to_string(),
+            }],
+        };
+
+        save_entity_toml("entity.toml", &dir, &config).expect("save");
+        let loaded = load_entity_toml("entity.toml", &dir).expect("load");
+
+        assert_eq!(loaded.ai_persona, Some("Tax Expert".to_string()));
+        assert_eq!(loaded.bank_accounts.len(), 1);
+        assert_eq!(loaded.bank_accounts[0].name, "SoFi Checking");
+        assert_eq!(
+            loaded.bank_accounts[0].amount_column,
+            Some("Amount".to_string())
+        );
+        assert!(loaded.bank_accounts[0].is_valid());
+
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn entity_toml_split_column_bank_account_round_trips() {
+        let dir = std::env::temp_dir().join("accounting_test_entity_toml_split");
+        let path = dir.join("entity.toml");
+        fs::create_dir_all(&dir).unwrap();
+
+        let config = EntityTomlConfig {
+            ai_persona: None,
+            last_import_dir: None,
+            bank_accounts: vec![BankAccountConfig {
+                name: "Chase CC".to_string(),
+                linked_account: "2010".to_string(),
+                date_column: "Trans Date".to_string(),
+                description_column: "Description".to_string(),
+                amount_column: None,
+                debit_column: Some("Debit".to_string()),
+                credit_column: Some("Credit".to_string()),
+                debit_is_negative: true,
+                date_format: "%Y-%m-%d".to_string(),
+            }],
+        };
+
+        save_entity_toml("entity.toml", &dir, &config).expect("save");
+        let loaded = load_entity_toml("entity.toml", &dir).expect("load");
+
+        assert_eq!(
+            loaded.bank_accounts[0].debit_column,
+            Some("Debit".to_string())
+        );
+        assert_eq!(
+            loaded.bank_accounts[0].credit_column,
+            Some("Credit".to_string())
+        );
+        assert!(loaded.bank_accounts[0].is_valid());
+
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn entity_toml_no_bank_accounts() {
+        let dir = std::env::temp_dir().join("accounting_test_entity_toml_empty");
+        let path = dir.join("entity.toml");
+        fs::create_dir_all(&dir).unwrap();
+
+        let config = EntityTomlConfig::default();
+        save_entity_toml("entity.toml", &dir, &config).expect("save");
+        let loaded = load_entity_toml("entity.toml", &dir).expect("load");
+
+        assert!(loaded.bank_accounts.is_empty());
+
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn entity_toml_missing_file_returns_default() {
+        let dir = std::env::temp_dir().join("accounting_test_entity_toml_missing");
+        // Don't create the file
+        let loaded = load_entity_toml("nonexistent.toml", &dir).expect("missing file ok");
+        assert!(loaded.bank_accounts.is_empty());
+        assert!(loaded.ai_persona.is_none());
+    }
+
+    #[test]
+    fn bank_account_config_validation_amount_column_valid() {
+        let config = BankAccountConfig {
+            name: "Test".to_string(),
+            linked_account: "1010".to_string(),
+            date_column: "Date".to_string(),
+            description_column: "Desc".to_string(),
+            amount_column: Some("Amount".to_string()),
+            debit_column: None,
+            credit_column: None,
+            debit_is_negative: true,
+            date_format: "%m/%d/%Y".to_string(),
+        };
+        assert!(config.is_valid());
+    }
+
+    #[test]
+    fn bank_account_config_validation_split_columns_valid() {
+        let config = BankAccountConfig {
+            name: "Test".to_string(),
+            linked_account: "1010".to_string(),
+            date_column: "Date".to_string(),
+            description_column: "Desc".to_string(),
+            amount_column: None,
+            debit_column: Some("Debit".to_string()),
+            credit_column: Some("Credit".to_string()),
+            debit_is_negative: true,
+            date_format: "%m/%d/%Y".to_string(),
+        };
+        assert!(config.is_valid());
+    }
+
+    #[test]
+    fn bank_account_config_validation_no_columns_invalid() {
+        let config = BankAccountConfig {
+            name: "Test".to_string(),
+            linked_account: "1010".to_string(),
+            date_column: "Date".to_string(),
+            description_column: "Desc".to_string(),
+            amount_column: None,
+            debit_column: None,
+            credit_column: None,
+            debit_is_negative: true,
+            date_format: "%m/%d/%Y".to_string(),
+        };
+        assert!(!config.is_valid());
+    }
+
+    #[test]
+    fn bank_account_config_validation_only_debit_column_invalid() {
+        let config = BankAccountConfig {
+            name: "Test".to_string(),
+            linked_account: "1010".to_string(),
+            date_column: "Date".to_string(),
+            description_column: "Desc".to_string(),
+            amount_column: None,
+            debit_column: Some("Debit".to_string()),
+            credit_column: None,
+            debit_is_negative: true,
+            date_format: "%m/%d/%Y".to_string(),
+        };
+        assert!(!config.is_valid());
+    }
+
+    #[test]
+    fn load_secrets_returns_error_when_file_missing() {
+        // Override HOME to a temp dir to avoid reading the real secrets file
+        let dir = std::env::temp_dir().join("accounting_test_secrets_missing");
+        let _ = fs::create_dir_all(&dir);
+
+        // We can't easily override HOME in a thread-safe way; just verify the
+        // secrets_file_path() has the right shape and that load_secrets errors
+        // on the real path if not present.
+        let path = secrets_file_path();
+        if !path.exists() {
+            let result = load_secrets();
+            assert!(
+                result.is_err(),
+                "load_secrets should fail when file missing"
+            );
+        }
+    }
+
+    #[test]
+    fn secrets_file_path_contains_expected_segments() {
+        let path = secrets_file_path();
+        let path_str = path.to_string_lossy();
+        assert!(path_str.contains(".config"));
+        assert!(path_str.contains("bookkeeper"));
+        assert!(path_str.contains("secrets.toml"));
     }
 }
