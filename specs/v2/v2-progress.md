@@ -78,6 +78,7 @@ _Record architectural decisions, trade-offs, and unexpected findings during impl
 | 2026-03-17 | 1.8 | `account_id NOT NULL` on `journal_entry_lines` means `get_incomplete_imports` checks total line count (< 2), not null account_id |
 | 2026-03-17 | 1.10 | Down/Up navigate between rows (same column type); Left/Right navigate between columns within a row |
 | 2026-03-17 | 1.12 | parse_money_str uses integer arithmetic only (no f64 intermediate) per spec |
+| 2026-03-17 | Review | **Phase 3 draft creation strategy: single-line drafts (Option A).** Unmatched imports create a draft JE with only the bank account line (one line). The contra line is added after matching resolves (via update_draft or manual edit). Rationale: drafts don't require balanced debits/credits (enforced at post time only); `get_incomplete_imports` correctly identifies these as entries with < 2 lines; no schema changes needed (`account_id` stays NOT NULL); no sentinel accounts polluting the CoA. |
 
 ---
 

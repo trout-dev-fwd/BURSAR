@@ -671,8 +671,8 @@ impl<'conn> JournalRepo<'conn> {
         Ok(refs)
     }
 
-    /// Returns draft journal entries that have an import_ref but fewer than 2 lines
-    /// with a non-null account_id. These are candidates for re-matching.
+    /// Returns draft journal entries that have an import_ref but fewer than 2 lines.
+    /// These are single-line drafts from CSV import awaiting contra-line matching.
     pub fn get_incomplete_imports(&self) -> Result<Vec<JournalEntry>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, je_number, entry_date, memo, status, is_reversed,
@@ -685,7 +685,6 @@ impl<'conn> JournalRepo<'conn> {
                AND (
                    SELECT COUNT(*) FROM journal_entry_lines jel
                    WHERE jel.journal_entry_id = je.id
-                     AND jel.account_id IS NOT NULL
                ) < 2
              ORDER BY je.entry_date, je.id",
         )?;
