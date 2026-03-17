@@ -20,6 +20,7 @@ use crate::{
         AiError, AiResponse, ApiContent, ApiMessage, ApiRole, RoundResult, ToolResult,
         client::AiClient,
         context::read_context,
+        csv_import::ImportFlowState,
         tools::{fulfill_tool_call, tool_definitions},
     },
     config::{
@@ -125,6 +126,8 @@ pub struct App {
     pending_ai_messages: Option<Vec<ApiMessage>>,
     /// Set by handle_key when a SlashCommand action arrives; consumed by event_loop.
     pending_slash_command: Option<SlashCommand>,
+    /// Active CSV import wizard state (Some while import is in progress).
+    import_flow: Option<ImportFlowState>,
 }
 
 impl App {
@@ -152,6 +155,7 @@ impl App {
             ai_client: None,
             pending_ai_messages: None,
             pending_slash_command: None,
+            import_flow: None,
         }
     }
 
@@ -1136,6 +1140,9 @@ impl App {
                 for tab in &mut self.entity.tabs {
                     tab.refresh(&self.entity.db);
                 }
+            }
+            TabAction::StartImport => {
+                self.import_flow = Some(ImportFlowState::new());
             }
             TabAction::StartInterEntityMode => {
                 // Build candidate list: all entities except the active one.

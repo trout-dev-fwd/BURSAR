@@ -1,12 +1,75 @@
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
 
-use crate::ai::NormalizedTransaction;
+use crate::ai::{ImportMatch, NormalizedTransaction};
 use crate::config::BankAccountConfig;
 use crate::types::{AccountType, Money};
+
+// ── Import Flow State ─────────────────────────────────────────────────────────
+
+/// Tracks the current step in the CSV import wizard.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImportFlowStep {
+    FilePathInput,
+    BankSelection,
+    NewBankName,
+    NewBankDetection,
+    NewBankConfirmation,
+    NewBankAccountPicker,
+    DuplicateWarning,
+    Pass1Matching,
+    Pass2AiMatching,
+    Pass3Clarification,
+    ReviewScreen,
+    Creating,
+    Complete,
+    Failed(String),
+}
+
+/// Full wizard state persisted across steps.
+pub struct ImportFlowState {
+    pub step: ImportFlowStep,
+    pub file_path: Option<PathBuf>,
+    pub bank_config: Option<BankAccountConfig>,
+    pub is_new_bank: bool,
+    pub new_bank_name: Option<String>,
+    pub detected_config: Option<BankAccountConfig>,
+    pub transactions: Vec<NormalizedTransaction>,
+    pub duplicates: Vec<NormalizedTransaction>,
+    pub matches: Vec<ImportMatch>,
+    pub input_buffer: String,
+    pub selected_index: usize,
+    pub scroll_offset: usize,
+}
+
+impl Default for ImportFlowState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ImportFlowState {
+    /// Creates a new flow starting at the file path input step.
+    pub fn new() -> Self {
+        Self {
+            step: ImportFlowStep::FilePathInput,
+            file_path: None,
+            bank_config: None,
+            is_new_bank: false,
+            new_bank_name: None,
+            detected_config: None,
+            transactions: Vec::new(),
+            duplicates: Vec::new(),
+            matches: Vec::new(),
+            input_buffer: String::new(),
+            selected_index: 0,
+            scroll_offset: 0,
+        }
+    }
+}
 
 // ── Public API ────────────────────────────────────────────────────────────────
 

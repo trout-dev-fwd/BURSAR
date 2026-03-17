@@ -80,6 +80,8 @@ pub enum TabAction {
     RefreshData,
     /// Enter inter-entity journal entry mode (requires 2nd entity in config).
     StartInterEntityMode,
+    /// Open the CSV import wizard.
+    StartImport,
     /// Quit the application.
     Quit,
 }
