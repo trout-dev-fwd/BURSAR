@@ -53,6 +53,16 @@ Detailed specifications live in `specs/`. Read the relevant files for your curre
 - **Repos**: one per domain under `src/db/`, borrowing `&Connection` from `EntityDb`.
 - **Single entity active**: second entity opens only in inter-entity modal.
 
+## User Guide Maintenance
+
+The in-app user guide lives at `specs/guide/user-guide.md` and is embedded into the
+binary at compile time (`include_str!`). **It must be kept in sync with the code.**
+
+- Any task that adds, changes, or removes a user-visible feature (key binding, workflow,
+  tab behavior, column, color coding, etc.) **must** update the guide in the same commit.
+- The guide is organized by tab. Find the relevant section and update it.
+- Do not add or remove sections without checking whether other parts of the guide reference them.
+
 ## Commit Messages
 
 ```
