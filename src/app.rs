@@ -26,7 +26,7 @@ use crate::{
         fixed_assets::FixedAssetsTab, general_ledger::GeneralLedgerTab,
         journal_entries::JournalEntriesTab, reports::ReportsTab,
     },
-    widgets::{FiscalModal, FiscalModalAction, StatusBar},
+    widgets::{FiscalModal, FiscalModalAction, StatusBar, UserGuide, UserGuideAction},
 };
 
 /// Operating mode of the application.
@@ -100,6 +100,7 @@ pub struct App {
     status_bar: StatusBar,
     fiscal_modal: Option<FiscalModal>,
     show_help: bool,
+    user_guide: Option<UserGuide>,
     should_quit: bool,
 }
 
@@ -114,6 +115,7 @@ impl App {
             status_bar,
             fiscal_modal: None,
             show_help: false,
+            user_guide: None,
             should_quit: false,
         }
     }
@@ -222,6 +224,11 @@ impl App {
                         chunks[1],
                         self.entity.tabs[self.active_tab].hotkey_help(),
                     );
+                }
+
+                // User guide overlay (rendered above everything else).
+                if let Some(guide) = &self.user_guide {
+                    guide.render(frame, chunks[1]);
                 }
 
                 self.status_bar.render(frame, chunks[2]);
@@ -359,6 +366,25 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
+        // Ctrl+H toggles the user guide from any context.
+        if key.code == KeyCode::Char('h') && key.modifiers == KeyModifiers::CONTROL {
+            if self.user_guide.is_some() {
+                self.user_guide = None;
+            } else {
+                self.user_guide = Some(UserGuide::new());
+            }
+            return;
+        }
+
+        // User guide overlay: routes all keys; Esc/Close dismisses it.
+        if let Some(guide) = &mut self.user_guide {
+            match guide.handle_key(key) {
+                UserGuideAction::Close => self.user_guide = None,
+                UserGuideAction::Pending => {}
+            }
+            return;
+        }
+
         // Help overlay: Esc or ? dismisses it; all other keys are consumed.
         if self.show_help {
             match key.code {
@@ -689,6 +715,7 @@ fn render_help_overlay(
         ("1–9", "Switch to tab"),
         ("Ctrl+← / Ctrl+→", "Previous / next tab"),
         ("f", "Fiscal period management"),
+        ("Ctrl+H", "Open user guide"),
         ("q", "Quit"),
         ("?", "Show / hide this help"),
     ];

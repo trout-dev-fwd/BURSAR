@@ -3,12 +3,14 @@ pub mod confirmation;
 pub mod fiscal_modal;
 pub mod je_form;
 pub mod status_bar;
+pub mod user_guide;
 
 pub use account_picker::AccountPicker;
 pub use confirmation::Confirmation;
 pub use fiscal_modal::{FiscalModal, FiscalModalAction};
 pub use je_form::JeForm;
 pub use status_bar::StatusBar;
+pub use user_guide::{UserGuide, UserGuideAction};
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
