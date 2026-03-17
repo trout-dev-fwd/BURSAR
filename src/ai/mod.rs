@@ -1,6 +1,7 @@
 pub mod client;
 pub mod context;
 pub mod csv_import;
+pub mod tools;
 
 use crate::types::{ChatRole, MatchConfidence, MatchSource};
 use chrono::NaiveDate;
