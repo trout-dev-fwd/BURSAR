@@ -1,4 +1,5 @@
 pub mod account_picker;
+pub mod chat_panel;
 pub mod confirmation;
 pub mod fiscal_modal;
 pub mod je_form;
