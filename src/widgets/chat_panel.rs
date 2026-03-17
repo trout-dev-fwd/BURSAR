@@ -1,3 +1,4 @@
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
     layout::{Alignment, Rect},
@@ -363,9 +364,120 @@ impl ChatPanel {
     }
 
     /// Handle key events. Returns a `ChatAction` for `App` to process.
-    /// Full implementation in Task 7; stub here to unblock compilation.
-    pub fn handle_key(&mut self, _key: crossterm::event::KeyEvent) -> ChatAction {
-        ChatAction::None // TODO(Task 7): implement
+    /// Tab is NOT handled here — the App intercepts it for focus switching.
+    pub fn handle_key(&mut self, key: KeyEvent) -> ChatAction {
+        match key.code {
+            // Close panel.
+            KeyCode::Esc => ChatAction::Close,
+            KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                ChatAction::Close
+            }
+
+            // Confirm / submit.
+            KeyCode::Enter => {
+                if self.typewriter_active() {
+                    return ChatAction::SkipTypewriter;
+                }
+                let trimmed = self.input_buffer.trim().to_string();
+                if trimmed.is_empty() {
+                    return ChatAction::None;
+                }
+                if trimmed.starts_with('/') {
+                    let cmd = SlashCommand::parse(&trimmed);
+                    self.input_buffer.clear();
+                    self.cursor_pos = 0;
+                    return ChatAction::SlashCommand(cmd);
+                }
+                match self.submit_input() {
+                    Some(messages) => ChatAction::SendMessage(messages),
+                    None => ChatAction::None,
+                }
+            }
+
+            // Backspace — delete char before cursor.
+            KeyCode::Backspace => {
+                if self.cursor_pos > 0 {
+                    let mut prev = self.cursor_pos - 1;
+                    while prev > 0 && !self.input_buffer.is_char_boundary(prev) {
+                        prev -= 1;
+                    }
+                    self.input_buffer.drain(prev..self.cursor_pos);
+                    self.cursor_pos = prev;
+                }
+                ChatAction::None
+            }
+
+            // Delete — delete char at cursor.
+            KeyCode::Delete => {
+                if self.cursor_pos < self.input_buffer.len() {
+                    let mut next = self.cursor_pos + 1;
+                    while next < self.input_buffer.len()
+                        && !self.input_buffer.is_char_boundary(next)
+                    {
+                        next += 1;
+                    }
+                    self.input_buffer.drain(self.cursor_pos..next);
+                }
+                ChatAction::None
+            }
+
+            // Cursor movement.
+            KeyCode::Left => {
+                if self.cursor_pos > 0 {
+                    let mut prev = self.cursor_pos - 1;
+                    while prev > 0 && !self.input_buffer.is_char_boundary(prev) {
+                        prev -= 1;
+                    }
+                    self.cursor_pos = prev;
+                }
+                ChatAction::None
+            }
+            KeyCode::Right => {
+                if self.cursor_pos < self.input_buffer.len() {
+                    let mut next = self.cursor_pos + 1;
+                    while next < self.input_buffer.len()
+                        && !self.input_buffer.is_char_boundary(next)
+                    {
+                        next += 1;
+                    }
+                    self.cursor_pos = next;
+                }
+                ChatAction::None
+            }
+            KeyCode::Home => {
+                self.cursor_pos = 0;
+                ChatAction::None
+            }
+            KeyCode::End => {
+                self.cursor_pos = self.input_buffer.len();
+                ChatAction::None
+            }
+
+            // Scroll message history (only when input is empty).
+            KeyCode::Up => {
+                if self.input_buffer.is_empty() {
+                    self.scroll_offset = self.scroll_offset.saturating_add(1);
+                }
+                ChatAction::None
+            }
+            KeyCode::Down => {
+                if self.input_buffer.is_empty() {
+                    self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                }
+                ChatAction::None
+            }
+
+            // Printable characters — insert at cursor position.
+            KeyCode::Char(c) => {
+                let mut buf = [0u8; 4];
+                let encoded = c.encode_utf8(&mut buf);
+                self.input_buffer.insert_str(self.cursor_pos, encoded);
+                self.cursor_pos += encoded.len();
+                ChatAction::None
+            }
+
+            _ => ChatAction::None,
+        }
     }
 }
 
@@ -592,5 +704,190 @@ mod tests {
         assert_eq!(panel.current_persona, "New Persona");
         assert!(!panel.system_prompt.is_empty());
         assert!(panel.system_prompt.contains("New Persona"));
+    }
+
+    // ── handle_key ────────────────────────────────────────────────────────
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn ctrl_key(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    #[test]
+    fn key_char_inserts_into_buffer() {
+        let mut panel = make_panel();
+        panel.handle_key(key(KeyCode::Char('h')));
+        panel.handle_key(key(KeyCode::Char('i')));
+        assert_eq!(panel.input_buffer, "hi");
+        assert_eq!(panel.cursor_pos, 2);
+    }
+
+    #[test]
+    fn key_backspace_deletes_before_cursor() {
+        let mut panel = make_panel();
+        panel.input_buffer = "hello".to_string();
+        panel.cursor_pos = 5;
+        panel.handle_key(key(KeyCode::Backspace));
+        assert_eq!(panel.input_buffer, "hell");
+        assert_eq!(panel.cursor_pos, 4);
+    }
+
+    #[test]
+    fn key_backspace_at_start_does_nothing() {
+        let mut panel = make_panel();
+        panel.input_buffer = "hi".to_string();
+        panel.cursor_pos = 0;
+        panel.handle_key(key(KeyCode::Backspace));
+        assert_eq!(panel.input_buffer, "hi");
+        assert_eq!(panel.cursor_pos, 0);
+    }
+
+    #[test]
+    fn key_delete_removes_char_at_cursor() {
+        let mut panel = make_panel();
+        panel.input_buffer = "hello".to_string();
+        panel.cursor_pos = 0;
+        panel.handle_key(key(KeyCode::Delete));
+        assert_eq!(panel.input_buffer, "ello");
+        assert_eq!(panel.cursor_pos, 0);
+    }
+
+    #[test]
+    fn key_left_moves_cursor() {
+        let mut panel = make_panel();
+        panel.input_buffer = "abc".to_string();
+        panel.cursor_pos = 3;
+        panel.handle_key(key(KeyCode::Left));
+        assert_eq!(panel.cursor_pos, 2);
+    }
+
+    #[test]
+    fn key_right_moves_cursor() {
+        let mut panel = make_panel();
+        panel.input_buffer = "abc".to_string();
+        panel.cursor_pos = 0;
+        panel.handle_key(key(KeyCode::Right));
+        assert_eq!(panel.cursor_pos, 1);
+    }
+
+    #[test]
+    fn key_home_moves_to_start() {
+        let mut panel = make_panel();
+        panel.input_buffer = "abc".to_string();
+        panel.cursor_pos = 3;
+        panel.handle_key(key(KeyCode::Home));
+        assert_eq!(panel.cursor_pos, 0);
+    }
+
+    #[test]
+    fn key_end_moves_to_end() {
+        let mut panel = make_panel();
+        panel.input_buffer = "abc".to_string();
+        panel.cursor_pos = 0;
+        panel.handle_key(key(KeyCode::End));
+        assert_eq!(panel.cursor_pos, 3);
+    }
+
+    #[test]
+    fn key_escape_returns_close() {
+        let mut panel = make_panel();
+        let action = panel.handle_key(key(KeyCode::Esc));
+        assert!(matches!(action, ChatAction::Close));
+    }
+
+    #[test]
+    fn key_ctrl_k_returns_close() {
+        let mut panel = make_panel();
+        let action = panel.handle_key(ctrl_key('k'));
+        assert!(matches!(action, ChatAction::Close));
+    }
+
+    #[test]
+    fn key_enter_empty_input_returns_none() {
+        let mut panel = make_panel();
+        let action = panel.handle_key(key(KeyCode::Enter));
+        assert!(matches!(action, ChatAction::None));
+    }
+
+    #[test]
+    fn key_enter_with_typewriter_returns_skip() {
+        let mut panel = make_panel();
+        panel.add_response("Long response text here.".to_string());
+        let action = panel.handle_key(key(KeyCode::Enter));
+        assert!(matches!(action, ChatAction::SkipTypewriter));
+    }
+
+    #[test]
+    fn key_enter_slash_clear_returns_slash_command() {
+        let mut panel = make_panel();
+        panel.input_buffer = "/clear".to_string();
+        panel.cursor_pos = 6;
+        let action = panel.handle_key(key(KeyCode::Enter));
+        assert!(matches!(
+            action,
+            ChatAction::SlashCommand(SlashCommand::Clear)
+        ));
+        assert_eq!(panel.input_buffer, "");
+    }
+
+    #[test]
+    fn key_enter_slash_persona_with_args() {
+        let mut panel = make_panel();
+        panel.input_buffer = "/persona Expert CPA".to_string();
+        panel.cursor_pos = 19;
+        let action = panel.handle_key(key(KeyCode::Enter));
+        assert!(matches!(
+            action,
+            ChatAction::SlashCommand(SlashCommand::Persona(Some(_)))
+        ));
+    }
+
+    #[test]
+    fn key_enter_slash_unknown_returns_slash_command() {
+        let mut panel = make_panel();
+        panel.input_buffer = "/unknown".to_string();
+        panel.cursor_pos = 8;
+        let action = panel.handle_key(key(KeyCode::Enter));
+        assert!(matches!(
+            action,
+            ChatAction::SlashCommand(SlashCommand::Unknown(_))
+        ));
+    }
+
+    #[test]
+    fn key_enter_with_text_returns_send_message() {
+        let mut panel = make_panel();
+        panel.input_buffer = "What is the balance?".to_string();
+        panel.cursor_pos = 20;
+        let action = panel.handle_key(key(KeyCode::Enter));
+        assert!(matches!(action, ChatAction::SendMessage(_)));
+        assert_eq!(panel.input_buffer, "");
+    }
+
+    #[test]
+    fn key_up_scrolls_history_when_input_empty() {
+        let mut panel = make_panel();
+        assert_eq!(panel.scroll_offset, 0);
+        panel.handle_key(key(KeyCode::Up));
+        assert_eq!(panel.scroll_offset, 1);
+    }
+
+    #[test]
+    fn key_up_does_not_scroll_when_input_nonempty() {
+        let mut panel = make_panel();
+        panel.input_buffer = "typing".to_string();
+        panel.handle_key(key(KeyCode::Up));
+        assert_eq!(panel.scroll_offset, 0);
+    }
+
+    #[test]
+    fn key_down_scrolls_down_when_input_empty() {
+        let mut panel = make_panel();
+        panel.scroll_offset = 3;
+        panel.handle_key(key(KeyCode::Down));
+        assert_eq!(panel.scroll_offset, 2);
     }
 }
