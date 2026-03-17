@@ -493,19 +493,19 @@ impl ChatPanel {
             // Scroll message history (only when input is empty).
             KeyCode::Up => {
                 if self.input_buffer.is_empty() {
-                    self.scroll_offset = self.scroll_offset.saturating_add(1);
-                    self.scroll_to_bottom = false;
-                }
-                ChatAction::None
-            }
-            KeyCode::Down => {
-                if self.input_buffer.is_empty() {
                     if self.scroll_offset <= 1 {
                         self.scroll_offset = 0;
                         self.scroll_to_bottom = true;
                     } else {
                         self.scroll_offset = self.scroll_offset.saturating_sub(1);
                     }
+                }
+                ChatAction::None
+            }
+            KeyCode::Down => {
+                if self.input_buffer.is_empty() {
+                    self.scroll_offset = self.scroll_offset.saturating_add(1);
+                    self.scroll_to_bottom = false;
                 }
                 ChatAction::None
             }
@@ -911,26 +911,26 @@ mod tests {
     }
 
     #[test]
-    fn key_up_scrolls_history_when_input_empty() {
+    fn key_down_scrolls_down_when_input_empty() {
         let mut panel = make_panel();
         assert_eq!(panel.scroll_offset, 0);
-        panel.handle_key(key(KeyCode::Up));
+        panel.handle_key(key(KeyCode::Down));
         assert_eq!(panel.scroll_offset, 1);
     }
 
     #[test]
-    fn key_up_does_not_scroll_when_input_nonempty() {
+    fn key_down_does_not_scroll_when_input_nonempty() {
         let mut panel = make_panel();
         panel.input_buffer = "typing".to_string();
-        panel.handle_key(key(KeyCode::Up));
+        panel.handle_key(key(KeyCode::Down));
         assert_eq!(panel.scroll_offset, 0);
     }
 
     #[test]
-    fn key_down_scrolls_down_when_input_empty() {
+    fn key_up_scrolls_up_when_input_empty() {
         let mut panel = make_panel();
         panel.scroll_offset = 3;
-        panel.handle_key(key(KeyCode::Down));
+        panel.handle_key(key(KeyCode::Up));
         assert_eq!(panel.scroll_offset, 2);
     }
 }
