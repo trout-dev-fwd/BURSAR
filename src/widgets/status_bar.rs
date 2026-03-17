@@ -43,6 +43,9 @@ pub struct StatusBar {
     message_set_at: Option<Instant>,
     /// Whether the active tab has unsaved in-progress changes.
     unsaved: bool,
+    /// While an AI request is in flight, shows a loading indicator that takes priority
+    /// over normal status messages. Cleared by `set_ai_status(None)`.
+    ai_status: Option<String>,
 }
 
 impl StatusBar {
@@ -54,7 +57,14 @@ impl StatusBar {
             message_kind: MessageKind::Success,
             message_set_at: None,
             unsaved: false,
+            ai_status: None,
         }
+    }
+
+    /// Sets the AI loading message shown while an AI request is in flight.
+    /// Pass `None` to clear (restores normal message display).
+    pub fn set_ai_status(&mut self, status: Option<String>) {
+        self.ai_status = status;
     }
 
     /// Sets a success message (green, auto-clears after 3 seconds).
@@ -144,14 +154,22 @@ impl StatusBar {
             chunks[1],
         );
 
-        // Right: message (colored by kind) or empty.
-        let msg_text = self.message.clone().unwrap_or_default();
-        let msg_style = if self.message.is_some() {
-            Style::default()
-                .bg(Color::DarkGray)
-                .fg(self.message_kind.color())
+        // Right: AI loading status takes priority; falls back to normal transient message.
+        let (msg_text, msg_style) = if let Some(ai_msg) = &self.ai_status {
+            (
+                ai_msg.clone(),
+                Style::default().bg(Color::DarkGray).fg(Color::Green),
+            )
         } else {
-            bg_style
+            let text = self.message.clone().unwrap_or_default();
+            let style = if self.message.is_some() {
+                Style::default()
+                    .bg(Color::DarkGray)
+                    .fg(self.message_kind.color())
+            } else {
+                bg_style
+            };
+            (text, style)
         };
         frame.render_widget(
             Paragraph::new(Line::from(vec![Span::styled(

@@ -16,7 +16,11 @@ use ratatui::{
 };
 
 use crate::{
-    config::{EntityConfig, WorkspaceConfig, save_config},
+    ai::{
+        AiError, AiResponse, ApiContent, ApiMessage, ApiRole, client::AiClient,
+        context::read_context, tools::tool_definitions,
+    },
+    config::{EntityConfig, WorkspaceConfig, load_secrets, save_config, secrets_file_path},
     db::EntityDb,
     inter_entity::{InterEntityMode, form::InterEntityFormAction, write_protocol},
     tabs::{
@@ -26,7 +30,7 @@ use crate::{
         fixed_assets::FixedAssetsTab, general_ledger::GeneralLedgerTab,
         journal_entries::JournalEntriesTab, reports::ReportsTab,
     },
-    types::FocusTarget,
+    types::{AiRequestState, FocusTarget},
     widgets::{
         FiscalModal, FiscalModalAction, StatusBar, UserGuide, UserGuideAction,
         chat_panel::{ChatAction, ChatPanel},
@@ -108,6 +112,12 @@ pub struct App {
     should_quit: bool,
     chat_panel: ChatPanel,
     focus: FocusTarget,
+    /// Current AI API interaction state (Idle / CallingApi / FulfillingTools).
+    ai_state: AiRequestState,
+    /// Lazily initialized on the first AI request.
+    ai_client: Option<AiClient>,
+    /// Set by handle_key when a SendMessage action arrives; consumed by event_loop.
+    pending_ai_messages: Option<Vec<ApiMessage>>,
 }
 
 impl App {
@@ -131,6 +141,9 @@ impl App {
             should_quit: false,
             chat_panel,
             focus: FocusTarget::MainTab,
+            ai_state: AiRequestState::Idle,
+            ai_client: None,
+            pending_ai_messages: None,
         }
     }
 
@@ -161,114 +174,18 @@ impl App {
     ) -> Result<()> {
         loop {
             // 1. Render.
-            terminal.draw(|frame| {
-                let tab_bar_height = self.tab_bar_height(frame.area().width);
-                let chunks = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([
-                        Constraint::Length(tab_bar_height), // tab bar
-                        Constraint::Min(0),                 // content
-                        Constraint::Length(1),              // status bar
-                    ])
-                    .split(frame.area());
-
-                self.render_tab_bar(frame, chunks[0]);
-
-                // Split content area when the AI panel is visible (70% tab / 30% panel).
-                let (tab_area, panel_area) = if self.chat_panel.is_visible() {
-                    let split = Layout::default()
-                        .direction(Direction::Horizontal)
-                        .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
-                        .split(chunks[1]);
-                    (split[0], Some(split[1]))
-                } else {
-                    (chunks[1], None)
-                };
-
-                match &self.mode {
-                    AppMode::Normal => {
-                        self.entity.tabs[self.active_tab].render(frame, tab_area);
-                    }
-                    AppMode::SecondaryEntityPicker {
-                        selected,
-                        candidates,
-                    } => {
-                        render_secondary_entity_picker(
-                            frame,
-                            tab_area,
-                            &self.config,
-                            *selected,
-                            candidates,
-                        );
-                    }
-                    AppMode::InterEntityAccountSetup { mode, confirm } => {
-                        // Render the form underneath, confirmation overlay on top.
-                        mode.form.render(
-                            frame,
-                            tab_area,
-                            &mode.primary_name,
-                            &mode.secondary_name,
-                            &mode.primary_accounts,
-                            &mode.secondary_accounts,
-                            &std::collections::HashMap::new(),
-                            &std::collections::HashMap::new(),
-                        );
-                        // Center a small confirmation popup.
-                        let popup_w = 60u16.min(tab_area.width);
-                        let popup_h = 6u16.min(tab_area.height);
-                        let px = tab_area.x + tab_area.width.saturating_sub(popup_w) / 2;
-                        let py = tab_area.y + tab_area.height.saturating_sub(popup_h) / 2;
-                        let popup_area = ratatui::layout::Rect::new(px, py, popup_w, popup_h);
-                        frame.render_widget(ratatui::widgets::Clear, popup_area);
-                        confirm.render(frame, popup_area);
-                    }
-                    AppMode::InterEntity(mode) => {
-                        mode.form.render(
-                            frame,
-                            tab_area,
-                            &mode.primary_name,
-                            &mode.secondary_name,
-                            &mode.primary_accounts,
-                            &mode.secondary_accounts,
-                            &std::collections::HashMap::new(),
-                            &std::collections::HashMap::new(),
-                        );
-                    }
-                }
-
-                // Fiscal period modal overlay (rendered on top of tab content).
-                if let Some(ref mut modal) = self.fiscal_modal {
-                    modal.render(frame, tab_area);
-                }
-
-                // Help overlay (rendered topmost).
-                if self.show_help {
-                    render_help_overlay(
-                        frame,
-                        tab_area,
-                        self.entity.tabs[self.active_tab].hotkey_help(),
-                    );
-                }
-
-                // User guide overlay (rendered above everything else).
-                if let Some(guide) = &self.user_guide {
-                    guide.render(frame, tab_area);
-                }
-
-                // AI chat panel (rendered in right column when open).
-                if let Some(area) = panel_area {
-                    let is_focused = matches!(self.focus, FocusTarget::ChatPanel);
-                    self.chat_panel.render(frame, area, is_focused);
-                }
-
-                self.status_bar.render(frame, chunks[2]);
-            })?;
+            terminal.draw(|frame| self.render_frame(frame))?;
 
             // 2. Poll for input (500ms timeout).
             if event::poll(std::time::Duration::from_millis(500))?
                 && let Event::Key(key) = event::read()?
             {
                 self.handle_key(key);
+            }
+
+            // 2b. If a SendMessage action was queued, fire the AI request now.
+            if let Some(messages) = self.pending_ai_messages.take() {
+                self.handle_ai_request(terminal, messages);
             }
 
             // 3. Tick: advance typewriter, update status bar timeout + unsaved indicator.
@@ -282,6 +199,217 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    /// Renders the complete UI frame. Called from the event loop draw closure
+    /// and from `handle_ai_request` before issuing blocking API calls.
+    fn render_frame(&mut self, frame: &mut ratatui::Frame) {
+        let tab_bar_height = self.tab_bar_height(frame.area().width);
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(tab_bar_height),
+                Constraint::Min(0),
+                Constraint::Length(1),
+            ])
+            .split(frame.area());
+
+        self.render_tab_bar(frame, chunks[0]);
+
+        // Split content area when the AI panel is visible (70% tab / 30% panel).
+        let (tab_area, panel_area) = if self.chat_panel.is_visible() {
+            let split = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
+                .split(chunks[1]);
+            (split[0], Some(split[1]))
+        } else {
+            (chunks[1], None)
+        };
+
+        match &self.mode {
+            AppMode::Normal => {
+                self.entity.tabs[self.active_tab].render(frame, tab_area);
+            }
+            AppMode::SecondaryEntityPicker {
+                selected,
+                candidates,
+            } => {
+                render_secondary_entity_picker(
+                    frame,
+                    tab_area,
+                    &self.config,
+                    *selected,
+                    candidates,
+                );
+            }
+            AppMode::InterEntityAccountSetup { mode, confirm } => {
+                mode.form.render(
+                    frame,
+                    tab_area,
+                    &mode.primary_name,
+                    &mode.secondary_name,
+                    &mode.primary_accounts,
+                    &mode.secondary_accounts,
+                    &std::collections::HashMap::new(),
+                    &std::collections::HashMap::new(),
+                );
+                let popup_w = 60u16.min(tab_area.width);
+                let popup_h = 6u16.min(tab_area.height);
+                let px = tab_area.x + tab_area.width.saturating_sub(popup_w) / 2;
+                let py = tab_area.y + tab_area.height.saturating_sub(popup_h) / 2;
+                let popup_area = ratatui::layout::Rect::new(px, py, popup_w, popup_h);
+                frame.render_widget(ratatui::widgets::Clear, popup_area);
+                confirm.render(frame, popup_area);
+            }
+            AppMode::InterEntity(mode) => {
+                mode.form.render(
+                    frame,
+                    tab_area,
+                    &mode.primary_name,
+                    &mode.secondary_name,
+                    &mode.primary_accounts,
+                    &mode.secondary_accounts,
+                    &std::collections::HashMap::new(),
+                    &std::collections::HashMap::new(),
+                );
+            }
+        }
+
+        if let Some(ref mut modal) = self.fiscal_modal {
+            modal.render(frame, tab_area);
+        }
+        if self.show_help {
+            render_help_overlay(
+                frame,
+                tab_area,
+                self.entity.tabs[self.active_tab].hotkey_help(),
+            );
+        }
+        if let Some(guide) = &self.user_guide {
+            guide.render(frame, tab_area);
+        }
+        if let Some(area) = panel_area {
+            let is_focused = matches!(self.focus, FocusTarget::ChatPanel);
+            self.chat_panel.render(frame, area, is_focused);
+        }
+
+        self.status_bar.render(frame, chunks[2]);
+    }
+
+    /// Executes an AI chat request: loads secrets, builds the system prompt, issues
+    /// the blocking API call, and routes the response back to the chat panel.
+    /// Must be called from the event loop (not from handle_key) so `terminal` is available
+    /// for a forced render before the blocking call.
+    fn handle_ai_request<B: ratatui::backend::Backend>(
+        &mut self,
+        terminal: &mut Terminal<B>,
+        messages: Vec<ApiMessage>,
+    ) {
+        // ── Lazy-init AiClient ────────────────────────────────────────────────
+        if self.ai_client.is_none() {
+            match load_secrets() {
+                Err(_) => {
+                    self.status_bar.set_error(format!(
+                        "No API key — see {}",
+                        secrets_file_path().display()
+                    ));
+                    return;
+                }
+                Ok(secrets) => {
+                    let model = self
+                        .config
+                        .ai
+                        .as_ref()
+                        .map(|ai| ai.model.clone())
+                        .unwrap_or_else(|| "claude-sonnet-4-20250514".to_string());
+                    self.ai_client = Some(AiClient::new(secrets.anthropic_api_key, model));
+                }
+            }
+        }
+
+        // ── Load entity context ───────────────────────────────────────────────
+        let context_dir = self.config.context_dir.clone().unwrap_or_else(|| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+            format!("{home}/.config/bookkeeper/context")
+        });
+        let context = read_context(&self.entity.name, &context_dir).unwrap_or_default();
+
+        // ── Build system prompt ───────────────────────────────────────────────
+        let persona = self.chat_panel.current_persona.clone();
+        let entity_name = self.entity.name.clone();
+        let system_prompt = AiClient::build_system_prompt(&persona, &entity_name, &context);
+
+        // ── Log AiPrompt (last user message) ─────────────────────────────────
+        if let Some(msg) = messages
+            .iter()
+            .rev()
+            .find(|m| matches!(m.role, ApiRole::User))
+            && let ApiContent::Text(text) = &msg.content
+        {
+            let _ = self.entity.db.audit().log_ai_prompt(&entity_name, text);
+        }
+
+        // ── Force render with loading state before blocking call ──────────────
+        self.ai_state = AiRequestState::CallingApi;
+        self.status_bar
+            .set_ai_status(Some("Calling Accountant ☏".to_string()));
+        let _ = terminal.draw(|frame| self.render_frame(frame));
+
+        // ── Issue the blocking API call ───────────────────────────────────────
+        // Extract client ref AFTER render to avoid borrow conflicts.
+        let tools = tool_definitions();
+        let result = {
+            let client = self.ai_client.as_ref().expect("just initialized");
+            client.send_with_tools(
+                &system_prompt,
+                &messages,
+                &tools,
+                &self.entity.db,
+                5,
+                &mut |state| {
+                    // The callback is called between tool rounds.
+                    // We update the status bar AI status but cannot do a full render here
+                    // because `self.ai_client` is still borrowed via `client`.
+                    let _ = state; // state tracked by send_with_tools internally
+                },
+            )
+        };
+        // `client` borrow ends here.
+
+        // ── Handle result ─────────────────────────────────────────────────────
+        self.ai_state = AiRequestState::Idle;
+        self.status_bar.set_ai_status(None);
+
+        match result {
+            Ok(AiResponse::Text { content, summary }) => {
+                let _ = self
+                    .entity
+                    .db
+                    .audit()
+                    .log_ai_response(&entity_name, &summary);
+                self.chat_panel.add_response(content);
+            }
+            Ok(AiResponse::ToolUse(_)) => {
+                // Should not reach here — run_tool_loop always terminates with Text.
+                self.chat_panel
+                    .add_system_note("[Unexpected tool use termination]");
+            }
+            Err(AiError::Timeout) => {
+                self.status_bar
+                    .set_error("The Call Dropped ☹ (timeout)".to_string());
+            }
+            Err(AiError::NoApiKey) => {
+                self.status_bar.set_error(format!(
+                    "No API key — see {}",
+                    secrets_file_path().display()
+                ));
+            }
+            Err(e) => {
+                self.status_bar
+                    .set_error(format!("The Call Dropped ☹: {e}"));
+            }
+        }
     }
 
     /// Returns the short label for a tab, abbreviating if `abbreviate` is true.
@@ -444,8 +572,11 @@ impl App {
                     ChatAction::SkipTypewriter => {
                         self.chat_panel.skip_typewriter();
                     }
-                    // SendMessage and SlashCommand will be wired in Task 9/10.
-                    ChatAction::SendMessage(_) | ChatAction::SlashCommand(_) => {}
+                    ChatAction::SendMessage(messages) => {
+                        self.pending_ai_messages = Some(messages);
+                    }
+                    // SlashCommand will be wired in Task 10.
+                    ChatAction::SlashCommand(_) => {}
                 }
                 return;
             } else {
