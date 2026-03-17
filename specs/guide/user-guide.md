@@ -222,7 +222,9 @@ If you manage two entities (e.g., two LLCs), you can post a transaction that aff
 Press `u` to import a bank statement CSV file and automatically categorize transactions.
 
 **The import wizard walks you through:**
-1. **File path** — enter the path to your CSV file
+1. **File browser** — navigate to your CSV file using the arrow keys; press Enter to open a
+   directory or select a `.csv` file, Backspace to go up to the parent directory, and Esc to
+   cancel. The browser opens in the last directory you imported from (or your home directory).
 2. **Bank selection** — pick a known bank or set up a new one (the app detects column layout)
 3. **Account linking** — confirm which Chart of Accounts entry is your bank account
 4. **Duplicate check** — transactions already imported are skipped automatically

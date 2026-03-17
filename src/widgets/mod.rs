@@ -1,6 +1,7 @@
 pub mod account_picker;
 pub mod chat_panel;
 pub mod confirmation;
+pub mod file_picker;
 pub mod fiscal_modal;
 pub mod je_form;
 pub mod status_bar;
@@ -8,6 +9,7 @@ pub mod user_guide;
 
 pub use account_picker::AccountPicker;
 pub use confirmation::Confirmation;
+pub use file_picker::{FilePicker, FilePickerAction};
 pub use fiscal_modal::{FiscalModal, FiscalModalAction};
 pub use je_form::JeForm;
 pub use status_bar::StatusBar;

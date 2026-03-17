@@ -38,7 +38,8 @@ use crate::{
     },
     types::{AiRequestState, FocusTarget},
     widgets::{
-        FiscalModal, FiscalModalAction, StatusBar, UserGuide, UserGuideAction,
+        FilePicker, FilePickerAction, FiscalModal, FiscalModalAction, StatusBar, UserGuide,
+        UserGuideAction,
         chat_panel::{ChatAction, ChatPanel, SlashCommand},
     },
 };
@@ -126,6 +127,8 @@ pub struct App {
     pending_ai_messages: Option<Vec<ApiMessage>>,
     /// Set by handle_key when a SlashCommand action arrives; consumed by event_loop.
     pending_slash_command: Option<SlashCommand>,
+    /// File browser shown at the first step of the CSV import flow.
+    file_picker: Option<FilePicker>,
     /// Active CSV import wizard state (Some while import is in progress).
     import_flow: Option<ImportFlowState>,
     /// Set when NewBankDetection step begins; consumed by event_loop to run the API call.
@@ -163,6 +166,7 @@ impl App {
             ai_client: None,
             pending_ai_messages: None,
             pending_slash_command: None,
+            file_picker: None,
             import_flow: None,
             pending_bank_detection: false,
             pending_pass1: false,
@@ -342,6 +346,9 @@ impl App {
         }
         if let Some(guide) = &self.user_guide {
             guide.render(frame, tab_area);
+        }
+        if let Some(ref picker) = self.file_picker {
+            picker.render(frame, tab_area);
         }
         if let Some(ref flow) = self.import_flow {
             // Look up bank account type for review screen preview.
@@ -1625,6 +1632,12 @@ impl App {
             return;
         }
 
+        // File picker: shown at the start of the import flow.
+        if self.file_picker.is_some() {
+            self.handle_file_picker_key(key);
+            return;
+        }
+
         // Import wizard: all keys go to the wizard when it is active.
         if self.import_flow.is_some() {
             self.handle_import_key(key);
@@ -1962,19 +1975,17 @@ impl App {
                 }
             }
             TabAction::StartImport => {
-                let mut flow = ImportFlowState::new();
-                // Pre-fill from last_import_dir if available.
                 let (toml_path, workspace_dir) = self.entity_toml_path();
-                if let Ok(entity_cfg) = crate::config::load_entity_toml(&toml_path, &workspace_dir)
-                    && let Some(ref dir) = entity_cfg.last_import_dir
-                {
-                    let mut pre = dir.clone();
-                    if !pre.ends_with('/') {
-                        pre.push('/');
-                    }
-                    flow.input_buffer = pre;
-                }
-                self.import_flow = Some(flow);
+                let start_dir = crate::config::load_entity_toml(&toml_path, &workspace_dir)
+                    .ok()
+                    .and_then(|cfg| cfg.last_import_dir)
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|| {
+                        std::env::var("HOME")
+                            .map(std::path::PathBuf::from)
+                            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                    });
+                self.file_picker = Some(FilePicker::new(start_dir));
             }
             TabAction::StartRematch => {
                 // Collect incomplete import drafts, parse their import_refs, and
@@ -2076,6 +2087,44 @@ impl App {
         }
     }
 
+    /// Handles key events while the file picker modal is active.
+    fn handle_file_picker_key(&mut self, key: KeyEvent) {
+        let Some(mut picker) = self.file_picker.take() else {
+            return;
+        };
+        match picker.handle_key(key) {
+            FilePickerAction::Cancelled => {
+                // file_picker stays None (already taken).
+            }
+            FilePickerAction::Selected(path) => {
+                // Save last_import_dir.
+                let (toml_path, workspace_dir) = self.entity_toml_path();
+                let mut entity_cfg =
+                    crate::config::load_entity_toml(&toml_path, &workspace_dir).unwrap_or_default();
+                if let Some(parent) = path.parent() {
+                    entity_cfg.last_import_dir = Some(parent.to_string_lossy().into_owned());
+                    let _ =
+                        crate::config::save_entity_toml(&toml_path, &workspace_dir, &entity_cfg);
+                }
+                // Build import flow starting after the file selection step.
+                let mut flow = ImportFlowState::new();
+                flow.file_path = Some(path);
+                flow.available_banks = entity_cfg.bank_accounts;
+                if flow.available_banks.is_empty() {
+                    flow.step = ImportFlowStep::NewBankName;
+                    flow.is_new_bank = true;
+                } else {
+                    flow.step = ImportFlowStep::BankSelection;
+                }
+                flow.selected_index = 0;
+                self.import_flow = Some(flow);
+            }
+            FilePickerAction::Pending => {
+                self.file_picker = Some(picker);
+            }
+        }
+    }
+
     /// Handles all key events while the import wizard modal is active.
     fn handle_import_key(&mut self, key: KeyEvent) {
         // Take the flow out to avoid simultaneous self borrows.
@@ -2085,54 +2134,6 @@ impl App {
 
         let step = flow.step.clone();
         match step {
-            ImportFlowStep::FilePathInput => match key.code {
-                KeyCode::Esc => {
-                    // Cancel: leave import_flow as None (already taken).
-                    return;
-                }
-                KeyCode::Enter => {
-                    let raw = flow.input_buffer.trim().to_string();
-                    let expanded = expand_tilde_str(&raw);
-                    let path = std::path::PathBuf::from(&expanded);
-                    if path.is_file() {
-                        flow.file_path = Some(path.clone());
-                        flow.modal_error = None;
-                        let (toml_path, workspace_dir) = self.entity_toml_path();
-                        let entity_cfg =
-                            crate::config::load_entity_toml(&toml_path, &workspace_dir)
-                                .unwrap_or_default();
-                        // Update last_import_dir in entity toml.
-                        if let Some(parent) = path.parent() {
-                            let mut cfg = entity_cfg.clone();
-                            cfg.last_import_dir = Some(parent.to_string_lossy().into_owned());
-                            let _ =
-                                crate::config::save_entity_toml(&toml_path, &workspace_dir, &cfg);
-                        }
-                        flow.available_banks = entity_cfg.bank_accounts;
-                        if flow.available_banks.is_empty() {
-                            // No configured banks: go straight to new bank setup.
-                            flow.step = ImportFlowStep::NewBankName;
-                            flow.is_new_bank = true;
-                        } else {
-                            flow.step = ImportFlowStep::BankSelection;
-                        }
-                        flow.selected_index = 0;
-                        flow.input_buffer = String::new();
-                    } else {
-                        flow.modal_error =
-                            Some("File not found. Check the path and try again.".to_string());
-                    }
-                }
-                KeyCode::Backspace => {
-                    flow.input_buffer.pop();
-                    flow.modal_error = None;
-                }
-                KeyCode::Char(c) => {
-                    flow.input_buffer.push(c);
-                    flow.modal_error = None;
-                }
-                _ => {}
-            },
             ImportFlowStep::BankSelection => match key.code {
                 KeyCode::Esc => return,
                 KeyCode::Up => {
@@ -2543,16 +2544,6 @@ fn extract_json_block(s: &str) -> String {
     stripped
 }
 
-/// Expands a leading `~` to the user's `$HOME` directory.
-fn expand_tilde_str(s: &str) -> String {
-    if s.starts_with("~/") || s == "~" {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
-        format!("{home}/{}", s.strip_prefix("~/").unwrap_or(""))
-    } else {
-        s.to_string()
-    }
-}
-
 /// A row in the review screen list.
 #[derive(Debug, Clone)]
 enum ReviewRow {
@@ -2844,7 +2835,6 @@ fn render_import_modal(
     bank_account_type: crate::types::AccountType,
 ) {
     match &flow.step {
-        ImportFlowStep::FilePathInput => render_file_path_modal(frame, area, flow),
         ImportFlowStep::BankSelection => render_bank_selection_modal(frame, area, flow),
         ImportFlowStep::NewBankName => render_new_bank_name_modal(frame, area, flow),
         ImportFlowStep::NewBankDetection => {
@@ -2877,55 +2867,6 @@ fn render_import_modal(
         // Future steps render their own modals (implemented in later tasks).
         _ => {}
     }
-}
-
-/// Renders the file path input step of the import wizard.
-fn render_file_path_modal(
-    frame: &mut ratatui::Frame,
-    area: Rect,
-    flow: &crate::ai::csv_import::ImportFlowState,
-) {
-    use ratatui::{
-        style::{Color, Style},
-        text::{Line, Span},
-        widgets::{Block, Borders, Clear, Paragraph},
-    };
-
-    let modal = crate::widgets::centered_rect(70, 40, area);
-    frame.render_widget(Clear, modal);
-
-    let input_line = format!(" > {}", flow.input_buffer);
-    let mut lines = vec![
-        Line::from(Span::raw("")),
-        Line::from(Span::styled(
-            "  Enter the full path to the CSV bank statement:",
-            Style::default().fg(Color::Gray),
-        )),
-        Line::from(Span::raw("")),
-        Line::from(Span::styled(input_line, Style::default().fg(Color::White))),
-        Line::from(Span::raw("")),
-    ];
-    if let Some(ref err) = flow.modal_error {
-        lines.push(Line::from(Span::styled(
-            format!("  ⚠ {err}"),
-            Style::default().fg(Color::Red),
-        )));
-        lines.push(Line::from(Span::raw("")));
-    }
-    lines.push(Line::from(Span::styled(
-        "  Enter: confirm   Esc: cancel",
-        Style::default().fg(Color::DarkGray),
-    )));
-
-    frame.render_widget(
-        Paragraph::new(lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Import CSV Statement ")
-                .style(Style::default().fg(Color::Cyan)),
-        ),
-        modal,
-    );
 }
 
 /// Renders the bank selection step of the import wizard.

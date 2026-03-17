@@ -14,7 +14,6 @@ use crate::types::{AccountType, Money};
 /// Tracks the current step in the CSV import wizard.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImportFlowStep {
-    FilePathInput,
     BankSelection,
     NewBankName,
     NewBankDetection,
@@ -73,7 +72,7 @@ impl ImportFlowState {
     /// Creates a new flow starting at the file path input step.
     pub fn new() -> Self {
         Self {
-            step: ImportFlowStep::FilePathInput,
+            step: ImportFlowStep::BankSelection,
             file_path: None,
             bank_config: None,
             is_new_bank: false,
