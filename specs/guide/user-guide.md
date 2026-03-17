@@ -38,6 +38,7 @@ These work from any tab:
 | Key | Action |
 |-----|--------|
 | `1`–`9` | Jump to tab by number (only when no form/modal is open) |
+| `Ctrl+←` / `Ctrl+→` | Cycle to the previous / next tab (wraps around) |
 | `f` | Open fiscal period management (close/reopen periods, year-end close) |
 | `?` | Show hotkey quick-reference for the current tab |
 | `Ctrl+H` | Open this user guide |
