@@ -134,6 +134,8 @@ pub struct App {
     pending_pass1: bool,
     /// Set when Pass2AiMatching step begins; consumed by event_loop to run AI matching.
     pending_pass2: bool,
+    /// Set when Creating step begins; consumed by event_loop to run batch draft creation.
+    pending_draft_creation: bool,
 }
 
 impl App {
@@ -165,6 +167,7 @@ impl App {
             pending_bank_detection: false,
             pending_pass1: false,
             pending_pass2: false,
+            pending_draft_creation: false,
         }
     }
 
@@ -230,6 +233,12 @@ impl App {
             if self.pending_pass2 {
                 self.pending_pass2 = false;
                 self.run_pass2_step(terminal);
+            }
+
+            // 2g. If batch draft creation is pending, run it now.
+            if self.pending_draft_creation {
+                self.pending_draft_creation = false;
+                self.run_draft_creation_step(terminal);
             }
 
             // 3. Tick: advance typewriter, update status bar timeout + unsaved indicator.
@@ -967,6 +976,243 @@ impl App {
                 f.step = ImportFlowStep::ReviewScreen;
             }
         }
+    }
+
+    /// Batch-creates draft journal entries from the approved import matches.
+    ///
+    /// Runs within a SQLite savepoint for atomicity. On success: logs audit entries,
+    /// saves learned mappings, sets step to Complete, and refreshes all tabs.
+    /// On failure: rolls back and returns to ReviewScreen.
+    fn run_draft_creation_step<B: ratatui::backend::Backend>(
+        &mut self,
+        terminal: &mut Terminal<B>,
+    ) {
+        use crate::ai::csv_import::determine_debit_credit;
+        use crate::db::journal_repo::{NewJournalEntry, NewJournalEntryLine};
+        use crate::types::{ImportMatchSource, ImportMatchType, MatchSource};
+
+        // Extract data from flow before the terminal.draw() call (to release borrow).
+        let (bank_name, bank_account_number, matches_snapshot) = {
+            let Some(ref flow) = self.import_flow else {
+                return;
+            };
+            if flow.step != ImportFlowStep::Creating {
+                return;
+            }
+            let bank_name = flow
+                .bank_config
+                .as_ref()
+                .map(|c| c.name.clone())
+                .unwrap_or_default();
+            let bank_account_number = flow
+                .bank_config
+                .as_ref()
+                .map(|c| c.linked_account.clone())
+                .unwrap_or_default();
+            let matches_snapshot = flow.matches.clone();
+            (bank_name, bank_account_number, matches_snapshot)
+        };
+        let entity_name = self.entity.name.clone();
+
+        // Force render so user sees "Creating" state.
+        let _ = terminal.draw(|frame| self.render_frame(frame));
+        let all_accounts = self.entity.db.accounts().list_all().unwrap_or_default();
+        let bank_account = all_accounts
+            .iter()
+            .find(|a| a.number == bank_account_number)
+            .cloned();
+
+        // Begin savepoint for atomicity.
+        let sp_result = self
+            .entity
+            .db
+            .conn()
+            .execute("SAVEPOINT import_batch_sp", []);
+        if let Err(e) = sp_result {
+            self.status_bar
+                .set_error(format!("Failed to begin transaction: {e}"));
+            if let Some(ref mut f) = self.import_flow {
+                f.step = ImportFlowStep::ReviewScreen;
+            }
+            return;
+        }
+
+        let mut created_count = 0usize;
+        let mut ai_matched_count = 0usize;
+        let mut manual_count = 0usize;
+        let mut batch_error: Option<String> = None;
+        let mut learned_mappings: Vec<(String, crate::types::AccountId, String, String)> =
+            Vec::new(); // (desc, account_id, account_number, account_name)
+
+        'batch: for m in &matches_snapshot {
+            if m.rejected {
+                continue;
+            }
+
+            // Find fiscal period for this transaction date.
+            let fiscal_period = match self
+                .entity
+                .db
+                .fiscal()
+                .get_period_for_date(m.transaction.date)
+            {
+                Ok(fp) => fp,
+                Err(e) => {
+                    batch_error = Some(format!("No fiscal period for {}: {e}", m.transaction.date));
+                    break 'batch;
+                }
+            };
+
+            let memo_str = format!(
+                "Import: {}",
+                m.transaction
+                    .description
+                    .chars()
+                    .take(200)
+                    .collect::<String>()
+            );
+
+            // Determine debit/credit using bank account type.
+            let bank_acct_type = bank_account
+                .as_ref()
+                .map(|a| a.account_type)
+                .unwrap_or(crate::types::AccountType::Asset);
+            let (bank_debit, bank_credit, _) =
+                determine_debit_credit(m.transaction.amount, bank_acct_type);
+            let contra_debit = bank_credit; // contra side is opposite
+            let contra_credit = bank_debit;
+
+            let bank_line = bank_account.as_ref().map(|a| NewJournalEntryLine {
+                account_id: a.id,
+                debit_amount: bank_debit,
+                credit_amount: bank_credit,
+                line_memo: None,
+                sort_order: 0,
+            });
+
+            let mut lines = Vec::new();
+            if let Some(bl) = bank_line {
+                lines.push(bl);
+            }
+            if let Some(account_id) = m.matched_account_id {
+                lines.push(NewJournalEntryLine {
+                    account_id,
+                    debit_amount: contra_debit,
+                    credit_amount: contra_credit,
+                    line_memo: None,
+                    sort_order: 1,
+                });
+
+                // Track AI-suggested mappings to save later.
+                if matches!(m.match_source, MatchSource::Ai) {
+                    ai_matched_count += 1;
+                    if let Some(display) = &m.matched_account_display {
+                        let parts: Vec<&str> = display.splitn(2, " - ").collect();
+                        let num = parts.first().copied().unwrap_or("");
+                        let name = parts.get(1).copied().unwrap_or(display.as_str());
+                        learned_mappings.push((
+                            m.transaction.description.clone(),
+                            account_id,
+                            num.to_string(),
+                            name.to_string(),
+                        ));
+                    }
+                } else if matches!(m.match_source, MatchSource::UserConfirmed) {
+                    manual_count += 1;
+                }
+            }
+
+            let entry = NewJournalEntry {
+                entry_date: m.transaction.date,
+                memo: Some(memo_str),
+                fiscal_period_id: fiscal_period.id,
+                reversal_of_je_id: None,
+                lines,
+            };
+
+            match self
+                .entity
+                .db
+                .journals()
+                .create_draft_with_import_ref(&entry, Some(&m.transaction.import_ref))
+            {
+                Ok(_) => created_count += 1,
+                Err(e) => {
+                    batch_error = Some(format!("Failed to create draft: {e}"));
+                    break 'batch;
+                }
+            }
+        }
+
+        if let Some(err) = batch_error {
+            // Rollback entire batch.
+            let _ = self
+                .entity
+                .db
+                .conn()
+                .execute("ROLLBACK TO SAVEPOINT import_batch_sp", []);
+            let _ = self
+                .entity
+                .db
+                .conn()
+                .execute("RELEASE SAVEPOINT import_batch_sp", []);
+            self.status_bar.set_error(format!("Import failed: {err}"));
+            if let Some(ref mut f) = self.import_flow {
+                f.step = ImportFlowStep::ReviewScreen;
+            }
+            return;
+        }
+
+        // Commit savepoint.
+        let _ = self
+            .entity
+            .db
+            .conn()
+            .execute("RELEASE SAVEPOINT import_batch_sp", []);
+
+        // Save AI-suggested mappings.
+        for (desc, account_id, acct_num, acct_name) in &learned_mappings {
+            let _ = self.entity.db.import_mappings().create(
+                desc,
+                *account_id,
+                ImportMatchType::Exact,
+                ImportMatchSource::AiSuggested,
+                &bank_name,
+            );
+            let _ = self.entity.db.audit().log_mapping_learned(
+                &entity_name,
+                desc,
+                acct_num,
+                acct_name,
+                "ai_suggested",
+            );
+        }
+
+        // Log CsvImport audit entry.
+        let matched = matches_snapshot
+            .iter()
+            .filter(|m| m.matched_account_id.is_some() && !m.rejected)
+            .count();
+        let _ = self.entity.db.audit().log_csv_import(
+            &entity_name,
+            &bank_name,
+            matches_snapshot.len(),
+            matched,
+            ai_matched_count,
+            manual_count,
+        );
+
+        // Refresh tabs so JE list shows new drafts.
+        for tab in &mut self.entity.tabs {
+            tab.refresh(&self.entity.db);
+        }
+
+        self.status_bar.set_message(format!(
+            "Imported {created_count} draft entries from {bank_name}."
+        ));
+
+        // Complete: clear import flow.
+        self.import_flow = None;
     }
 
     /// Executes a slash command entered in the chat panel.
@@ -2036,6 +2282,7 @@ impl App {
                             match row {
                                 ReviewRow::ApproveAction => {
                                     flow.step = ImportFlowStep::Creating;
+                                    self.pending_draft_creation = true;
                                 }
                                 ReviewRow::SectionHeader { section_idx, .. } => {
                                     flow.review_section_expanded[*section_idx] =
