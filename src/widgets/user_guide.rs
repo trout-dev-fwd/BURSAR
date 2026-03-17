@@ -390,7 +390,113 @@ fn parse_guide(markdown: &str) -> Vec<GuideSection> {
         // Lines before the first ## are silently ignored.
     }
 
+    // Post-process: convert markdown table blocks to aligned column format.
+    for section in &mut sections {
+        section.intro_lines = process_lines_for_tables(std::mem::take(&mut section.intro_lines));
+        for topic in &mut section.topics {
+            topic.lines = process_lines_for_tables(std::mem::take(&mut topic.lines));
+        }
+    }
+
     sections
+}
+
+// ── Table formatter ───────────────────────────────────────────────────────────
+
+/// Strips inline markdown markers (backticks, asterisks) for plain-text width measurement.
+fn strip_inline_md(s: &str) -> String {
+    s.chars().filter(|&c| c != '`' && c != '*').collect()
+}
+
+/// Returns true if `line` is a markdown table separator (`|---|---|`).
+fn is_table_separator(line: &str) -> bool {
+    let t = line.trim();
+    t.starts_with('|') && t.chars().all(|c| matches!(c, '|' | '-' | ' ' | ':'))
+}
+
+/// Splits a markdown table row on `|` and trims each cell.
+fn parse_table_row(line: &str) -> Vec<String> {
+    let t = line.trim();
+    let inner = t.strip_prefix('|').unwrap_or(t);
+    let inner = inner.strip_suffix('|').unwrap_or(inner);
+    inner.split('|').map(|s| s.trim().to_string()).collect()
+}
+
+/// Converts a contiguous block of raw markdown table lines into formatted display
+/// lines. The header row is skipped; each data row is rendered as:
+///
+/// ```text
+///   `col0`    col1  col2  …
+/// ```
+///
+/// Col 0 is wrapped in backticks so `format_guide_line` renders it in cyan.
+/// Subsequent columns are joined with two spaces.
+fn format_table_block(block: &[String]) -> Vec<String> {
+    // Parse rows, dropping separator lines.
+    let rows: Vec<Vec<String>> = block
+        .iter()
+        .filter(|l| !is_table_separator(l))
+        .map(|l| parse_table_row(l))
+        .collect();
+
+    // Need at least header + one data row.
+    if rows.len() < 2 {
+        return Vec::new();
+    }
+
+    let data_rows = &rows[1..]; // skip the header row
+
+    // Width of col 0 (plain text, for alignment).
+    let col0_max = data_rows
+        .iter()
+        .filter_map(|r| r.first())
+        .map(|s| strip_inline_md(s).len())
+        .max()
+        .unwrap_or(0);
+
+    const GAP: usize = 4;
+
+    data_rows
+        .iter()
+        .filter_map(|row| {
+            let col0_raw = row.first()?;
+            let col0_plain = strip_inline_md(col0_raw);
+            let padding = col0_max.saturating_sub(col0_plain.len()) + GAP;
+            let spaces = " ".repeat(padding);
+            let rest: String = if row.len() > 1 {
+                row[1..].join("  ")
+            } else {
+                String::new()
+            };
+            Some(format!("  `{}`{}{}", col0_plain, spaces, rest))
+        })
+        .collect()
+}
+
+/// Scans `lines` for contiguous markdown table blocks (lines starting with `|`)
+/// and replaces each block with formatted, aligned column output.
+fn process_lines_for_tables(lines: Vec<String>) -> Vec<String> {
+    let mut result: Vec<String> = Vec::new();
+    let mut pending_table: Vec<String> = Vec::new();
+
+    for line in lines {
+        if line.trim().starts_with('|') {
+            pending_table.push(line);
+        } else {
+            if !pending_table.is_empty() {
+                result.extend(format_table_block(&pending_table));
+                pending_table.clear();
+            }
+            result.push(line);
+        }
+    }
+
+    // Flush any trailing table block.
+    if !pending_table.is_empty() {
+        result.extend(format_table_block(&pending_table));
+    }
+
+    result
 }
 
 // ── Inline markdown renderer ──────────────────────────────────────────────────
@@ -622,5 +728,46 @@ mod tests {
         let line = format_guide_line("**Important:** read this");
         let yellow = line.spans.iter().any(|s| s.style.fg == Some(Color::Yellow));
         assert!(yellow, "expected a yellow span for **bold** text");
+    }
+
+    #[test]
+    fn guide_tables_are_not_raw_pipe_syntax() {
+        let sections = parse_guide(GUIDE_MD);
+        // No stored line in any section/topic should be a raw table row.
+        for section in &sections {
+            for line in &section.intro_lines {
+                assert!(
+                    !line.trim().starts_with('|'),
+                    "raw table row found in intro_lines of '{}': {}",
+                    section.title,
+                    line
+                );
+            }
+            for topic in &section.topics {
+                for line in &topic.lines {
+                    assert!(
+                        !line.trim().starts_with('|'),
+                        "raw table row found in topic '{}': {}",
+                        topic.title,
+                        line
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn guide_global_controls_table_formatted_with_backtick_keys() {
+        let sections = parse_guide(GUIDE_MD);
+        let global = sections
+            .iter()
+            .find(|s| s.title.contains("Global Controls"))
+            .expect("Global Controls section not found");
+        // The formatted table should contain backtick-wrapped "Ctrl+H".
+        let has_ctrl_h = global.intro_lines.iter().any(|l| l.contains("`Ctrl+H`"));
+        assert!(
+            has_ctrl_h,
+            "expected backtick-wrapped Ctrl+H in formatted Global Controls table"
+        );
     }
 }
