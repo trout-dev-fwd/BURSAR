@@ -2017,10 +2017,68 @@ impl App {
                 self.import_flow = Some(flow);
                 return;
             }
-            // Placeholder dispatch for subsequent steps (implemented in later tasks).
-            _ => {
+            // ReviewScreen: full-screen match review with approve/reject.
+            ImportFlowStep::ReviewScreen => {
+                let rows = build_review_rows(&flow);
+                let row_count = rows.len();
+                match key.code {
+                    KeyCode::Esc => return, // Cancel — no drafts, discard flow.
+                    KeyCode::Up => {
+                        flow.selected_index = flow.selected_index.saturating_sub(1);
+                    }
+                    KeyCode::Down => {
+                        if flow.selected_index + 1 < row_count {
+                            flow.selected_index += 1;
+                        }
+                    }
+                    KeyCode::Enter => {
+                        if let Some(row) = rows.get(flow.selected_index) {
+                            match row {
+                                ReviewRow::ApproveAction => {
+                                    flow.step = ImportFlowStep::Creating;
+                                }
+                                ReviewRow::SectionHeader { section_idx, .. } => {
+                                    flow.review_section_expanded[*section_idx] =
+                                        !flow.review_section_expanded[*section_idx];
+                                }
+                                ReviewRow::MatchItem { .. } => {}
+                            }
+                        }
+                    }
+                    KeyCode::Char('r') => {
+                        if let Some(ReviewRow::MatchItem {
+                            match_idx,
+                            section_idx,
+                        }) = rows.get(flow.selected_index)
+                        {
+                            // Only AI-matched items (section 1) can be rejected.
+                            if *section_idx == 1 {
+                                let idx = *match_idx;
+                                flow.matches[idx].matched_account_id = None;
+                                flow.matches[idx].matched_account_display = None;
+                                flow.matches[idx].match_source =
+                                    crate::types::MatchSource::Unmatched;
+                                flow.matches[idx].confidence = None;
+                                flow.matches[idx].reasoning = None;
+                                flow.matches[idx].rejected = true;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                self.import_flow = Some(flow);
+                return;
+            }
+            // Creating/Complete: keys consumed while batch operation runs.
+            ImportFlowStep::Creating | ImportFlowStep::Complete => {
                 if key.code == KeyCode::Esc {
-                    return; // Cancel: leave import_flow as None.
+                    return;
+                }
+            }
+            // Failed: Esc dismisses.
+            ImportFlowStep::Failed(_) => {
+                if key.code == KeyCode::Esc {
+                    return;
                 }
             }
         }
@@ -2067,6 +2125,289 @@ fn expand_tilde_str(s: &str) -> String {
     }
 }
 
+/// A row in the review screen list.
+#[derive(Debug, Clone)]
+enum ReviewRow {
+    ApproveAction,
+    SectionHeader {
+        label: String,
+        section_idx: usize,
+        count: usize,
+        expanded: bool,
+    },
+    MatchItem {
+        match_idx: usize,
+        section_idx: usize,
+    },
+}
+
+/// Builds the flat list of review rows from the current flow state.
+fn build_review_rows(flow: &crate::ai::csv_import::ImportFlowState) -> Vec<ReviewRow> {
+    use crate::types::MatchSource;
+
+    let sections: [(MatchSource, &str, usize); 4] = [
+        (MatchSource::Local, "Auto-Matched", 0),
+        (MatchSource::Ai, "AI-Matched", 1),
+        (MatchSource::UserConfirmed, "User-Confirmed", 2),
+        (MatchSource::Unmatched, "Unmatched", 3),
+    ];
+
+    let mut rows = vec![ReviewRow::ApproveAction];
+
+    for (source, label, section_idx) in &sections {
+        let indices: Vec<usize> = flow
+            .matches
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| &m.match_source == source)
+            .map(|(i, _)| i)
+            .collect();
+        let count = indices.len();
+        if count == 0 {
+            continue;
+        }
+        let expanded = flow.review_section_expanded[*section_idx];
+        rows.push(ReviewRow::SectionHeader {
+            label: label.to_string(),
+            section_idx: *section_idx,
+            count,
+            expanded,
+        });
+        if expanded {
+            for match_idx in indices {
+                rows.push(ReviewRow::MatchItem {
+                    match_idx,
+                    section_idx: *section_idx,
+                });
+            }
+        }
+    }
+    rows
+}
+
+/// Renders the import review screen (full-screen view of all matches).
+fn render_review_screen(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    flow: &crate::ai::csv_import::ImportFlowState,
+) {
+    use crate::ai::csv_import::determine_debit_credit;
+    use crate::types::MatchSource;
+    use ratatui::{
+        layout::{Constraint, Direction, Layout},
+        style::{Color, Modifier, Style},
+        text::{Line, Span},
+        widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
+    };
+
+    let bank_name = flow
+        .bank_config
+        .as_ref()
+        .map(|c| c.name.as_str())
+        .unwrap_or("Import");
+    let total = flow.matches.len();
+
+    // Split area: list on top, detail pane on bottom.
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(5), Constraint::Length(8)])
+        .split(area);
+    let list_area = chunks[0];
+    let detail_area = chunks[1];
+
+    // Build rows.
+    let rows = build_review_rows(flow);
+    let selected = flow.selected_index.min(rows.len().saturating_sub(1));
+
+    // Scroll offset: keep selected visible.
+    let visible_height = list_area.height.saturating_sub(2) as usize;
+    let scroll = if selected < flow.scroll_offset {
+        selected
+    } else if selected >= flow.scroll_offset + visible_height {
+        selected + 1 - visible_height
+    } else {
+        flow.scroll_offset
+    };
+
+    // Build list items.
+    let items: Vec<ListItem> = rows
+        .iter()
+        .enumerate()
+        .skip(scroll)
+        .take(visible_height)
+        .map(|(i, row)| {
+            let is_selected = i == selected;
+            let base_style = if is_selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            let text = match row {
+                ReviewRow::ApproveAction => {
+                    let s = if is_selected {
+                        base_style
+                    } else {
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD)
+                    };
+                    Line::from(Span::styled(
+                        " \u{2713} Approve All & Create Drafts  [Enter]",
+                        s,
+                    ))
+                }
+                ReviewRow::SectionHeader {
+                    label,
+                    count,
+                    expanded,
+                    ..
+                } => {
+                    let arrow = if *expanded { "\u{25BE}" } else { "\u{25B8}" };
+                    let s = if is_selected {
+                        base_style
+                    } else {
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD)
+                    };
+                    Line::from(Span::styled(format!(" {arrow} {label} ({count})"), s))
+                }
+                ReviewRow::MatchItem {
+                    match_idx,
+                    section_idx,
+                } => {
+                    let m = &flow.matches[*match_idx];
+                    let desc = m
+                        .transaction
+                        .description
+                        .chars()
+                        .take(30)
+                        .collect::<String>();
+                    let acct = m.matched_account_display.as_deref().unwrap_or("(no match)");
+                    let suffix = match *section_idx {
+                        1 => {
+                            // AI-matched: show confidence
+                            let conf = match m.confidence {
+                                Some(crate::types::MatchConfidence::High) => "high",
+                                Some(crate::types::MatchConfidence::Medium) => "med",
+                                _ => "low",
+                            };
+                            format!("  {} \u{2192} {} ({conf})  [r: reject]", desc, acct)
+                        }
+                        3 => format!("  {} \u{2192} (unmatched)", desc),
+                        _ => format!("  {} \u{2192} {}", desc, acct),
+                    };
+                    let style = if is_selected {
+                        base_style
+                    } else if *section_idx == 0 {
+                        Style::default().fg(Color::DarkGray)
+                    } else {
+                        Style::default().fg(Color::White)
+                    };
+                    Line::from(Span::styled(suffix, style))
+                }
+            };
+            ListItem::new(text)
+        })
+        .collect();
+
+    let title = format!(" Import Review \u{2014} {bank_name} \u{2014} {total} transactions ");
+    frame.render_widget(Clear, list_area);
+    frame.render_widget(
+        List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(title)
+                .style(Style::default().fg(Color::Cyan)),
+        ),
+        list_area,
+    );
+
+    // Detail pane: show the proposed JE for the selected match item.
+    frame.render_widget(Clear, detail_area);
+    let detail_lines = if let Some(ReviewRow::MatchItem { match_idx, .. }) = rows.get(selected) {
+        let m = &flow.matches[*match_idx];
+        let txn = &m.transaction;
+        let bank_acct = flow
+            .bank_config
+            .as_ref()
+            .map(|c| c.linked_account.as_str())
+            .unwrap_or("bank");
+        let contra_acct = m
+            .matched_account_display
+            .as_deref()
+            .unwrap_or("(unmatched)");
+
+        // Determine debit/credit using account type (default Asset if unknown).
+        let acct_type = crate::types::AccountType::Asset;
+        let (debit, credit, _) = determine_debit_credit(txn.amount, acct_type);
+        let memo = format!(
+            "Import: {}",
+            txn.description.chars().take(200).collect::<String>()
+        );
+
+        vec![
+            Line::from(Span::styled(
+                format!(" Date: {}  Ref: {}", txn.date, txn.import_ref),
+                Style::default().fg(Color::Gray),
+            )),
+            Line::from(Span::styled(
+                format!(" Memo: {}", memo.chars().take(60).collect::<String>()),
+                Style::default().fg(Color::Gray),
+            )),
+            Line::from(Span::styled(
+                format!(
+                    " Dr {bank_acct}: {debit}  Cr {contra_acct}: {credit}",
+                    debit = if debit > crate::types::Money(0) {
+                        format!("{debit}")
+                    } else {
+                        "\u{2014}".to_string()
+                    },
+                    credit = if credit > crate::types::Money(0) {
+                        format!("{credit}")
+                    } else {
+                        "\u{2014}".to_string()
+                    },
+                ),
+                Style::default().fg(Color::White),
+            )),
+            Line::from(Span::styled(
+                "  \u{2191}/\u{2193}: navigate   Enter: select/approve   r: reject AI match   Esc: cancel",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ]
+    } else {
+        vec![
+            Line::from(Span::raw("")),
+            Line::from(Span::styled(
+                "  Select a transaction to preview the draft journal entry.",
+                Style::default().fg(Color::DarkGray),
+            )),
+            Line::from(Span::raw("")),
+            Line::from(Span::styled(
+                "  \u{2191}/\u{2193}: navigate   Enter: approve all   Esc: cancel import",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ]
+    };
+
+    frame.render_widget(
+        Paragraph::new(detail_lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Draft Preview ")
+                .style(Style::default().fg(Color::DarkGray)),
+        ),
+        detail_area,
+    );
+
+    // Suppress unused import warning.
+    let _ = MatchSource::Local;
+}
+
 /// Renders the import wizard modal overlay.
 fn render_import_modal(
     frame: &mut ratatui::Frame,
@@ -2099,6 +2440,9 @@ fn render_import_modal(
             let total = flow.matches.len();
             let msg = format!("Matching with AI \u{263A} {matched}/{total}");
             render_new_bank_detection_modal(frame, area, &msg);
+        }
+        ImportFlowStep::ReviewScreen | ImportFlowStep::Creating => {
+            render_review_screen(frame, area, flow)
         }
         ImportFlowStep::Failed(msg) => render_new_bank_detection_modal(frame, area, msg),
         // Future steps render their own modals (implemented in later tasks).

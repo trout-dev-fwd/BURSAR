@@ -56,6 +56,8 @@ pub struct ImportFlowState {
     pub clarification_queue: Vec<usize>,
     /// True once the Pass 3 prompt for the current item has been shown in the chat panel.
     pub clarification_prompted: bool,
+    /// Which sections are expanded on the review screen (Local, Ai, UserConfirmed, Unmatched).
+    pub review_section_expanded: [bool; 4],
 }
 
 impl Default for ImportFlowState {
@@ -86,6 +88,8 @@ impl ImportFlowState {
             account_picker: crate::widgets::AccountPicker::new(),
             clarification_queue: Vec::new(),
             clarification_prompted: false,
+            // Local expanded=false (dimmed/collapsed by default), others expanded.
+            review_section_expanded: [false, true, true, true],
         }
     }
 }
