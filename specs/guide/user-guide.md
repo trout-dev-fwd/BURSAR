@@ -372,6 +372,7 @@ Generate formatted accounting reports as `.txt` files.
 | AR Aging | Open receivables by age (current, 30, 60, 90+ days) | As-of date |
 | AP Aging | Open payables by age | As-of date |
 | Fixed Asset Schedule | All assets with cost, depreciation, book value | As-of date |
+| Envelope Budget Summary | Earmarked vs. GL spending vs. available for each allocated account | Date range |
 
 ### Generating a Report
 1. Select a report from the list
@@ -390,6 +391,12 @@ Assets = Liabilities + Equity should hold (it will balance perfectly after year-
 mid-year, current earnings appear as the gap).
 
 **Income Statement** — Shows profitability over a period. Revenue minus Expenses = Net Income.
+
+**Envelope Budget Summary** — Shows each account with an envelope allocation: the percentage
+allocated, how much has been earmarked (fills/transfers in the period), how much has been
+spent (GL balance change in the period), and what remains available (Earmarked − GL Balance).
+An "Unallocated" line at the bottom shows what percentage of revenue is not yet assigned to
+any envelope.
 
 ---
 

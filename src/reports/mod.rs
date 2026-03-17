@@ -18,6 +18,7 @@ pub mod ap_aging;
 pub mod ar_aging;
 pub mod balance_sheet;
 pub mod cash_flow;
+pub mod envelope_budget;
 pub mod fixed_asset_schedule;
 pub mod income_statement;
 pub mod trial_balance;

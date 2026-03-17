@@ -15,8 +15,9 @@ use ratatui::{
 use crate::db::{EntityDb, account_repo::Account};
 use crate::reports::{
     Report, ReportParams, account_detail::AccountDetail, ap_aging::ApAging, ar_aging::ArAging,
-    balance_sheet::BalanceSheet, cash_flow::CashFlow, fixed_asset_schedule::FixedAssetSchedule,
-    income_statement::IncomeStatement, trial_balance::TrialBalance, write_report,
+    balance_sheet::BalanceSheet, cash_flow::CashFlow, envelope_budget::EnvelopeBudgetSummary,
+    fixed_asset_schedule::FixedAssetSchedule, income_statement::IncomeStatement,
+    trial_balance::TrialBalance, write_report,
 };
 use crate::tabs::{RecordId, Tab, TabAction};
 use crate::types::AccountId;
@@ -72,6 +73,10 @@ const REPORTS: &[ReportDescriptor] = &[
     ReportDescriptor {
         label: "Fixed Asset Schedule",
         kind: ParamKind::AsOf,
+    },
+    ReportDescriptor {
+        label: "Envelope Budget Summary",
+        kind: ParamKind::DateRange,
     },
 ];
 
@@ -220,6 +225,7 @@ impl ReportsTab {
             5 => Box::new(ArAging),
             6 => Box::new(ApAging),
             7 => Box::new(FixedAssetSchedule),
+            8 => Box::new(EnvelopeBudgetSummary),
             _ => unreachable!(),
         };
 
