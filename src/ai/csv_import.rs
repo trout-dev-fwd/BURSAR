@@ -58,6 +58,9 @@ pub struct ImportFlowState {
     pub clarification_prompted: bool,
     /// Which sections are expanded on the review screen (Local, Ai, UserConfirmed, Unmatched).
     pub review_section_expanded: [bool; 4],
+    /// True when re-matching existing drafts (Shift+U). Creating step calls update_draft
+    /// instead of create_draft for matches with existing_je_id set.
+    pub is_rematch: bool,
 }
 
 impl Default for ImportFlowState {
@@ -90,6 +93,7 @@ impl ImportFlowState {
             clarification_prompted: false,
             // Local expanded=false (dimmed/collapsed by default), others expanded.
             review_section_expanded: [false, true, true, true],
+            is_rematch: false,
         }
     }
 }
@@ -149,6 +153,7 @@ pub fn run_pass1(
                         confidence: None,
                         reasoning: None,
                         rejected: false,
+                        existing_je_id: None,
                     }
                 }
                 None => crate::ai::ImportMatch {
@@ -159,6 +164,7 @@ pub fn run_pass1(
                     confidence: None,
                     reasoning: None,
                     rejected: false,
+                    existing_je_id: None,
                 },
             }
         })
@@ -303,6 +309,36 @@ pub fn build_import_ref(
         date.format("%Y-%m-%d"),
         amount.0
     )
+}
+
+/// Parses a composite import_ref string back into a `NormalizedTransaction`.
+///
+/// Format: `"{bank_name}|{date}|{description}|{amount_raw}"`.
+/// Parses from the ends to handle descriptions with embedded pipe characters.
+/// Returns `None` if the string is malformed.
+pub fn parse_import_ref(import_ref: &str) -> Option<crate::ai::NormalizedTransaction> {
+    // First segment = bank_name (up to first pipe).
+    let first_pipe = import_ref.find('|')?;
+    let after_bank = &import_ref[first_pipe + 1..];
+    // Second segment = date (up to next pipe).
+    let second_pipe = after_bank.find('|')?;
+    let date_str = &after_bank[..second_pipe];
+    let after_date = &after_bank[second_pipe + 1..];
+    // Last segment = amount; everything before it = description.
+    let last_pipe = after_date.rfind('|')?;
+    let description = &after_date[..last_pipe];
+    let amount_str = &after_date[last_pipe + 1..];
+
+    let date = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d").ok()?;
+    let amount_raw: i64 = amount_str.trim().parse().ok()?;
+
+    Some(crate::ai::NormalizedTransaction {
+        date,
+        description: description.to_string(),
+        amount: Money(amount_raw),
+        import_ref: import_ref.to_string(),
+        raw_row: String::new(),
+    })
 }
 
 /// Returns the column index for a given header name, or an error.

@@ -1114,8 +1114,15 @@ impl Tab for JournalEntriesTab {
             ("g", "Go to General Ledger"),
             ("f", "Cycle fiscal period filter"),
             ("t", "Create recurring template"),
-            ("U", "Import CSV statement"),
+            ("u", "Import CSV statement"),
+            ("U", "Re-match incomplete imports"),
         ]
+    }
+
+    fn selected_draft_import_ref(&self) -> Option<String> {
+        self.selected_entry()
+            .filter(|e| e.status == crate::types::JournalEntryStatus::Draft)
+            .and_then(|e| e.import_ref.clone())
     }
 
     fn handle_key(&mut self, key: KeyEvent, db: &EntityDb) -> TabAction {
@@ -1278,9 +1285,13 @@ impl Tab for JournalEntriesTab {
             KeyCode::Char('i') | KeyCode::Char('I') => {
                 return TabAction::StartInterEntityMode;
             }
-            // [U] open CSV import wizard.
-            KeyCode::Char('U') => {
+            // [u] open CSV import wizard.
+            KeyCode::Char('u') => {
                 return TabAction::StartImport;
+            }
+            // [Shift+U] re-match incomplete import drafts.
+            KeyCode::Char('U') => {
+                return TabAction::StartRematch;
             }
             _ => {}
         }

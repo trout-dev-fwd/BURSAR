@@ -82,6 +82,8 @@ pub enum TabAction {
     StartInterEntityMode,
     /// Open the CSV import wizard.
     StartImport,
+    /// Start re-matching incomplete import drafts (Shift+U).
+    StartRematch,
     /// Quit the application.
     Quit,
 }
@@ -124,5 +126,11 @@ pub trait Tab {
     /// Shown in the `?` help overlay. Default returns an empty list.
     fn hotkey_help(&self) -> Vec<(&'static str, &'static str)> {
         vec![]
+    }
+
+    /// Returns the import_ref of the currently selected Draft JE (if it has one).
+    /// Used by the `/match` slash command to get context for re-matching.
+    fn selected_draft_import_ref(&self) -> Option<String> {
+        None
     }
 }

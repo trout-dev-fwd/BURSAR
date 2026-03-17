@@ -992,7 +992,7 @@ impl App {
         use crate::types::{ImportMatchSource, ImportMatchType, MatchSource};
 
         // Extract data from flow before the terminal.draw() call (to release borrow).
-        let (bank_name, bank_account_number, matches_snapshot) = {
+        let (bank_name, bank_account_number, matches_snapshot, is_rematch) = {
             let Some(ref flow) = self.import_flow else {
                 return;
             };
@@ -1010,7 +1010,8 @@ impl App {
                 .map(|c| c.linked_account.clone())
                 .unwrap_or_default();
             let matches_snapshot = flow.matches.clone();
-            (bank_name, bank_account_number, matches_snapshot)
+            let is_rematch = flow.is_rematch;
+            (bank_name, bank_account_number, matches_snapshot, is_rematch)
         };
         let entity_name = self.entity.name.clone();
 
@@ -1130,15 +1131,33 @@ impl App {
                 lines,
             };
 
-            match self
-                .entity
-                .db
-                .journals()
-                .create_draft_with_import_ref(&entry, Some(&m.transaction.import_ref))
-            {
-                Ok(_) => created_count += 1,
+            let op_result = if is_rematch {
+                if let Some(je_id) = m.existing_je_id {
+                    self.entity.db.journals().update_draft(
+                        je_id,
+                        entry.entry_date,
+                        entry.memo,
+                        entry.fiscal_period_id,
+                        &entry.lines,
+                    )
+                } else {
+                    self.entity
+                        .db
+                        .journals()
+                        .create_draft_with_import_ref(&entry, Some(&m.transaction.import_ref))
+                        .map(|_| ())
+                }
+            } else {
+                self.entity
+                    .db
+                    .journals()
+                    .create_draft_with_import_ref(&entry, Some(&m.transaction.import_ref))
+                    .map(|_| ())
+            };
+            match op_result {
+                Ok(()) => created_count += 1,
                 Err(e) => {
-                    batch_error = Some(format!("Failed to create draft: {e}"));
+                    batch_error = Some(format!("Failed to create/update draft: {e}"));
                     break 'batch;
                 }
             }
@@ -1328,10 +1347,54 @@ impl App {
                 self.chat_panel.add_system_note("[Persona updated]");
             }
             SlashCommand::Match => {
-                // Full /match implementation deferred to Phase 3 (needs import infrastructure).
-                self.chat_panel.add_system_note(
-                    "Select an incomplete import draft in the Journal Entries tab first",
+                // Get selected draft's import_ref from the active JE tab.
+                let import_ref = self.entity.tabs[self.active_tab].selected_draft_import_ref();
+                let Some(import_ref) = import_ref else {
+                    self.chat_panel.add_system_note(
+                        "Select an incomplete Draft entry with an import reference in \
+                         the Journal Entries tab first.",
+                    );
+                    return;
+                };
+                use crate::ai::csv_import::parse_import_ref;
+                let Some(txn) = parse_import_ref(&import_ref) else {
+                    self.chat_panel
+                        .add_system_note("Could not parse import_ref for this entry.");
+                    return;
+                };
+                if let Err(msg) = self.ensure_ai_client() {
+                    self.status_bar.set_error(msg);
+                    return;
+                }
+                let system = "You are an expert accountant. Suggest the best chart-of-accounts \
+                    category for this bank transaction. Respond with: account_number, \
+                    confidence (high/medium/low), reasoning (one sentence).";
+                let prompt = format!(
+                    "Match this bank transaction to an account:\n{} | {} | {}",
+                    txn.date, txn.description, txn.amount
                 );
+                let messages = vec![ApiMessage {
+                    role: ApiRole::User,
+                    content: ApiContent::Text(prompt),
+                }];
+                self.status_bar
+                    .set_ai_status(Some("Calling Accountant \u{260F}".to_string()));
+                let _ = terminal.draw(|frame| self.render_frame(frame));
+                let result = self.run_ai_batch_request(system, messages, terminal);
+                self.status_bar.set_ai_status(None);
+                match result {
+                    Some(response) => {
+                        self.chat_panel.add_system_note(&format!(
+                            "Match suggestion for \"{}\": {}",
+                            txn.description.chars().take(40).collect::<String>(),
+                            response
+                        ));
+                    }
+                    None => {
+                        self.chat_panel
+                            .add_system_note("AI match request failed. Try again.");
+                    }
+                }
             }
             SlashCommand::Unknown(name) => {
                 self.chat_panel.add_system_note(&format!(
@@ -1873,6 +1936,46 @@ impl App {
                     flow.input_buffer = pre;
                 }
                 self.import_flow = Some(flow);
+            }
+            TabAction::StartRematch => {
+                // Collect incomplete import drafts, parse their import_refs, and
+                // start the re-match flow at Pass 2 (skipping local match).
+                let incomplete = self
+                    .entity
+                    .db
+                    .journals()
+                    .get_incomplete_imports()
+                    .unwrap_or_default();
+                if incomplete.is_empty() {
+                    self.status_bar
+                        .set_message("No incomplete imports to re-match.".to_string());
+                } else {
+                    use crate::ai::csv_import::parse_import_ref;
+                    use crate::types::MatchSource;
+                    let matches: Vec<crate::ai::ImportMatch> = incomplete
+                        .into_iter()
+                        .filter_map(|je| {
+                            let import_ref = je.import_ref?;
+                            let txn = parse_import_ref(&import_ref)?;
+                            Some(crate::ai::ImportMatch {
+                                transaction: txn,
+                                matched_account_id: None,
+                                matched_account_display: None,
+                                match_source: MatchSource::Unmatched,
+                                confidence: None,
+                                reasoning: None,
+                                rejected: false,
+                                existing_je_id: Some(je.id),
+                            })
+                        })
+                        .collect();
+                    let mut flow = ImportFlowState::new();
+                    flow.matches = matches;
+                    flow.is_rematch = true;
+                    flow.step = ImportFlowStep::Pass2AiMatching;
+                    self.import_flow = Some(flow);
+                    self.pending_pass2 = true;
+                }
             }
             TabAction::StartInterEntityMode => {
                 // Build candidate list: all entities except the active one.

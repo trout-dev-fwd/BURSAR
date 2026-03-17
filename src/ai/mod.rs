@@ -148,6 +148,8 @@ pub struct ImportMatch {
     pub confidence: Option<MatchConfidence>,
     pub reasoning: Option<String>,
     pub rejected: bool,
+    /// Set for re-match flows (Shift+U): the existing draft JE to update in-place.
+    pub existing_je_id: Option<crate::types::JournalEntryId>,
 }
 
 #[cfg(test)]
@@ -247,6 +249,7 @@ mod tests {
             confidence: None,
             reasoning: None,
             rejected: false,
+            existing_je_id: None,
         };
         assert!(!im.rejected);
         assert_eq!(im.match_source, MatchSource::Unmatched);
@@ -272,6 +275,7 @@ mod tests {
             confidence: Some(MatchConfidence::High),
             reasoning: Some("Payroll expense account".to_string()),
             rejected: false,
+            existing_je_id: None,
         };
         assert_eq!(im.match_source, MatchSource::Ai);
         assert_eq!(im.confidence, Some(MatchConfidence::High));

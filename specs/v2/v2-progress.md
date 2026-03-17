@@ -2,9 +2,9 @@
 
 ## Current State
 
-- **Active Phase:** Phase 2 — AI Client & Chat Panel
-- **Last Completed Task:** Phase 2, Task 12 — Loading State Status Bar Messages
-- **Next Task:** Phase 2 Developer Review Gate (manual testing with real API key)
+- **Active Phase:** Phase 3 — CSV Import Pipeline
+- **Last Completed Task:** Phase 3, Task 12 — Batch Re-Match (Shift+U) and /match Completion
+- **Next Task:** Phase 3, Task 13 — Help Overlay + Final Polish
 - **Blockers:** None
 - **Prerequisites:** V1 complete (372 tests passing), draft editing feature merged
 
@@ -48,20 +48,20 @@
 
 ---
 
-## Phase 3 — CSV Import Pipeline (0/13)
+## Phase 3 — CSV Import Pipeline (12/13)
 
-- [ ] Task 1: Import Flow State and TabAction Extension
-- [ ] Task 2: Import Wizard — File Path Input Modal
-- [ ] Task 3: Import Wizard — Bank Selection Modal
-- [ ] Task 4: Import Wizard — New Bank Setup (Name + Detection)
-- [ ] Task 5: Import Wizard — Confirmation + Account Picker
-- [ ] Task 6: Duplicate Detection Step
-- [ ] Task 7: Pass 1 — Local Matching
-- [ ] Task 8: Pass 2 — AI Matching
-- [ ] Task 9: Pass 3 — Clarification Dialog
-- [ ] Task 10: Review Screen
-- [ ] Task 11: Draft Creation
-- [ ] Task 12: Batch Re-Match (Shift+U) and /match Completion
+- [x] Task 1: Import Flow State and TabAction Extension
+- [x] Task 2: Import Wizard — File Path Input Modal
+- [x] Task 3: Import Wizard — Bank Selection Modal
+- [x] Task 4: Import Wizard — New Bank Setup (Name + Detection)
+- [x] Task 5: Import Wizard — Confirmation + Account Picker
+- [x] Task 6: Duplicate Detection Step
+- [x] Task 7: Pass 1 — Local Matching
+- [x] Task 8: Pass 2 — AI Matching
+- [x] Task 9: Pass 3 — Clarification Dialog
+- [x] Task 10: Review Screen
+- [x] Task 11: Draft Creation
+- [x] Task 12: Batch Re-Match (Shift+U) and /match Completion
 - [ ] Task 13: Help Overlay + Final Polish
 
 **Phase 3 Review:** ⬜ Pending
