@@ -515,6 +515,44 @@ impl App {
         }
     }
 
+    /// Parses the CSV, runs duplicate detection, and advances to the appropriate step.
+    ///
+    /// Mutates `flow` in place. On CSV parse error, sets step to Failed.
+    /// If duplicates found → DuplicateWarning. If none → Pass1Matching.
+    fn enter_duplicate_check(flow: &mut ImportFlowState, db: &crate::db::EntityDb) {
+        use crate::ai::csv_import::{check_duplicates, parse_csv};
+
+        let (file_path, bank_config) = match (&flow.file_path, &flow.bank_config) {
+            (Some(p), Some(c)) => (p.clone(), c.clone()),
+            _ => {
+                flow.step = ImportFlowStep::Failed("Missing file path or bank config".to_string());
+                return;
+            }
+        };
+
+        // Parse the full CSV.
+        match parse_csv(&file_path, &bank_config) {
+            Err(e) => {
+                flow.step = ImportFlowStep::Failed(format!("CSV parse error: {e}"));
+            }
+            Ok(transactions) => {
+                // Get recent import refs for duplicate detection.
+                let existing_refs = db.journals().get_recent_import_refs(90).unwrap_or_default();
+                let (unique, duplicates) = check_duplicates(&transactions, &existing_refs);
+                flow.duplicates = duplicates.clone();
+                if !duplicates.is_empty() {
+                    // Store all transactions and show warning.
+                    flow.transactions = transactions;
+                    flow.step = ImportFlowStep::DuplicateWarning;
+                } else {
+                    // No duplicates: skip directly to matching.
+                    flow.transactions = unique;
+                    flow.step = ImportFlowStep::Pass1Matching;
+                }
+            }
+        }
+    }
+
     /// Runs bank format detection: reads first 4 CSV lines, sends to Claude, parses response.
     /// Updates `import_flow` with the detected config or moves to Failed step on error.
     fn run_bank_detection<B: ratatui::backend::Backend>(&mut self, terminal: &mut Terminal<B>) {
@@ -1398,7 +1436,7 @@ impl App {
                         let cfg = flow.available_banks[flow.selected_index].clone();
                         flow.bank_config = Some(cfg);
                         flow.is_new_bank = false;
-                        flow.step = ImportFlowStep::DuplicateWarning;
+                        App::enter_duplicate_check(&mut flow, &self.entity.db);
                     }
                 }
                 _ => {}
@@ -1486,13 +1524,33 @@ impl App {
                         );
                         flow.bank_config = Some(completed_cfg);
                         flow.available_banks = entity_cfg.bank_accounts;
-                        flow.step = ImportFlowStep::DuplicateWarning;
+                        App::enter_duplicate_check(&mut flow, &self.entity.db);
                         flow.selected_index = 0;
                     }
                     crate::widgets::account_picker::PickerAction::Cancelled => return,
                     crate::widgets::account_picker::PickerAction::Pending => {}
                 }
             }
+            ImportFlowStep::DuplicateWarning => match key.code {
+                KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => return,
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    // Skip duplicates: keep only unique transactions.
+                    let existing_refs: std::collections::HashSet<String> = flow
+                        .duplicates
+                        .iter()
+                        .map(|t| t.import_ref.clone())
+                        .collect();
+                    flow.transactions
+                        .retain(|t| !existing_refs.contains(&t.import_ref));
+                    flow.step = ImportFlowStep::Pass1Matching;
+                }
+                KeyCode::Enter => {
+                    // Include all (duplicates included) — same as N.
+                    // Already all transactions in flow.transactions.
+                    flow.step = ImportFlowStep::Pass1Matching;
+                }
+                _ => {}
+            },
             // Placeholder dispatch for subsequent steps (implemented in later tasks).
             _ => {
                 if key.code == KeyCode::Esc {
@@ -1560,6 +1618,7 @@ fn render_import_modal(
             render_new_bank_confirmation_modal(frame, area, flow)
         }
         ImportFlowStep::NewBankAccountPicker => render_account_picker_modal(frame, area, flow),
+        ImportFlowStep::DuplicateWarning => render_duplicate_warning_modal(frame, area, flow),
         ImportFlowStep::Failed(msg) => render_new_bank_detection_modal(frame, area, msg),
         // Future steps render their own modals (implemented in later tasks).
         _ => {}
@@ -1832,6 +1891,53 @@ fn render_new_bank_confirmation_modal(
                 .borders(Borders::ALL)
                 .title(" Confirm Column Mapping ")
                 .style(Style::default().fg(Color::Cyan)),
+        ),
+        modal,
+    );
+}
+
+/// Renders the duplicate warning confirmation modal.
+fn render_duplicate_warning_modal(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    flow: &crate::ai::csv_import::ImportFlowState,
+) {
+    use ratatui::{
+        style::{Color, Style},
+        text::{Line, Span},
+        widgets::{Block, Borders, Clear, Paragraph},
+    };
+
+    let modal = crate::widgets::centered_rect(70, 35, area);
+    frame.render_widget(Clear, modal);
+
+    let dup_count = flow.duplicates.len();
+    let total = flow.transactions.len();
+
+    let lines = vec![
+        Line::from(Span::raw("")),
+        Line::from(Span::styled(
+            format!("  {dup_count} of {total} transactions appear to already be imported."),
+            Style::default().fg(Color::Yellow),
+        )),
+        Line::from(Span::raw("")),
+        Line::from(Span::styled(
+            "  Skip duplicates?",
+            Style::default().fg(Color::White),
+        )),
+        Line::from(Span::raw("")),
+        Line::from(Span::styled(
+            "  Y: skip duplicates   N/Esc: cancel   Enter: include all",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Duplicate Detection ")
+                .style(Style::default().fg(Color::Yellow)),
         ),
         modal,
     );
