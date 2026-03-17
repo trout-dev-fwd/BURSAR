@@ -5,6 +5,7 @@ pub mod asset_repo;
 pub mod audit_repo;
 pub mod envelope_repo;
 pub mod fiscal_repo;
+pub mod import_mapping_repo;
 pub mod journal_repo;
 pub mod recurring_repo;
 pub mod schema;
@@ -22,6 +23,7 @@ use crate::db::asset_repo::AssetRepo;
 use crate::db::audit_repo::AuditRepo;
 use crate::db::envelope_repo::EnvelopeRepo;
 use crate::db::fiscal_repo::FiscalRepo;
+use crate::db::import_mapping_repo::ImportMappingRepo;
 use crate::db::journal_repo::JournalRepo;
 use crate::db::recurring_repo::RecurringRepo;
 use crate::db::schema::{initialize_schema, seed_default_accounts};
@@ -112,6 +114,11 @@ impl EntityDb {
     /// Returns a RecurringRepo borrowing this connection.
     pub fn recurring(&self) -> RecurringRepo<'_> {
         RecurringRepo::new(&self.conn)
+    }
+
+    /// Returns an ImportMappingRepo borrowing this connection.
+    pub fn import_mappings(&self) -> ImportMappingRepo<'_> {
+        ImportMappingRepo::new(&self.conn)
     }
 }
 
