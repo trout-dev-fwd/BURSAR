@@ -965,8 +965,8 @@ impl EnvelopesTab {
 
     fn hint_text(&self) -> &'static str {
         match self.view {
-            View::Allocations => "↑↓ Navigate  Enter Edit%  d Remove  Tab→Balances",
-            View::Balances => "←→ Fiscal Year  ↑↓ Navigate  t Transfer  Tab→Allocations",
+            View::Allocations => "↑↓ Navigate  Enter Edit%  d Remove  v→Balances",
+            View::Balances => "←→ Fiscal Year  ↑↓ Navigate  t Transfer  v→Allocations",
         }
     }
 }
@@ -978,7 +978,7 @@ impl Tab for EnvelopesTab {
 
     fn hotkey_help(&self) -> Vec<(&'static str, &'static str)> {
         vec![
-            ("Tab", "Switch view (Balances / Budget)"),
+            ("v", "Switch view (Balances / Budget)"),
             ("↑/↓", "Navigate"),
             ("d", "Distribute funds to envelope"),
             ("t", "Transfer between envelopes"),
@@ -994,7 +994,7 @@ impl Tab for EnvelopesTab {
         }
 
         match key.code {
-            KeyCode::Tab => {
+            KeyCode::Char('v') => {
                 self.view = match self.view {
                     View::Allocations => View::Balances,
                     View::Balances => View::Allocations,

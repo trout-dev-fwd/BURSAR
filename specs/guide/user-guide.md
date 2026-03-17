@@ -292,7 +292,7 @@ affect your actual account balances. They're a planning layer on top of your rea
 5. Percentages don't need to add up to 100% — unallocated cash simply stays unearmarked
 
 ### Viewing Balances (Balances view)
-1. Press `Tab` to switch from Allocation Config to the Balances view
+1. Press `v` to switch from Allocation Config to the Balances view
 2. Columns: Account Name, Allocation %, GL Balance (amount spent), Earmarked (budgeted amount),
    Available (budget remaining)
 3. Use `←→` arrow keys to switch between fiscal years
