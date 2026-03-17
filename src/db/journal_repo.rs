@@ -258,6 +258,110 @@ impl<'conn> JournalRepo<'conn> {
         Ok(())
     }
 
+    /// Updates an existing Draft journal entry in place.
+    ///
+    /// Validates that the entry is still in Draft status, then atomically:
+    /// 1. Updates the header row (date, memo, fiscal_period_id).
+    /// 2. Deletes all existing lines.
+    /// 3. Re-inserts the new lines.
+    ///
+    /// A savepoint wraps steps 1–3 so a failure mid-way leaves the entry unchanged.
+    pub fn update_draft(
+        &self,
+        id: JournalEntryId,
+        entry_date: NaiveDate,
+        memo: Option<String>,
+        fiscal_period_id: FiscalPeriodId,
+        lines: &[NewJournalEntryLine],
+    ) -> Result<()> {
+        let status: String = self
+            .conn
+            .query_row(
+                "SELECT status FROM journal_entries WHERE id = ?1",
+                params![i64::from(id)],
+                |row| row.get(0),
+            )
+            .with_context(|| format!("update_draft: journal entry {} not found", i64::from(id)))?;
+        if status != "Draft" {
+            anyhow::bail!(
+                "Cannot edit entry {}: only Draft entries can be edited (got {status})",
+                i64::from(id)
+            );
+        }
+
+        let now = now_str();
+        self.conn
+            .execute("SAVEPOINT update_draft_sp", [])
+            .context("Failed to create savepoint")?;
+
+        let result = self.do_update_draft(id, entry_date, memo, fiscal_period_id, lines, &now);
+
+        if result.is_err() {
+            let _ = self
+                .conn
+                .execute("ROLLBACK TO SAVEPOINT update_draft_sp", []);
+            let _ = self.conn.execute("RELEASE SAVEPOINT update_draft_sp", []);
+            return result;
+        }
+        self.conn
+            .execute("RELEASE SAVEPOINT update_draft_sp", [])
+            .context("Failed to release savepoint")?;
+        Ok(())
+    }
+
+    fn do_update_draft(
+        &self,
+        id: JournalEntryId,
+        entry_date: NaiveDate,
+        memo: Option<String>,
+        fiscal_period_id: FiscalPeriodId,
+        lines: &[NewJournalEntryLine],
+        now: &str,
+    ) -> Result<()> {
+        self.conn
+            .execute(
+                "UPDATE journal_entries
+                 SET entry_date = ?1, memo = ?2, fiscal_period_id = ?3, updated_at = ?4
+                 WHERE id = ?5",
+                params![
+                    entry_date.to_string(),
+                    memo,
+                    i64::from(fiscal_period_id),
+                    now,
+                    i64::from(id),
+                ],
+            )
+            .context("Failed to update journal entry header")?;
+
+        self.conn
+            .execute(
+                "DELETE FROM journal_entry_lines WHERE journal_entry_id = ?1",
+                params![i64::from(id)],
+            )
+            .context("Failed to delete existing lines")?;
+
+        for line in lines {
+            self.conn
+                .execute(
+                    "INSERT INTO journal_entry_lines
+                        (journal_entry_id, account_id, debit_amount, credit_amount,
+                         line_memo, reconcile_state, sort_order, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, 'Uncleared', ?6, ?7)",
+                    params![
+                        i64::from(id),
+                        i64::from(line.account_id),
+                        line.debit_amount.0,
+                        line.credit_amount.0,
+                        line.line_memo,
+                        line.sort_order,
+                        now,
+                    ],
+                )
+                .context("Failed to insert updated line")?;
+        }
+        Ok(())
+    }
+
     /// Returns a journal entry and all its lines, ordered by sort_order then id.
     pub fn get_with_lines(
         &self,
@@ -733,6 +837,216 @@ mod tests {
 
         assert_eq!(e1.je_number, "JE-0001");
         assert_eq!(e2.je_number, "JE-0002");
+    }
+
+    // ── update_draft ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn update_draft_updates_header_and_lines() {
+        let (conn, period_id, acct1, acct2) = db_with_fiscal_year();
+        let repo = JournalRepo::new(&conn);
+
+        let orig_date = NaiveDate::from_ymd_opt(2026, 1, 5).unwrap();
+        let je_id = repo
+            .create_draft(&NewJournalEntry {
+                entry_date: orig_date,
+                memo: Some("Original memo".to_string()),
+                fiscal_period_id: period_id,
+                reversal_of_je_id: None,
+                lines: vec![
+                    NewJournalEntryLine {
+                        account_id: acct1,
+                        debit_amount: Money(10_000_000_000),
+                        credit_amount: Money(0),
+                        line_memo: None,
+                        sort_order: 0,
+                    },
+                    NewJournalEntryLine {
+                        account_id: acct2,
+                        debit_amount: Money(0),
+                        credit_amount: Money(10_000_000_000),
+                        line_memo: None,
+                        sort_order: 1,
+                    },
+                ],
+            })
+            .expect("create draft");
+
+        let new_date = NaiveDate::from_ymd_opt(2026, 1, 20).unwrap();
+        let new_lines = vec![
+            NewJournalEntryLine {
+                account_id: acct2,
+                debit_amount: Money(5_000_000_000),
+                credit_amount: Money(0),
+                line_memo: Some("Updated line".to_string()),
+                sort_order: 0,
+            },
+            NewJournalEntryLine {
+                account_id: acct1,
+                debit_amount: Money(0),
+                credit_amount: Money(5_000_000_000),
+                line_memo: None,
+                sort_order: 1,
+            },
+        ];
+
+        repo.update_draft(
+            je_id,
+            new_date,
+            Some("Updated memo".to_string()),
+            period_id,
+            &new_lines,
+        )
+        .expect("update_draft");
+
+        let (entry, lines) = repo.get_with_lines(je_id).expect("get");
+        assert_eq!(entry.entry_date, new_date);
+        assert_eq!(entry.memo.as_deref(), Some("Updated memo"));
+        assert_eq!(
+            entry.status,
+            JournalEntryStatus::Draft,
+            "Status must remain Draft"
+        );
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].account_id, acct2);
+        assert_eq!(lines[0].debit_amount, Money(5_000_000_000));
+        assert_eq!(lines[0].line_memo.as_deref(), Some("Updated line"));
+        assert_eq!(lines[1].account_id, acct1);
+        assert_eq!(lines[1].credit_amount, Money(5_000_000_000));
+    }
+
+    #[test]
+    fn update_draft_rejects_non_draft() {
+        let (conn, period_id, acct1, acct2) = db_with_fiscal_year();
+        let repo = JournalRepo::new(&conn);
+
+        let je_id = repo
+            .create_draft(&NewJournalEntry {
+                entry_date: NaiveDate::from_ymd_opt(2026, 1, 5).unwrap(),
+                memo: None,
+                fiscal_period_id: period_id,
+                reversal_of_je_id: None,
+                lines: vec![
+                    NewJournalEntryLine {
+                        account_id: acct1,
+                        debit_amount: Money(10_000_000_000),
+                        credit_amount: Money(0),
+                        line_memo: None,
+                        sort_order: 0,
+                    },
+                    NewJournalEntryLine {
+                        account_id: acct2,
+                        debit_amount: Money(0),
+                        credit_amount: Money(10_000_000_000),
+                        line_memo: None,
+                        sort_order: 1,
+                    },
+                ],
+            })
+            .expect("create");
+        repo.update_status(je_id, JournalEntryStatus::Posted)
+            .expect("post");
+
+        let result = repo.update_draft(
+            je_id,
+            NaiveDate::from_ymd_opt(2026, 1, 20).unwrap(),
+            None,
+            period_id,
+            &[],
+        );
+        assert!(result.is_err(), "Should reject non-Draft entry");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("Draft") || msg.contains("draft"),
+            "Error should mention Draft: {msg}"
+        );
+    }
+
+    #[test]
+    fn update_draft_is_atomic() {
+        // Enable FK enforcement so an invalid account_id triggers a line INSERT failure,
+        // letting us verify the savepoint rolls back the DELETE + incomplete INSERT.
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch("PRAGMA foreign_keys=ON;")
+            .expect("fk on");
+        initialize_schema(&conn).expect("schema init");
+        seed_default_accounts(&conn).expect("seed");
+
+        let fiscal = FiscalRepo::new(&conn);
+        let fy_id = fiscal.create_fiscal_year(1, 2026).expect("fy");
+        let periods = fiscal.list_periods(fy_id).expect("periods");
+        let period_id = periods[0].id;
+
+        let all = AccountRepo::new(&conn).list_active().expect("list");
+        let non_placeholder: Vec<_> = all.iter().filter(|a| !a.is_placeholder).collect();
+        let acct1 = non_placeholder[0].id;
+        let acct2 = non_placeholder[1].id;
+        let repo = JournalRepo::new(&conn);
+
+        let je_id = repo
+            .create_draft(&NewJournalEntry {
+                entry_date: NaiveDate::from_ymd_opt(2026, 1, 5).unwrap(),
+                memo: Some("Original".to_string()),
+                fiscal_period_id: period_id,
+                reversal_of_je_id: None,
+                lines: vec![
+                    NewJournalEntryLine {
+                        account_id: acct1,
+                        debit_amount: Money(10_000_000_000),
+                        credit_amount: Money(0),
+                        line_memo: None,
+                        sort_order: 0,
+                    },
+                    NewJournalEntryLine {
+                        account_id: acct2,
+                        debit_amount: Money(0),
+                        credit_amount: Money(10_000_000_000),
+                        line_memo: None,
+                        sort_order: 1,
+                    },
+                ],
+            })
+            .expect("create");
+
+        // Attempt update with one valid line and one that has a bogus account_id.
+        // With FK enforcement on, the second INSERT will fail.
+        let bad_account = AccountId::from(999_999);
+        let result = repo.update_draft(
+            je_id,
+            NaiveDate::from_ymd_opt(2026, 1, 20).unwrap(),
+            Some("Should not persist".to_string()),
+            period_id,
+            &[
+                NewJournalEntryLine {
+                    account_id: acct1,
+                    debit_amount: Money(5_000_000_000),
+                    credit_amount: Money(0),
+                    line_memo: None,
+                    sort_order: 0,
+                },
+                NewJournalEntryLine {
+                    account_id: bad_account,
+                    debit_amount: Money(0),
+                    credit_amount: Money(5_000_000_000),
+                    line_memo: None,
+                    sort_order: 1,
+                },
+            ],
+        );
+        assert!(result.is_err(), "Should fail due to invalid account FK");
+
+        // Original data must be intact (savepoint rolled back all changes).
+        let (entry, lines) = repo.get_with_lines(je_id).expect("get");
+        assert_eq!(
+            entry.memo.as_deref(),
+            Some("Original"),
+            "Memo must not have changed"
+        );
+        assert_eq!(
+            entry.entry_date,
+            NaiveDate::from_ymd_opt(2026, 1, 5).unwrap()
+        );
+        assert_eq!(lines.len(), 2, "Original 2 lines must still exist");
     }
 
     // ── list with filters ─────────────────────────────────────────────────────

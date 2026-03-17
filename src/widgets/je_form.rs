@@ -31,8 +31,8 @@ use std::collections::HashMap;
 
 use super::AccountPicker;
 use crate::db::account_repo::Account;
-use crate::db::journal_repo::NewJournalEntryLine;
-use crate::types::{AccountId, Money};
+use crate::db::journal_repo::{JournalEntry, JournalEntryLine, NewJournalEntryLine};
+use crate::types::{AccountId, JournalEntryId, Money};
 
 // ── Public result types ───────────────────────────────────────────────────────
 
@@ -84,6 +84,10 @@ struct LineRow {
 
 /// The journal entry form widget.
 pub struct JeForm {
+    /// Title displayed in the form border.
+    title: String,
+    /// Set when editing an existing draft; `None` when creating a new entry.
+    editing_id: Option<JournalEntryId>,
     date_input: String,
     memo_input: String,
     lines: Vec<LineRow>,
@@ -106,6 +110,9 @@ impl JeForm {
     pub fn new() -> Self {
         let today = chrono::Local::now().format("%Y-%m-%d").to_string();
         Self {
+            title: " New Journal Entry  Ctrl+S: submit  Esc: cancel  F2: add row  F3: del row "
+                .to_string(),
+            editing_id: None,
             date_input: today,
             memo_input: String::new(),
             lines: vec![LineRow::default(), LineRow::default()],
@@ -113,6 +120,75 @@ impl JeForm {
             account_picker: AccountPicker::new(),
             picker_active: false,
             error: None,
+        }
+    }
+
+    /// Creates a form pre-populated with data from an existing draft journal entry.
+    /// The caller is responsible for ensuring `entry` has Draft status.
+    pub fn from_existing(
+        entry: &JournalEntry,
+        lines: &[JournalEntryLine],
+        accounts: &[Account],
+    ) -> Self {
+        let mut form = Self::new();
+        form.title = format!(
+            " Edit Draft JE #{}  Ctrl+S: save  Esc: cancel  F2: add row  F3: del row ",
+            entry.je_number
+        );
+        form.editing_id = Some(entry.id);
+        form.date_input = entry.entry_date.format("%Y-%m-%d").to_string();
+        form.memo_input = entry.memo.clone().unwrap_or_default();
+
+        // Build line rows sorted by sort_order.
+        let mut sorted = lines.to_vec();
+        sorted.sort_by_key(|l| l.sort_order);
+
+        form.lines = sorted
+            .iter()
+            .map(|l| {
+                let account_name = accounts
+                    .iter()
+                    .find(|a| a.id == l.account_id)
+                    .map(|a| format!("{} {}", a.number, a.name))
+                    .unwrap_or_default();
+                LineRow {
+                    account_id: Some(l.account_id),
+                    account_name,
+                    debit_input: Self::money_to_input_str(l.debit_amount),
+                    credit_input: Self::money_to_input_str(l.credit_amount),
+                    note_input: l.line_memo.clone().unwrap_or_default(),
+                }
+            })
+            .collect();
+
+        // Ensure at least 2 rows.
+        while form.lines.len() < 2 {
+            form.lines.push(LineRow::default());
+        }
+
+        form.focus = Focus::Date;
+        form
+    }
+
+    /// Returns the ID of the entry being edited, or `None` if this is a new entry form.
+    pub fn editing_id(&self) -> Option<JournalEntryId> {
+        self.editing_id
+    }
+
+    /// Converts a `Money` value to a display string suitable for the amount input fields.
+    /// Returns an empty string for zero (leaves the field blank).
+    fn money_to_input_str(m: Money) -> String {
+        if m.is_zero() {
+            return String::new();
+        }
+        let units = m.0;
+        let dollars = units / 100_000_000;
+        // Fractional part scaled to 2 decimal places (cents).
+        let cents = (units % 100_000_000) / 1_000_000;
+        if cents == 0 {
+            format!("{dollars}")
+        } else {
+            format!("{dollars}.{cents:02}")
         }
     }
 
@@ -554,7 +630,7 @@ impl JeForm {
         envelope_avail: &HashMap<AccountId, Money>,
     ) {
         let block = Block::default()
-            .title(" New Journal Entry  Ctrl+S: submit  Esc: cancel  F2: add row  F3: del row ")
+            .title(self.title.as_str())
             .borders(Borders::ALL)
             .style(Style::default().fg(Color::White));
 

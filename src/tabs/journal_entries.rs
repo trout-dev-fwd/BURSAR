@@ -106,6 +106,8 @@ impl RecurringSubView {
 enum Modal {
     /// JE form for creating new draft entries.
     NewEntry(JeForm),
+    /// JE form for editing an existing draft entry.
+    EditEntry { form: JeForm, je_id: JournalEntryId },
     /// Confirmation to post a Draft entry.
     ConfirmPost {
         confirm: Confirmation,
@@ -395,6 +397,41 @@ impl JournalEntriesTab {
             JeFormAction::Pending => {
                 // Restore modal.
                 self.modal = Some(Modal::NewEntry(form));
+            }
+        }
+        TabAction::None
+    }
+
+    fn handle_edit_entry_key(&mut self, key: KeyEvent, db: &EntityDb) -> TabAction {
+        let Some(Modal::EditEntry { mut form, je_id }) = self.modal.take() else {
+            return TabAction::None;
+        };
+        let action = form.handle_key(key, &self.accounts);
+        match action {
+            JeFormAction::Cancelled => {
+                // modal stays None (already taken)
+            }
+            JeFormAction::Submitted(output) => {
+                match db.fiscal().get_period_for_date(output.entry_date) {
+                    Err(e) => {
+                        return TabAction::ShowMessage(format!("No fiscal period for date: {e}"));
+                    }
+                    Ok(period) => {
+                        return match db.journals().update_draft(
+                            je_id,
+                            output.entry_date,
+                            output.memo,
+                            period.id,
+                            &output.lines,
+                        ) {
+                            Ok(()) => TabAction::RefreshData,
+                            Err(e) => TabAction::ShowMessage(format!("Failed to save edit: {e}")),
+                        };
+                    }
+                }
+            }
+            JeFormAction::Pending => {
+                self.modal = Some(Modal::EditEntry { form, je_id });
             }
         }
         TabAction::None
@@ -996,7 +1033,7 @@ impl JournalEntriesTab {
             return;
         };
         match modal {
-            Modal::NewEntry(form) => {
+            Modal::NewEntry(form) | Modal::EditEntry { form, .. } => {
                 let popup = centered_rect(90, 80, area);
                 frame.render_widget(Clear, popup);
                 form.render(frame, popup, &self.accounts, &self.envelope_avail);
@@ -1069,6 +1106,7 @@ impl Tab for JournalEntriesTab {
         vec![
             ("↑/↓ or k/j", "Navigate"),
             ("n", "New journal entry"),
+            ("e", "Edit draft entry"),
             ("p", "Post selected entry"),
             ("r", "Reverse posted entry"),
             ("R", "Recurring templates sub-view"),
@@ -1089,6 +1127,7 @@ impl Tab for JournalEntriesTab {
         if self.modal.is_some() {
             return match &self.modal {
                 Some(Modal::NewEntry(_)) => self.handle_new_entry_key(key, db),
+                Some(Modal::EditEntry { .. }) => self.handle_edit_entry_key(key, db),
                 Some(Modal::ConfirmPost { .. }) => self.handle_confirm_post_key(key, db),
                 Some(Modal::ReverseDate { .. }) => self.handle_reverse_date_key(key),
                 Some(Modal::ConfirmReverse { .. }) => self.handle_confirm_reverse_key(key, db),
@@ -1144,6 +1183,29 @@ impl Tab for JournalEntriesTab {
             // ── Actions ───────────────────────────────────────────────────────
             KeyCode::Char('n') | KeyCode::Char('N') => {
                 self.modal = Some(Modal::NewEntry(JeForm::new()));
+            }
+            KeyCode::Char('e') | KeyCode::Char('E') => {
+                if let Some(entry) = self.selected_entry() {
+                    if entry.status == JournalEntryStatus::Draft {
+                        let je_id = entry.id;
+                        match db.journals().get_with_lines(je_id) {
+                            Err(e) => {
+                                return TabAction::ShowMessage(format!(
+                                    "Failed to load entry: {e}"
+                                ));
+                            }
+                            Ok((full_entry, lines)) => {
+                                let form =
+                                    JeForm::from_existing(&full_entry, &lines, &self.accounts);
+                                self.modal = Some(Modal::EditEntry { form, je_id });
+                            }
+                        }
+                    } else {
+                        return TabAction::ShowMessage(
+                            "Only Draft entries can be edited.".to_string(),
+                        );
+                    }
+                }
             }
             KeyCode::Char('p') | KeyCode::Char('P')
                 if !key.modifiers.contains(KeyModifiers::CONTROL) =>
@@ -1245,7 +1307,11 @@ impl Tab for JournalEntriesTab {
     }
 
     fn has_unsaved_changes(&self) -> bool {
-        matches!(&self.modal, Some(Modal::NewEntry(form)) if form.has_content())
+        match &self.modal {
+            Some(Modal::NewEntry(form)) => form.has_content(),
+            Some(Modal::EditEntry { form, .. }) => form.has_content(),
+            _ => false,
+        }
     }
 
     fn refresh(&mut self, db: &EntityDb) {
