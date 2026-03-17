@@ -1215,18 +1215,27 @@ impl App {
                     if path.is_file() {
                         flow.file_path = Some(path.clone());
                         flow.modal_error = None;
+                        let (toml_path, workspace_dir) = self.entity_toml_path();
+                        let entity_cfg =
+                            crate::config::load_entity_toml(&toml_path, &workspace_dir)
+                                .unwrap_or_default();
                         // Update last_import_dir in entity toml.
                         if let Some(parent) = path.parent() {
-                            let (toml_path, workspace_dir) = self.entity_toml_path();
-                            let mut cfg =
-                                crate::config::load_entity_toml(&toml_path, &workspace_dir)
-                                    .unwrap_or_default();
+                            let mut cfg = entity_cfg.clone();
                             cfg.last_import_dir = Some(parent.to_string_lossy().into_owned());
                             let _ =
                                 crate::config::save_entity_toml(&toml_path, &workspace_dir, &cfg);
                         }
-                        flow.step = ImportFlowStep::BankSelection;
+                        flow.available_banks = entity_cfg.bank_accounts;
+                        if flow.available_banks.is_empty() {
+                            // No configured banks: go straight to new bank setup.
+                            flow.step = ImportFlowStep::NewBankName;
+                            flow.is_new_bank = true;
+                        } else {
+                            flow.step = ImportFlowStep::BankSelection;
+                        }
                         flow.selected_index = 0;
+                        flow.input_buffer = String::new();
                     } else {
                         flow.modal_error =
                             Some("File not found. Check the path and try again.".to_string());
@@ -1239,6 +1248,35 @@ impl App {
                 KeyCode::Char(c) => {
                     flow.input_buffer.push(c);
                     flow.modal_error = None;
+                }
+                _ => {}
+            },
+            ImportFlowStep::BankSelection => match key.code {
+                KeyCode::Esc => return,
+                KeyCode::Up => {
+                    flow.selected_index = flow.selected_index.saturating_sub(1);
+                }
+                KeyCode::Down => {
+                    // +1 for the "New Bank Account" option at the bottom.
+                    let max = flow.available_banks.len(); // index of "New" option
+                    if flow.selected_index < max {
+                        flow.selected_index += 1;
+                    }
+                }
+                KeyCode::Enter => {
+                    let new_idx = flow.available_banks.len();
+                    if flow.selected_index == new_idx {
+                        // "New Bank Account" selected.
+                        flow.step = ImportFlowStep::NewBankName;
+                        flow.is_new_bank = true;
+                        flow.input_buffer = String::new();
+                    } else {
+                        // Known bank selected.
+                        let cfg = flow.available_banks[flow.selected_index].clone();
+                        flow.bank_config = Some(cfg);
+                        flow.is_new_bank = false;
+                        flow.step = ImportFlowStep::DuplicateWarning;
+                    }
                 }
                 _ => {}
             },
@@ -1271,10 +1309,12 @@ fn render_import_modal(
     area: Rect,
     flow: &crate::ai::csv_import::ImportFlowState,
 ) {
-    if flow.step == ImportFlowStep::FilePathInput {
-        render_file_path_modal(frame, area, flow);
+    match &flow.step {
+        ImportFlowStep::FilePathInput => render_file_path_modal(frame, area, flow),
+        ImportFlowStep::BankSelection => render_bank_selection_modal(frame, area, flow),
+        // Future steps render their own modals (implemented in later tasks).
+        _ => {}
     }
-    // Future steps render their own modals (implemented in later tasks).
 }
 
 /// Renders the file path input step of the import wizard.
@@ -1320,6 +1360,69 @@ fn render_file_path_modal(
             Block::default()
                 .borders(Borders::ALL)
                 .title(" Import CSV Statement ")
+                .style(Style::default().fg(Color::Cyan)),
+        ),
+        modal,
+    );
+}
+
+/// Renders the bank selection step of the import wizard.
+fn render_bank_selection_modal(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    flow: &crate::ai::csv_import::ImportFlowState,
+) {
+    use ratatui::{
+        style::{Color, Modifier, Style},
+        text::{Line, Span},
+        widgets::{Block, Borders, Clear, Paragraph},
+    };
+
+    let modal = crate::widgets::centered_rect(70, 60, area);
+    frame.render_widget(Clear, modal);
+
+    let new_idx = flow.available_banks.len();
+    let mut lines = vec![Line::from(Span::raw(""))];
+
+    for (i, bank) in flow.available_banks.iter().enumerate() {
+        let style = if i == flow.selected_index {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        lines.push(Line::from(Span::styled(
+            format!("  {} — {}", bank.name, bank.linked_account),
+            style,
+        )));
+    }
+
+    // "New Bank Account" option.
+    let new_style = if flow.selected_index == new_idx {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Green)
+    };
+    lines.push(Line::from(Span::styled(
+        "  \u{2795} New Bank Account",
+        new_style,
+    )));
+    lines.push(Line::from(Span::raw("")));
+    lines.push(Line::from(Span::styled(
+        "  \u{2191}/\u{2193}: navigate   Enter: select   Esc: cancel",
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Select Bank Account ")
                 .style(Style::default().fg(Color::Cyan)),
         ),
         modal,

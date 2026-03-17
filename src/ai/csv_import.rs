@@ -45,6 +45,8 @@ pub struct ImportFlowState {
     pub scroll_offset: usize,
     /// Error message displayed within the current modal step.
     pub modal_error: Option<String>,
+    /// Bank accounts from entity toml, populated when entering BankSelection step.
+    pub available_banks: Vec<BankAccountConfig>,
 }
 
 impl Default for ImportFlowState {
@@ -70,6 +72,7 @@ impl ImportFlowState {
             selected_index: 0,
             scroll_offset: 0,
             modal_error: None,
+            available_banks: Vec::new(),
         }
     }
 }
