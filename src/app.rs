@@ -24,7 +24,7 @@ use crate::{
     },
     config::{
         EntityConfig, WorkspaceConfig, load_entity_toml, load_secrets, save_config,
-        save_entity_toml, secrets_file_path,
+        save_entity_toml,
     },
     db::EntityDb,
     inter_entity::{InterEntityMode, form::InterEntityFormAction, write_protocol},
@@ -320,7 +320,7 @@ impl App {
             return Ok(());
         }
         let secrets = load_secrets()
-            .map_err(|_| format!("No API key — see {}", secrets_file_path().display()))?;
+            .map_err(|_| "No API key — see ~/.config/bookkeeper/secrets.toml".to_string())?;
         let model = self
             .config
             .ai
@@ -489,10 +489,8 @@ impl App {
                     .set_error("The Call Dropped \u{2639} (timeout)".to_string());
             }
             Err(AiError::NoApiKey) => {
-                self.status_bar.set_error(format!(
-                    "No API key — see {}",
-                    secrets_file_path().display()
-                ));
+                self.status_bar
+                    .set_error("No API key — see ~/.config/bookkeeper/secrets.toml".to_string());
             }
             Err(e) => {
                 self.status_bar

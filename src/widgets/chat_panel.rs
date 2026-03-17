@@ -117,7 +117,7 @@ impl ChatPanel {
         self.is_visible
     }
 
-    /// Advance the typewriter animation by 20 characters (char-boundary aligned).
+    /// Advance the typewriter animation by 80 characters (char-boundary aligned).
     pub fn tick(&mut self) {
         let Some(tw) = self.typewriter.as_mut() else {
             return;
@@ -131,8 +131,8 @@ impl ChatPanel {
             self.typewriter = None;
             return;
         }
-        // Advance by up to 20 chars, staying on a char boundary.
-        let target = (tw.display_position + 20).min(full_len);
+        // Advance by up to 80 chars, staying on a char boundary.
+        let target = (tw.display_position + 80).min(full_len);
         let mut pos = target;
         while pos > 0 && !tw.full_text.is_char_boundary(pos) {
             pos -= 1;
@@ -253,18 +253,44 @@ impl ChatPanel {
             .alignment(Alignment::Left);
         frame.render_widget(msg_para, msg_area);
 
-        // Input line.
-        let cursor_display = if self.cursor_pos <= self.input_buffer.len() {
-            self.cursor_pos
+        // Input line with horizontal scrolling.
+        let available = input_area.width as usize;
+        let prompt_len = 2; // "> "
+        let cursor_len = 1; // "█"
+        let text_space = available.saturating_sub(prompt_len + cursor_len);
+
+        let cursor_display = self.cursor_pos.min(self.input_buffer.len());
+        let (before_full, after_full) = self.input_buffer.split_at(cursor_display);
+
+        // Show as much before-cursor text as fits (right-aligned to cursor).
+        let before_skip = if before_full.len() > text_space {
+            let mut skip = before_full.len() - text_space;
+            while skip < before_full.len() && !before_full.is_char_boundary(skip) {
+                skip += 1;
+            }
+            skip
         } else {
-            self.input_buffer.len()
+            0
         };
-        let (before, after) = self.input_buffer.split_at(cursor_display);
+        let visible_before = &before_full[before_skip..];
+
+        // Fill remaining space with after-cursor text.
+        let remaining = text_space.saturating_sub(visible_before.len());
+        let visible_after = if after_full.len() > remaining {
+            let mut end = remaining;
+            while end > 0 && !after_full.is_char_boundary(end) {
+                end -= 1;
+            }
+            &after_full[..end]
+        } else {
+            after_full
+        };
+
         let input_spans = vec![
             Span::styled("> ", Style::default().fg(Color::DarkGray)),
-            Span::raw(before.to_string()),
-            Span::styled("█", Style::default().fg(Color::White)),
-            Span::raw(after.to_string()),
+            Span::raw(visible_before.to_string()),
+            Span::styled("\u{2588}", Style::default().fg(Color::White)),
+            Span::raw(visible_after.to_string()),
         ];
         let input_para = Paragraph::new(Line::from(input_spans));
         frame.render_widget(input_para, input_area);
@@ -576,17 +602,17 @@ mod tests {
     #[test]
     fn tick_advances_typewriter() {
         let mut panel = make_panel();
-        panel.add_response("A".repeat(100));
+        panel.add_response("A".repeat(200));
         panel.tick();
         let tw = panel.typewriter.as_ref().unwrap();
-        assert_eq!(tw.display_position, 20);
+        assert_eq!(tw.display_position, 80);
     }
 
     #[test]
     fn tick_completes_short_response() {
         let mut panel = make_panel();
         panel.add_response("Short.".to_string());
-        panel.tick(); // 20 chars > 6, so completes
+        panel.tick(); // 80 chars > 6, so completes
         assert!(panel.typewriter.is_none());
         assert!(panel.messages.last().unwrap().is_fully_rendered);
     }
