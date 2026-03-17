@@ -6,9 +6,8 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Rect},
     style::{Color, Modifier, Style},
-    text::{Line, Span},
     widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState},
 };
 
@@ -357,23 +356,7 @@ impl Tab for AuditLogTab {
     }
 
     fn render(&self, frame: &mut Frame, area: Rect) {
-        // Split into table + status hint.
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(1)])
-            .split(area);
-
-        self.render_table(frame, chunks[0]);
-
-        let count = self.entries.len();
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![Span::styled(
-                format!(" {count} entries "),
-                Style::default().fg(Color::DarkGray),
-            )])),
-            chunks[1],
-        );
-
+        self.render_table(frame, area);
         self.render_date_modal(frame, area);
     }
 

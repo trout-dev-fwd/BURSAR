@@ -880,10 +880,7 @@ impl JournalEntriesTab {
     }
 
     fn render_list(&self, frame: &mut Frame, area: Rect) {
-        let title = format!(
-            " Journal Entries  [n] new  [p] post  [r] reverse  [R] recurring  [f] filter: {}  ↑↓: scroll  Enter: detail ",
-            self.status_filter.label()
-        );
+        let title = format!(" Journal Entries  filter: {} ", self.status_filter.label());
 
         let header = Row::new(vec![
             Cell::from("JE Number").style(Style::default().add_modifier(Modifier::BOLD)),

@@ -2,7 +2,7 @@ use chrono::NaiveDate;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState},
@@ -472,39 +472,12 @@ impl Tab for GeneralLedgerTab {
     }
 
     fn render(&self, frame: &mut Frame, area: Rect) {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(1)])
-            .split(area);
-
         // Main area: show table or no-account prompt.
         if self.account.is_none() {
-            self.render_no_account(frame, chunks[0]);
+            self.render_no_account(frame, area);
         } else {
-            self.render_table(frame, chunks[0]);
+            self.render_table(frame, area);
         }
-
-        // Hint bar.
-        let date_info = match (self.date_range.from, self.date_range.to) {
-            (None, None) => String::new(),
-            (Some(f), None) => format!("  from: {f}"),
-            (None, Some(t)) => format!("  to: {t}"),
-            (Some(f), Some(t)) => format!("  {f} → {t}"),
-        };
-        let count = self.rows.len();
-        let selected = self.table_state.selected().map(|i| i + 1).unwrap_or(0);
-        let hint = Line::from(vec![
-            Span::styled(
-                " p: pick account  f: filter dates  Esc: clear filter  Enter: open JE  ↑↓/jk: navigate",
-                Style::default().fg(Color::DarkGray),
-            ),
-            Span::styled(date_info, Style::default().fg(Color::Cyan)),
-            Span::styled(
-                format!("  [{}/{}]", selected, count),
-                Style::default().fg(Color::Gray),
-            ),
-        ]);
-        frame.render_widget(Paragraph::new(hint), chunks[1]);
 
         // Modal overlay (rendered last so it appears on top).
         if let Some(ref modal) = self.modal {

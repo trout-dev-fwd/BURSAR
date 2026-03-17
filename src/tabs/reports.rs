@@ -6,7 +6,7 @@ use chrono::{Local, NaiveDate};
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
@@ -416,19 +416,13 @@ impl ReportsTab {
         let kind = self.current_kind();
         let report_label = REPORTS[self.selected].label;
 
-        // Split into form area + generate hint.
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(1)])
-            .split(area);
-
         let block = Block::default().borders(Borders::ALL).title(format!(
             " {} Parameters (Tab to advance, Enter/F9 to generate, Esc back) ",
             report_label
         ));
 
-        let inner = block.inner(chunks[0]);
-        frame.render_widget(block, chunks[0]);
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
 
         // Build rows: label + value for each field.
         let mut field_lines: Vec<Line> = Vec::new();
@@ -485,14 +479,6 @@ impl ReportsTab {
             height: form_height,
         };
         frame.render_widget(form_para, form_area);
-
-        // Hint at bottom.
-        frame.render_widget(
-            Paragraph::new(" F9 to generate report ")
-                .alignment(Alignment::Right)
-                .style(Style::default().fg(Color::DarkGray)),
-            chunks[1],
-        );
 
         // Account picker overlay.
         if let Some(ref picker) = self.account_picker {

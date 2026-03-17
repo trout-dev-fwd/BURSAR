@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{
@@ -962,13 +962,6 @@ impl EnvelopesTab {
             None => "Envelope Balances".to_string(),
         }
     }
-
-    fn hint_text(&self) -> &'static str {
-        match self.view {
-            View::Allocations => "↑↓ Navigate  Enter Edit%  d Remove  v→Balances",
-            View::Balances => "←→ Fiscal Year  ↑↓ Navigate  t Transfer  v→Allocations",
-        }
-    }
 }
 
 impl Tab for EnvelopesTab {
@@ -1039,20 +1032,10 @@ impl Tab for EnvelopesTab {
     }
 
     fn render(&self, frame: &mut Frame, area: Rect) {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(1)])
-            .split(area);
-
         match self.view {
-            View::Allocations => self.render_allocations(frame, chunks[0]),
-            View::Balances => self.render_balances(frame, chunks[0]),
+            View::Allocations => self.render_allocations(frame, area),
+            View::Balances => self.render_balances(frame, area),
         }
-
-        frame.render_widget(
-            Paragraph::new(self.hint_text()).style(Style::default().fg(Color::DarkGray)),
-            chunks[1],
-        );
 
         if self.modal.is_some() {
             self.render_edit_modal(frame, area);

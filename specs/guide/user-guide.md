@@ -41,7 +41,7 @@ These work from any tab:
 | `Ctrl+←` / `Ctrl+→` | Cycle to the previous / next tab (wraps around) |
 | `Ctrl+K` | Open / close the AI Accountant panel |
 | `f` | Open fiscal period management (close/reopen periods, year-end close) |
-| `?` | Show hotkey quick-reference for the current tab |
+| `?` | Show hotkey quick-reference for the current tab (also shown as `? help` in the status bar) |
 | `Ctrl+H` | Open this user guide |
 | `q` | Quit the application |
 

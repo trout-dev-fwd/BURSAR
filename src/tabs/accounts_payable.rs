@@ -2,7 +2,7 @@ use chrono::NaiveDate;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState},
@@ -1003,26 +1003,7 @@ impl Tab for AccountsPayableTab {
     }
 
     fn render(&self, frame: &mut Frame, area: Rect) {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(1)])
-            .split(area);
-
-        self.render_table(frame, chunks[0]);
-
-        let count = self.items.len();
-        let selected = self.table_state.selected().map(|i| i + 1).unwrap_or(0);
-        let hint = Line::from(vec![
-            Span::styled(
-                " n: new  p: payment  Enter: history  o: open JE  s: cycle filter  ↑↓/jk: navigate",
-                Style::default().fg(Color::DarkGray),
-            ),
-            Span::styled(
-                format!("  [{}/{}]", selected, count),
-                Style::default().fg(Color::Gray),
-            ),
-        ]);
-        frame.render_widget(Paragraph::new(hint), chunks[1]);
+        self.render_table(frame, area);
 
         // Render modal overlay on top.
         if let Some(ref modal) = self.modal {

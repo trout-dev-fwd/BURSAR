@@ -135,13 +135,13 @@ impl StatusBar {
 
         let bg_style = Style::default().bg(Color::DarkGray).fg(Color::White);
 
-        // Left: entity name + unsaved indicator.
+        // Left: entity name + unsaved indicator + help hint.
         let unsaved_marker = if self.unsaved { " [*]" } else { "" };
         frame.render_widget(
-            Paragraph::new(Line::from(vec![Span::raw(format!(
-                " {}{}",
-                self.entity_name, unsaved_marker
-            ))]))
+            Paragraph::new(Line::from(vec![
+                Span::raw(format!(" {}{}", self.entity_name, unsaved_marker)),
+                Span::styled("  ? help", Style::default().fg(Color::DarkGray)),
+            ]))
             .style(bg_style),
             chunks[0],
         );

@@ -1409,58 +1409,23 @@ impl Tab for ChartOfAccountsTab {
     }
 
     fn render(&self, frame: &mut Frame, area: Rect) {
-        let hint_height = if self.search_active { 2 } else { 1 };
+        let search_height: u16 = if self.search_active { 1 } else { 0 };
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(hint_height)])
+            .constraints([Constraint::Min(0), Constraint::Length(search_height)])
             .split(area);
 
         // ── Account table ──────────────────────────────────────────────────────
         self.render_table(frame, chunks[0]);
 
-        // ── Bottom hint bar ────────────────────────────────────────────────────
+        // ── Search input bar (only when search is active) ──────────────────────
         if self.search_active {
-            let bottom = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Length(1), Constraint::Length(1)])
-                .split(chunks[1]);
-
             let search_line = Line::from(vec![
                 Span::styled(" Search: ", Style::default().fg(Color::Yellow)),
                 Span::raw(self.search_query.clone()),
                 Span::styled("█", Style::default().fg(Color::Yellow)),
             ]);
-            frame.render_widget(Paragraph::new(search_line), bottom[0]);
-
-            frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(
-                    " Esc: cancel search  ↑↓: navigate",
-                    Style::default().fg(Color::DarkGray),
-                ))),
-                bottom[1],
-            );
-        } else {
-            let count = self.visible.len();
-            let selected = self.selected_idx().map(|i| i + 1).unwrap_or(0);
-            let is_cip = self
-                .selected_account()
-                .map(|a| a.name.to_lowercase().contains("construction"))
-                .unwrap_or(false);
-            let hint = if is_cip {
-                " ↑↓/jk: navigate  Enter: expand/GL  /: search  a: add  e: edit  d: toggle active  x: delete  s: place in service"
-            } else {
-                " ↑↓/jk: navigate  Enter: expand/GL  /: search  a: add  e: edit  d: toggle active  x: delete"
-            };
-            frame.render_widget(
-                Paragraph::new(Line::from(vec![
-                    Span::styled(hint, Style::default().fg(Color::DarkGray)),
-                    Span::styled(
-                        format!("  [{}/{}]", selected, count),
-                        Style::default().fg(Color::Gray),
-                    ),
-                ])),
-                chunks[1],
-            );
+            frame.render_widget(Paragraph::new(search_line), chunks[1]);
         }
 
         // ── Modal overlay ──────────────────────────────────────────────────────

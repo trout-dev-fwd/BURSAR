@@ -315,13 +315,6 @@ impl FixedAssetsTab {
         let mut ss = self.schedule_state.clone();
         frame.render_stateful_widget(table, area, &mut ss);
     }
-
-    fn hint_text(&self) -> &'static str {
-        match self.view {
-            View::Register => "↑↓ Navigate  Enter Schedule  g Generate Depreciation",
-            View::Schedule => "↑↓ Navigate  Esc Back",
-        }
-    }
 }
 
 impl Tab for FixedAssetsTab {
@@ -376,11 +369,7 @@ impl Tab for FixedAssetsTab {
         let status_height: u16 = if self.status.is_some() { 1 } else { 0 };
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Min(0),
-                Constraint::Length(1),
-                Constraint::Length(status_height),
-            ])
+            .constraints([Constraint::Min(0), Constraint::Length(status_height)])
             .split(area);
 
         match self.view {
@@ -388,18 +377,13 @@ impl Tab for FixedAssetsTab {
             View::Schedule => self.render_schedule(frame, chunks[0]),
         }
 
-        frame.render_widget(
-            Paragraph::new(self.hint_text()).style(Style::default().fg(Color::DarkGray)),
-            chunks[1],
-        );
-
         if let Some(ref msg) = self.status {
             frame.render_widget(
                 Paragraph::new(Line::from(vec![
                     Span::raw("  "),
                     Span::styled(msg.as_str(), Style::default().fg(Color::Cyan)),
                 ])),
-                chunks[2],
+                chunks[1],
             );
         }
     }
