@@ -1,7 +1,7 @@
 use anyhow::Result;
 use rusqlite::{Connection, params};
 
-/// Creates all 14 tables in a single transaction and enables WAL mode and foreign keys.
+/// Creates all 15 tables in a single transaction and enables WAL mode and foreign keys.
 /// Safe to call on a new database; uses `CREATE TABLE IF NOT EXISTS`.
 pub fn initialize_schema(conn: &Connection) -> Result<()> {
     conn.execute_batch("PRAGMA journal_mode=WAL;")?;
@@ -170,6 +170,19 @@ pub fn initialize_schema(conn: &Connection) -> Result<()> {
             record_id       INTEGER,
             description     TEXT    NOT NULL,
             created_at      TEXT    NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS import_mappings (
+            id                  INTEGER PRIMARY KEY,
+            description_pattern TEXT    NOT NULL,
+            account_id          INTEGER NOT NULL REFERENCES accounts(id),
+            match_type          TEXT    NOT NULL CHECK(match_type IN ('exact', 'substring')),
+            source              TEXT    NOT NULL CHECK(source IN ('confirmed', 'ai_suggested')),
+            bank_name           TEXT    NOT NULL,
+            created_at          TEXT    NOT NULL,
+            last_used_at        TEXT    NOT NULL,
+            use_count           INTEGER NOT NULL DEFAULT 1,
+            UNIQUE(description_pattern, bank_name)
         );
 
         COMMIT;
@@ -363,6 +376,7 @@ mod tests {
         "envelope_ledger",
         "recurring_entry_templates",
         "audit_log",
+        "import_mappings",
     ];
 
     #[test]
@@ -387,8 +401,8 @@ mod tests {
         }
         assert_eq!(
             table_names.len(),
-            14,
-            "Expected 14 tables, found {}",
+            15,
+            "Expected 15 tables, found {}",
             table_names.len()
         );
     }
@@ -505,5 +519,114 @@ mod tests {
             )
             .expect("query");
         assert_eq!(exp_type, "Expense");
+    }
+
+    #[test]
+    fn import_mappings_table_has_correct_columns() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        initialize_schema(&conn).expect("initialize_schema");
+
+        let mut stmt = conn
+            .prepare("PRAGMA table_info('import_mappings')")
+            .expect("prepare");
+        let col_names: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("query")
+            .map(|r| r.expect("row"))
+            .collect();
+
+        assert!(col_names.contains(&"id".to_string()));
+        assert!(col_names.contains(&"description_pattern".to_string()));
+        assert!(col_names.contains(&"account_id".to_string()));
+        assert!(col_names.contains(&"match_type".to_string()));
+        assert!(col_names.contains(&"source".to_string()));
+        assert!(col_names.contains(&"bank_name".to_string()));
+        assert!(col_names.contains(&"created_at".to_string()));
+        assert!(col_names.contains(&"last_used_at".to_string()));
+        assert!(col_names.contains(&"use_count".to_string()));
+    }
+
+    #[test]
+    fn import_mappings_check_constraint_on_match_type() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        initialize_schema(&conn).expect("initialize_schema");
+        seed_default_accounts(&conn).expect("seed");
+
+        let account_id: i64 = conn
+            .query_row("SELECT id FROM accounts WHERE number = '1110'", [], |row| {
+                row.get(0)
+            })
+            .expect("get account");
+
+        // Valid match_type
+        let result = conn.execute(
+            "INSERT INTO import_mappings (description_pattern, account_id, match_type, source, bank_name, created_at, last_used_at)
+             VALUES ('TEST', ?1, 'exact', 'confirmed', 'TestBank', '2026-01-01', '2026-01-01')",
+            rusqlite::params![account_id],
+        );
+        assert!(result.is_ok(), "exact is a valid match_type");
+
+        // Invalid match_type
+        let result = conn.execute(
+            "INSERT INTO import_mappings (description_pattern, account_id, match_type, source, bank_name, created_at, last_used_at)
+             VALUES ('TEST2', ?1, 'INVALID', 'confirmed', 'TestBank', '2026-01-01', '2026-01-01')",
+            rusqlite::params![account_id],
+        );
+        assert!(result.is_err(), "INVALID should violate CHECK constraint");
+    }
+
+    #[test]
+    fn import_mappings_unique_constraint_on_pattern_and_bank() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        initialize_schema(&conn).expect("initialize_schema");
+        seed_default_accounts(&conn).expect("seed");
+
+        let account_id: i64 = conn
+            .query_row("SELECT id FROM accounts WHERE number = '1110'", [], |row| {
+                row.get(0)
+            })
+            .expect("get account");
+
+        conn.execute(
+            "INSERT INTO import_mappings (description_pattern, account_id, match_type, source, bank_name, created_at, last_used_at)
+             VALUES ('ACME', ?1, 'exact', 'confirmed', 'SoFi', '2026-01-01', '2026-01-01')",
+            rusqlite::params![account_id],
+        ).expect("first insert");
+
+        // Duplicate (same pattern + bank) should fail
+        let result = conn.execute(
+            "INSERT INTO import_mappings (description_pattern, account_id, match_type, source, bank_name, created_at, last_used_at)
+             VALUES ('ACME', ?1, 'exact', 'confirmed', 'SoFi', '2026-01-01', '2026-01-01')",
+            rusqlite::params![account_id],
+        );
+        assert!(result.is_err(), "duplicate (pattern, bank) should fail");
+
+        // Same pattern, different bank — should succeed
+        let result = conn.execute(
+            "INSERT INTO import_mappings (description_pattern, account_id, match_type, source, bank_name, created_at, last_used_at)
+             VALUES ('ACME', ?1, 'exact', 'confirmed', 'Chase', '2026-01-01', '2026-01-01')",
+            rusqlite::params![account_id],
+        );
+        assert!(
+            result.is_ok(),
+            "same pattern, different bank should succeed"
+        );
+    }
+
+    #[test]
+    fn import_mappings_foreign_key_on_account_id() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        initialize_schema(&conn).expect("initialize_schema");
+
+        // Invalid account_id (no accounts seeded)
+        let result = conn.execute(
+            "INSERT INTO import_mappings (description_pattern, account_id, match_type, source, bank_name, created_at, last_used_at)
+             VALUES ('TEST', 99999, 'exact', 'confirmed', 'TestBank', '2026-01-01', '2026-01-01')",
+            [],
+        );
+        assert!(result.is_err(), "invalid account_id should violate FK");
     }
 }
