@@ -84,6 +84,77 @@ impl ImportFlowState {
     }
 }
 
+// ── Pass 1: Local Matching ────────────────────────────────────────────────────
+
+/// Runs Pass 1: local deterministic matching against the `import_mappings` table.
+///
+/// For each transaction, tries exact match first, then longest-substring match.
+/// Records use on matched mappings. Returns one `ImportMatch` per transaction.
+pub fn run_pass1(
+    transactions: &[NormalizedTransaction],
+    bank_name: &str,
+    db: &crate::db::EntityDb,
+) -> Vec<crate::ai::ImportMatch> {
+    use crate::types::MatchSource;
+
+    let repo = db.import_mappings();
+    // Load all accounts for display names.
+    let accounts: Vec<crate::db::account_repo::Account> =
+        db.accounts().list_all().unwrap_or_default();
+
+    transactions
+        .iter()
+        .map(|txn| {
+            // Try exact match.
+            let result = repo.find_exact_match(bank_name, &txn.description);
+            let matched = match result {
+                Ok(Some((id, account_id))) => {
+                    let _ = repo.record_use(id);
+                    Some(account_id)
+                }
+                Ok(None) => {
+                    // Try substring match.
+                    match repo.find_substring_match(bank_name, &txn.description) {
+                        Ok(Some((id, account_id))) => {
+                            let _ = repo.record_use(id);
+                            Some(account_id)
+                        }
+                        _ => None,
+                    }
+                }
+                Err(_) => None,
+            };
+
+            match matched {
+                Some(account_id) => {
+                    let display = accounts
+                        .iter()
+                        .find(|a| a.id == account_id)
+                        .map(|a| format!("{} - {}", a.number, a.name));
+                    crate::ai::ImportMatch {
+                        transaction: txn.clone(),
+                        matched_account_id: Some(account_id),
+                        matched_account_display: display,
+                        match_source: MatchSource::Local,
+                        confidence: None,
+                        reasoning: None,
+                        rejected: false,
+                    }
+                }
+                None => crate::ai::ImportMatch {
+                    transaction: txn.clone(),
+                    matched_account_id: None,
+                    matched_account_display: None,
+                    match_source: MatchSource::Unmatched,
+                    confidence: None,
+                    reasoning: None,
+                    rejected: false,
+                },
+            }
+        })
+        .collect()
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /// Parses a CSV bank statement into normalized transactions using the bank config

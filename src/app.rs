@@ -130,6 +130,8 @@ pub struct App {
     import_flow: Option<ImportFlowState>,
     /// Set when NewBankDetection step begins; consumed by event_loop to run the API call.
     pending_bank_detection: bool,
+    /// Set when Pass1Matching step begins; consumed by event_loop to run local matching.
+    pending_pass1: bool,
 }
 
 impl App {
@@ -159,6 +161,7 @@ impl App {
             pending_slash_command: None,
             import_flow: None,
             pending_bank_detection: false,
+            pending_pass1: false,
         }
     }
 
@@ -212,6 +215,12 @@ impl App {
             if self.pending_bank_detection {
                 self.pending_bank_detection = false;
                 self.run_bank_detection(terminal);
+            }
+
+            // 2e. If Pass 1 local matching is pending, run it now.
+            if self.pending_pass1 {
+                self.pending_pass1 = false;
+                self.run_pass1_step(terminal);
             }
 
             // 3. Tick: advance typewriter, update status bar timeout + unsaved indicator.
@@ -664,6 +673,54 @@ impl App {
                     f.step = ImportFlowStep::Failed("Failed \u{2328}".to_string());
                 }
             }
+        }
+    }
+
+    /// Runs Pass 1 local matching against `import_mappings`.
+    ///
+    /// Called from the event loop after `pending_pass1` is set.
+    /// Advances to `Pass2AiMatching` if unmatched exist and an API key is available,
+    /// otherwise to `ReviewScreen`.
+    fn run_pass1_step<B: ratatui::backend::Backend>(&mut self, terminal: &mut Terminal<B>) {
+        // Extract the data we need before rendering (avoids holding a borrow across draw).
+        let (bank_name, transactions) = {
+            let Some(ref flow) = self.import_flow else {
+                return;
+            };
+            if flow.step != ImportFlowStep::Pass1Matching {
+                return;
+            }
+            let bank_name = match flow.bank_config.as_ref().map(|c| c.name.clone()) {
+                Some(n) => n,
+                None => {
+                    if let Some(ref mut f) = self.import_flow {
+                        f.step = ImportFlowStep::Failed("No bank config set".to_string());
+                    }
+                    return;
+                }
+            };
+            (bank_name, flow.transactions.clone())
+        };
+
+        // Force render so user sees progress indicator before matching begins.
+        let _ = terminal.draw(|frame| self.render_frame(frame));
+
+        let matches = crate::ai::csv_import::run_pass1(&transactions, &bank_name, &self.entity.db);
+
+        let has_unmatched = matches
+            .iter()
+            .any(|m| m.matched_account_id.is_none() && !m.rejected);
+
+        // Determine next step.
+        let next_step = if has_unmatched && self.ensure_ai_client().is_ok() {
+            ImportFlowStep::Pass2AiMatching
+        } else {
+            ImportFlowStep::ReviewScreen
+        };
+
+        if let Some(ref mut f) = self.import_flow {
+            f.matches = matches;
+            f.step = next_step;
         }
     }
 
@@ -1437,6 +1494,9 @@ impl App {
                         flow.bank_config = Some(cfg);
                         flow.is_new_bank = false;
                         App::enter_duplicate_check(&mut flow, &self.entity.db);
+                        if flow.step == ImportFlowStep::Pass1Matching {
+                            self.pending_pass1 = true;
+                        }
                     }
                 }
                 _ => {}
@@ -1525,6 +1585,9 @@ impl App {
                         flow.bank_config = Some(completed_cfg);
                         flow.available_banks = entity_cfg.bank_accounts;
                         App::enter_duplicate_check(&mut flow, &self.entity.db);
+                        if flow.step == ImportFlowStep::Pass1Matching {
+                            self.pending_pass1 = true;
+                        }
                         flow.selected_index = 0;
                     }
                     crate::widgets::account_picker::PickerAction::Cancelled => return,
@@ -1543,14 +1606,23 @@ impl App {
                     flow.transactions
                         .retain(|t| !existing_refs.contains(&t.import_ref));
                     flow.step = ImportFlowStep::Pass1Matching;
+                    self.pending_pass1 = true;
                 }
                 KeyCode::Enter => {
                     // Include all (duplicates included) — same as N.
                     // Already all transactions in flow.transactions.
                     flow.step = ImportFlowStep::Pass1Matching;
+                    self.pending_pass1 = true;
                 }
                 _ => {}
             },
+            // Pass1Matching: show progress; Esc cancels, keys otherwise consumed.
+            ImportFlowStep::Pass1Matching => {
+                if key.code == KeyCode::Esc {
+                    self.pending_pass1 = false;
+                    return;
+                }
+            }
             // Placeholder dispatch for subsequent steps (implemented in later tasks).
             _ => {
                 if key.code == KeyCode::Esc {
@@ -1619,6 +1691,11 @@ fn render_import_modal(
         }
         ImportFlowStep::NewBankAccountPicker => render_account_picker_modal(frame, area, flow),
         ImportFlowStep::DuplicateWarning => render_duplicate_warning_modal(frame, area, flow),
+        ImportFlowStep::Pass1Matching => {
+            let total = flow.transactions.len();
+            let msg = format!("Importing \u{263A} {total}/{total}");
+            render_new_bank_detection_modal(frame, area, &msg);
+        }
         ImportFlowStep::Failed(msg) => render_new_bank_detection_modal(frame, area, msg),
         // Future steps render their own modals (implemented in later tasks).
         _ => {}
