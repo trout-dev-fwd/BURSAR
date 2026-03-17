@@ -20,7 +20,7 @@ use crate::{
         AiError, AiResponse, ApiContent, ApiMessage, ApiRole, RoundResult, ToolResult,
         client::AiClient,
         context::read_context,
-        csv_import::ImportFlowState,
+        csv_import::{ImportFlowState, ImportFlowStep},
         tools::{fulfill_tool_call, tool_definitions},
     },
     config::{
@@ -306,6 +306,9 @@ impl App {
         }
         if let Some(guide) = &self.user_guide {
             guide.render(frame, tab_area);
+        }
+        if let Some(ref flow) = self.import_flow {
+            render_import_modal(frame, tab_area, flow);
         }
         if let Some(area) = panel_area {
             let is_focused = matches!(self.focus, FocusTarget::ChatPanel);
@@ -811,6 +814,12 @@ impl App {
             return;
         }
 
+        // Import wizard: all keys go to the wizard when it is active.
+        if self.import_flow.is_some() {
+            self.handle_import_key(key);
+            return;
+        }
+
         // Chat panel focus model.
         if self.chat_panel.is_visible() {
             if matches!(self.focus, FocusTarget::ChatPanel) {
@@ -1142,7 +1151,19 @@ impl App {
                 }
             }
             TabAction::StartImport => {
-                self.import_flow = Some(ImportFlowState::new());
+                let mut flow = ImportFlowState::new();
+                // Pre-fill from last_import_dir if available.
+                let (toml_path, workspace_dir) = self.entity_toml_path();
+                if let Ok(entity_cfg) = crate::config::load_entity_toml(&toml_path, &workspace_dir)
+                    && let Some(ref dir) = entity_cfg.last_import_dir
+                {
+                    let mut pre = dir.clone();
+                    if !pre.ends_with('/') {
+                        pre.push('/');
+                    }
+                    flow.input_buffer = pre;
+                }
+                self.import_flow = Some(flow);
             }
             TabAction::StartInterEntityMode => {
                 // Build candidate list: all entities except the active one.
@@ -1172,6 +1193,137 @@ impl App {
             }
         }
     }
+
+    /// Handles all key events while the import wizard modal is active.
+    fn handle_import_key(&mut self, key: KeyEvent) {
+        // Take the flow out to avoid simultaneous self borrows.
+        let Some(mut flow) = self.import_flow.take() else {
+            return;
+        };
+
+        let step = flow.step.clone();
+        match step {
+            ImportFlowStep::FilePathInput => match key.code {
+                KeyCode::Esc => {
+                    // Cancel: leave import_flow as None (already taken).
+                    return;
+                }
+                KeyCode::Enter => {
+                    let raw = flow.input_buffer.trim().to_string();
+                    let expanded = expand_tilde_str(&raw);
+                    let path = std::path::PathBuf::from(&expanded);
+                    if path.is_file() {
+                        flow.file_path = Some(path.clone());
+                        flow.modal_error = None;
+                        // Update last_import_dir in entity toml.
+                        if let Some(parent) = path.parent() {
+                            let (toml_path, workspace_dir) = self.entity_toml_path();
+                            let mut cfg =
+                                crate::config::load_entity_toml(&toml_path, &workspace_dir)
+                                    .unwrap_or_default();
+                            cfg.last_import_dir = Some(parent.to_string_lossy().into_owned());
+                            let _ =
+                                crate::config::save_entity_toml(&toml_path, &workspace_dir, &cfg);
+                        }
+                        flow.step = ImportFlowStep::BankSelection;
+                        flow.selected_index = 0;
+                    } else {
+                        flow.modal_error =
+                            Some("File not found. Check the path and try again.".to_string());
+                    }
+                }
+                KeyCode::Backspace => {
+                    flow.input_buffer.pop();
+                    flow.modal_error = None;
+                }
+                KeyCode::Char(c) => {
+                    flow.input_buffer.push(c);
+                    flow.modal_error = None;
+                }
+                _ => {}
+            },
+            // Placeholder dispatch for subsequent steps (implemented in later tasks).
+            _ => {
+                if key.code == KeyCode::Esc {
+                    return; // Cancel: leave import_flow as None.
+                }
+            }
+        }
+
+        // Restore the flow (it was taken above).
+        self.import_flow = Some(flow);
+    }
+}
+
+/// Expands a leading `~` to the user's `$HOME` directory.
+fn expand_tilde_str(s: &str) -> String {
+    if s.starts_with("~/") || s == "~" {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+        format!("{home}/{}", s.strip_prefix("~/").unwrap_or(""))
+    } else {
+        s.to_string()
+    }
+}
+
+/// Renders the import wizard modal overlay.
+fn render_import_modal(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    flow: &crate::ai::csv_import::ImportFlowState,
+) {
+    if flow.step == ImportFlowStep::FilePathInput {
+        render_file_path_modal(frame, area, flow);
+    }
+    // Future steps render their own modals (implemented in later tasks).
+}
+
+/// Renders the file path input step of the import wizard.
+fn render_file_path_modal(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    flow: &crate::ai::csv_import::ImportFlowState,
+) {
+    use ratatui::{
+        style::{Color, Style},
+        text::{Line, Span},
+        widgets::{Block, Borders, Clear, Paragraph},
+    };
+
+    let modal = crate::widgets::centered_rect(70, 40, area);
+    frame.render_widget(Clear, modal);
+
+    let input_line = format!(" > {}", flow.input_buffer);
+    let mut lines = vec![
+        Line::from(Span::raw("")),
+        Line::from(Span::styled(
+            "  Enter the full path to the CSV bank statement:",
+            Style::default().fg(Color::Gray),
+        )),
+        Line::from(Span::raw("")),
+        Line::from(Span::styled(input_line, Style::default().fg(Color::White))),
+        Line::from(Span::raw("")),
+    ];
+    if let Some(ref err) = flow.modal_error {
+        lines.push(Line::from(Span::styled(
+            format!("  ⚠ {err}"),
+            Style::default().fg(Color::Red),
+        )));
+        lines.push(Line::from(Span::raw("")));
+    }
+    lines.push(Line::from(Span::styled(
+        "  Enter: confirm   Esc: cancel",
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Import CSV Statement ")
+                .style(Style::default().fg(Color::Cyan)),
+        ),
+        modal,
+    );
 }
 
 /// Renders a centered help overlay showing global and tab-specific hotkeys.

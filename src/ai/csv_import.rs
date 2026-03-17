@@ -43,6 +43,8 @@ pub struct ImportFlowState {
     pub input_buffer: String,
     pub selected_index: usize,
     pub scroll_offset: usize,
+    /// Error message displayed within the current modal step.
+    pub modal_error: Option<String>,
 }
 
 impl Default for ImportFlowState {
@@ -67,6 +69,7 @@ impl ImportFlowState {
             input_buffer: String::new(),
             selected_index: 0,
             scroll_offset: 0,
+            modal_error: None,
         }
     }
 }

@@ -1114,6 +1114,7 @@ impl Tab for JournalEntriesTab {
             ("g", "Go to General Ledger"),
             ("f", "Cycle fiscal period filter"),
             ("t", "Create recurring template"),
+            ("U", "Import CSV statement"),
         ]
     }
 
@@ -1276,6 +1277,10 @@ impl Tab for JournalEntriesTab {
             // [i] open inter-entity transaction form.
             KeyCode::Char('i') | KeyCode::Char('I') => {
                 return TabAction::StartInterEntityMode;
+            }
+            // [U] open CSV import wizard.
+            KeyCode::Char('U') => {
+                return TabAction::StartImport;
             }
             _ => {}
         }
