@@ -162,4 +162,4 @@ _(Discoveries from implementation — update as the project evolves)_
 - **Money from CSV:** Parse amount strings → Money via established conversion. Never use f64 as intermediate. Handle both `"-1234.56"` and `"(1234.56)"` negative formats if encountered.
 - **Entity toml location:** Same directory as workspace.toml, referenced via `config_path` on each entity entry.
 - **API key loaded lazily:** Not at startup. First Ctrl+K or U import triggers the load. Missing key shows a specific error directing the user to the secrets file path.
-- **on_stage_change callback:** The `send_with_tools` method accepts a closure for updating UI state between tool use rounds. The closure calls `terminal.draw()` — this is cooperative yielding within a blocking call, not concurrency.
+- **Tool use loop:** `handle_ai_request` in `app.rs` drives the tool use loop round by round. Between rounds it logs `AiToolUse` to audit, updates `ai_state` to `FulfillingTools`, and calls `terminal.draw()` to show "Checking the books". Each round is a separate blocking `ureq` call.

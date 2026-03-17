@@ -541,7 +541,7 @@ mod tests {
         let je_id = db
             .journals()
             .create_draft(&NewJournalEntry {
-                entry_date: NaiveDate::from_ymd_opt(2026, 1, 10).unwrap(),
+                entry_date: NaiveDate::from_ymd_opt(2026, 1, 10).expect("valid constant date"),
                 memo: None,
                 fiscal_period_id: period_id,
                 reversal_of_je_id: None,
@@ -582,7 +582,7 @@ mod tests {
         let je_id = post_je(
             &db,
             period_id,
-            NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 1, 15).expect("valid constant date"),
             cash,
             revenue,
             Money::from_dollars(100.0),
@@ -592,7 +592,7 @@ mod tests {
             .create_template(
                 je_id,
                 crate::types::EntryFrequency::Monthly,
-                NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(), // past date
+                NaiveDate::from_ymd_opt(2026, 1, 1).expect("valid constant date"), // past date
             )
             .expect("create template");
         let findings = collect_findings(&db).expect("findings");

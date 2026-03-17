@@ -80,6 +80,7 @@ _Record architectural decisions, trade-offs, and unexpected findings during impl
 | 2026-03-17 | 1.12 | parse_money_str uses integer arithmetic only (no f64 intermediate) per spec |
 | 2026-03-17 | Review | **Phase 3 draft creation strategy: single-line drafts (Option A).** Unmatched imports create a draft JE with only the bank account line (one line). The contra line is added after matching resolves (via update_draft or manual edit). Rationale: drafts don't require balanced debits/credits (enforced at post time only); `get_incomplete_imports` correctly identifies these as entries with < 2 lines; no schema changes needed (`account_id` stays NOT NULL); no sentinel accounts polluting the CoA. |
 | 2026-03-17 | 2.12 | FulfillingTools status update uses `take()`/`replace` pattern to break the `ai_client` borrow so the callback closure can split-borrow `status_bar` (mutable) and `entity.db` (immutable) simultaneously. No visual render between tool rounds (single-threaded limitation); UI shows "Calling Accountant ☏" for the full duration. |
+| 2026-03-17 | 2.Review | **Phase 2 review fixes:** (1) Restructured tool loop — `handle_ai_request` now drives rounds directly via `send_single_round`, enabling `terminal.draw()` and `log_ai_tool_use()` between rounds. Removed `run_tool_loop`/`send_with_tools`/`on_stage_change` callback. (2) Added `AiToolUse` audit logging for every tool call. (3) Extracted `ensure_ai_client()` helper (was duplicated). (4) Cleaned up dead `/match` stub branches. (5) Changed startup.rs `.unwrap()` → `.expect("valid constant date")`. (6) Updated CLAUDE.md gotcha. Net test change: −2 (8 loop tests → 6 classify_round tests). |
 
 ---
 
@@ -99,5 +100,5 @@ _Track bugs, edge cases, or technical debt discovered during implementation._
 |-------|-----------|---------------|
 | V1 | 372 | 372 |
 | V2 Phase 1 | 115 | 487 |
-| V2 Phase 2 (Tasks 1–12) | 97 | 584 |
+| V2 Phase 2 (Tasks 1–12) | 95 | 582 |
 | V2 Phase 3 | — | — |

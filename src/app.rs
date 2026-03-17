@@ -17,8 +17,10 @@ use ratatui::{
 
 use crate::{
     ai::{
-        AiError, AiResponse, ApiContent, ApiMessage, ApiRole, client::AiClient,
-        context::read_context, tools::tool_definitions,
+        AiError, AiResponse, ApiContent, ApiMessage, ApiRole, RoundResult, ToolResult,
+        client::AiClient,
+        context::read_context,
+        tools::{fulfill_tool_call, tool_definitions},
     },
     config::{
         EntityConfig, WorkspaceConfig, load_entity_toml, load_secrets, save_config,
@@ -309,42 +311,47 @@ impl App {
         self.status_bar.render(frame, chunks[2]);
     }
 
+    /// Initialise `self.ai_client` from secrets on first use.
+    ///
+    /// Returns `Ok(())` when the client is ready, or `Err(message)` if the
+    /// API key could not be loaded.
+    fn ensure_ai_client(&mut self) -> Result<(), String> {
+        if self.ai_client.is_some() {
+            return Ok(());
+        }
+        let secrets = load_secrets()
+            .map_err(|_| format!("No API key — see {}", secrets_file_path().display()))?;
+        let model = self
+            .config
+            .ai
+            .as_ref()
+            .map(|ai| ai.model.clone())
+            .unwrap_or_else(|| "claude-sonnet-4-20250514".to_string());
+        self.ai_client = Some(AiClient::new(secrets.anthropic_api_key, model));
+        Ok(())
+    }
+
     /// Executes an AI chat request: loads secrets, builds the system prompt, issues
-    /// the blocking API call, and routes the response back to the chat panel.
-    /// Must be called from the event loop (not from handle_key) so `terminal` is available
-    /// for a forced render before the blocking call.
+    /// blocking API calls round by round, and routes the response back to the chat
+    /// panel.  Between tool-use rounds, logs `AiToolUse` to audit, updates the
+    /// status bar, and calls `terminal.draw()` so the user sees
+    /// "Checking the books 🕮".
+    ///
+    /// Must be called from the event loop (not from handle_key) so `terminal` is
+    /// available for forced renders between rounds.
     fn handle_ai_request<B: ratatui::backend::Backend>(
         &mut self,
         terminal: &mut Terminal<B>,
         messages: Vec<ApiMessage>,
     ) {
         // ── Lazy-init AiClient ────────────────────────────────────────────────
-        if self.ai_client.is_none() {
-            match load_secrets() {
-                Err(_) => {
-                    self.status_bar.set_error(format!(
-                        "No API key — see {}",
-                        secrets_file_path().display()
-                    ));
-                    return;
-                }
-                Ok(secrets) => {
-                    let model = self
-                        .config
-                        .ai
-                        .as_ref()
-                        .map(|ai| ai.model.clone())
-                        .unwrap_or_else(|| "claude-sonnet-4-20250514".to_string());
-                    self.ai_client = Some(AiClient::new(secrets.anthropic_api_key, model));
-                }
-            }
+        if let Err(msg) = self.ensure_ai_client() {
+            self.status_bar.set_error(msg);
+            return;
         }
 
         // ── Load entity context ───────────────────────────────────────────────
-        let context_dir = self.config.context_dir.clone().unwrap_or_else(|| {
-            let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
-            format!("{home}/.config/bookkeeper/context")
-        });
+        let context_dir = self.context_dir();
         let context = read_context(&self.entity.name, &context_dir).unwrap_or_default();
 
         // ── Build system prompt ───────────────────────────────────────────────
@@ -362,31 +369,101 @@ impl App {
             let _ = self.entity.db.audit().log_ai_prompt(&entity_name, text);
         }
 
-        // ── Force render with loading state before blocking call ──────────────
+        // ── Force render with loading state before first call ────────────────
         self.ai_state = AiRequestState::CallingApi;
         self.status_bar
-            .set_ai_status(Some("Calling Accountant ☏".to_string()));
+            .set_ai_status(Some("Calling Accountant \u{260F}".to_string()));
         let _ = terminal.draw(|frame| self.render_frame(frame));
 
-        // ── Issue the blocking API call ───────────────────────────────────────
-        // Take the client out of self so we can borrow other fields (status_bar,
-        // entity.db) simultaneously inside the on_stage_change callback.
+        // ── Tool use loop (up to 5 follow-up rounds) ─────────────────────────
         let tools = tool_definitions();
         let client = self.ai_client.take().expect("just initialized");
-        let result = {
-            // Split-borrow: status_bar (mutable) and entity.db (immutable) are
-            // disjoint fields — Rust permits this even with client owned outside self.
-            let status_bar = &mut self.status_bar;
-            let db = &self.entity.db;
-            client.send_with_tools(&system_prompt, &messages, &tools, db, 5, &mut |state| {
-                let msg = match state {
-                    AiRequestState::FulfillingTools => "Checking the books \u{1F56E}",
-                    _ => "Calling Accountant \u{260F}",
-                };
-                status_bar.set_ai_status(Some(msg.to_string()));
-            })
-        };
-        // Return client to self now that the borrows above have ended.
+        let max_depth: usize = 5;
+        let mut msgs = messages;
+        let mut accumulated_text: Option<String> = None;
+        let mut result: Result<AiResponse, AiError> = Err(AiError::MaxToolDepth);
+
+        for round in 0..=max_depth {
+            match client.send_single_round(&system_prompt, &msgs, &tools, accumulated_text.take()) {
+                Ok(RoundResult::Done(response)) => {
+                    result = Ok(response);
+                    break;
+                }
+                Ok(RoundResult::NeedsToolCall {
+                    tool_calls,
+                    messages: updated_msgs,
+                    accumulated_text: acc,
+                }) => {
+                    if round == max_depth {
+                        tracing::warn!(
+                            "Tool use loop exceeded max depth ({max_depth}); \
+                             returning partial response"
+                        );
+                        let fallback = acc.unwrap_or_else(|| {
+                            "I reached the maximum number of tool calls. \
+                             Please try a simpler question."
+                                .to_string()
+                        });
+                        let (content, summary) = AiClient::parse_summary(&fallback);
+                        result = Ok(AiResponse::Text { content, summary });
+                        break;
+                    }
+
+                    // Log AiToolUse for each tool call.
+                    for tc in &tool_calls {
+                        let _ = self.entity.db.audit().log_ai_tool_use(
+                            &entity_name,
+                            &tc.name,
+                            &tc.input.to_string(),
+                        );
+                    }
+
+                    // Render "Checking the books" between rounds.
+                    self.ai_state = AiRequestState::FulfillingTools;
+                    self.status_bar
+                        .set_ai_status(Some("Checking the books \u{1F56E}".to_string()));
+                    let _ = terminal.draw(|frame| self.render_frame(frame));
+
+                    // Fulfill tool calls.
+                    let tool_results: Vec<ToolResult> = tool_calls
+                        .iter()
+                        .map(|tc| {
+                            let content =
+                                fulfill_tool_call(tc, &self.entity.db).unwrap_or_else(|e| {
+                                    tracing::warn!(
+                                        tool = %tc.name, error = %e,
+                                        "Tool fulfillment error"
+                                    );
+                                    format!("Error: {e}")
+                                });
+                            ToolResult {
+                                tool_use_id: tc.id.clone(),
+                                content,
+                            }
+                        })
+                        .collect();
+
+                    msgs = updated_msgs;
+                    msgs.push(ApiMessage {
+                        role: ApiRole::User,
+                        content: ApiContent::ToolResult(tool_results),
+                    });
+                    accumulated_text = acc;
+
+                    // Restore CallingApi state before next round.
+                    self.ai_state = AiRequestState::CallingApi;
+                    self.status_bar
+                        .set_ai_status(Some("Calling Accountant \u{260F}".to_string()));
+                    let _ = terminal.draw(|frame| self.render_frame(frame));
+                }
+                Err(e) => {
+                    result = Err(e);
+                    break;
+                }
+            }
+        }
+
+        // Return client to self.
         self.ai_client = Some(client);
 
         // ── Handle result ─────────────────────────────────────────────────────
@@ -403,13 +480,13 @@ impl App {
                 self.chat_panel.add_response(content);
             }
             Ok(AiResponse::ToolUse(_)) => {
-                // Should not reach here — run_tool_loop always terminates with Text.
+                // Should not reach here — loop always terminates with Text.
                 self.chat_panel
                     .add_system_note("[Unexpected tool use termination]");
             }
             Err(AiError::Timeout) => {
                 self.status_bar
-                    .set_error("The Call Dropped ☹ (timeout)".to_string());
+                    .set_error("The Call Dropped \u{2639} (timeout)".to_string());
             }
             Err(AiError::NoApiKey) => {
                 self.status_bar.set_error(format!(
@@ -419,7 +496,7 @@ impl App {
             }
             Err(e) => {
                 self.status_bar
-                    .set_error(format!("The Call Dropped ☹: {e}"));
+                    .set_error(format!("The Call Dropped \u{2639}: {e}"));
             }
         }
     }
@@ -463,26 +540,9 @@ impl App {
                         .add_system_note("Not enough conversation to compact (need ≥ 5 messages)");
                     return;
                 }
-                // Lazy-init client.
-                if self.ai_client.is_none() {
-                    match load_secrets() {
-                        Err(_) => {
-                            self.status_bar.set_error(format!(
-                                "No API key — see {}",
-                                secrets_file_path().display()
-                            ));
-                            return;
-                        }
-                        Ok(secrets) => {
-                            let model = self
-                                .config
-                                .ai
-                                .as_ref()
-                                .map(|ai| ai.model.clone())
-                                .unwrap_or_else(|| "claude-sonnet-4-20250514".to_string());
-                            self.ai_client = Some(AiClient::new(secrets.anthropic_api_key, model));
-                        }
-                    }
+                if let Err(msg) = self.ensure_ai_client() {
+                    self.status_bar.set_error(msg);
+                    return;
                 }
                 // Build compaction request.
                 let history = self
@@ -555,19 +615,9 @@ impl App {
             }
             SlashCommand::Match => {
                 // Full /match implementation deferred to Phase 3 (needs import infrastructure).
-                // For now, check preconditions and show an informative note.
-                use crate::tabs::TabId;
-                let is_je_tab = self.entity.tabs[self.active_tab].title() == "Journal Entries";
-                if !is_je_tab {
-                    self.chat_panel.add_system_note(
-                        "Select an incomplete import draft in the Journal Entries tab first",
-                    );
-                } else {
-                    self.chat_panel.add_system_note(
-                        "Select an incomplete import draft in the Journal Entries tab first",
-                    );
-                    let _ = TabId::JournalEntries; // suppress unused warning
-                }
+                self.chat_panel.add_system_note(
+                    "Select an incomplete import draft in the Journal Entries tab first",
+                );
             }
             SlashCommand::Unknown(name) => {
                 self.chat_panel.add_system_note(&format!(

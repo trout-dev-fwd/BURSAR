@@ -69,6 +69,25 @@ pub enum AiResponse {
     ToolUse(Vec<ToolCall>),
 }
 
+/// Result of a single API round in the tool use loop.
+///
+/// The caller (App) drives the loop, calling `send_single_round` repeatedly.
+/// Between rounds it can log tool calls, update the UI, and fulfill tools
+/// without borrow conflicts.
+#[derive(Debug)]
+pub enum RoundResult {
+    /// Final text response — no more tool calls needed.
+    Done(AiResponse),
+    /// Claude wants to call tools before continuing.
+    NeedsToolCall {
+        tool_calls: Vec<ToolCall>,
+        /// Message history with the assistant's tool_use turn already appended.
+        messages: Vec<ApiMessage>,
+        /// Any text from this round (rare but possible with mixed responses).
+        accumulated_text: Option<String>,
+    },
+}
+
 /// AI API failure variants.
 #[derive(Debug, thiserror::Error)]
 pub enum AiError {
