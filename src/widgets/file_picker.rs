@@ -79,6 +79,27 @@ impl FilePicker {
         picker
     }
 
+    /// Returns true when the current directory has a parent (i.e. not at `/`).
+    fn has_parent(&self) -> bool {
+        self.current_dir.parent().is_some()
+    }
+
+    /// Total length of the virtual list (includes `..` entry when not at root).
+    fn list_len(&self) -> usize {
+        self.entries.len() + if self.has_parent() { 1 } else { 0 }
+    }
+
+    /// Maps a virtual list index to the underlying `Entry`, accounting for the
+    /// optional `..` slot at position 0.
+    fn entry_at(&self, virtual_idx: usize) -> Option<&Entry> {
+        let offset = if self.has_parent() { 1 } else { 0 };
+        if virtual_idx < offset {
+            None // the ".." slot — caller handles this specially
+        } else {
+            self.entries.get(virtual_idx - offset)
+        }
+    }
+
     /// Scans the current directory and resets the selection.
     fn refresh_entries(&mut self) {
         self.entries = scan_dir(&self.current_dir);
@@ -112,13 +133,19 @@ impl FilePicker {
                 FilePickerAction::Pending
             }
             KeyCode::Down => {
-                if !self.entries.is_empty() && self.selected_index + 1 < self.entries.len() {
+                let max = self.list_len().saturating_sub(1);
+                if self.selected_index < max {
                     self.selected_index += 1;
                 }
                 FilePickerAction::Pending
             }
             KeyCode::Enter => {
-                if let Some(entry) = self.entries.get(self.selected_index).cloned() {
+                let idx = self.selected_index;
+                if self.has_parent() && idx == 0 {
+                    // ".." entry selected.
+                    self.go_up();
+                    FilePickerAction::Pending
+                } else if let Some(entry) = self.entry_at(idx).cloned() {
                     match entry {
                         Entry::Dir(name) => {
                             self.enter_dir(name);
@@ -158,23 +185,24 @@ impl FilePicker {
             )),
         ];
 
-        if self.entries.is_empty() {
+        let list_len = self.list_len();
+        if list_len == 0 {
             lines.push(Line::from(Span::styled(
                 "  (no .csv files or subdirectories)",
                 Style::default().fg(Color::DarkGray),
             )));
         } else {
-            let end = (scroll + visible_rows).min(self.entries.len());
-            for (i, entry) in self.entries[scroll..end].iter().enumerate() {
-                let actual_idx = scroll + i;
-                let is_selected = actual_idx == self.selected_index;
-                let label = match entry {
-                    Entry::Dir(n) => format!("  [dir] {n}/"),
-                    Entry::File(n) => format!("        {n}"),
-                };
-                let base_color = match entry {
-                    Entry::Dir(_) => Color::Yellow,
-                    Entry::File(_) => Color::White,
+            let end = (scroll + visible_rows).min(list_len);
+            for virtual_idx in scroll..end {
+                let is_selected = virtual_idx == self.selected_index;
+                let (label, base_color) = if self.has_parent() && virtual_idx == 0 {
+                    ("  [dir] ../".to_owned(), Color::Yellow)
+                } else {
+                    match self.entry_at(virtual_idx) {
+                        Some(Entry::Dir(n)) => (format!("  [dir] {n}/"), Color::Yellow),
+                        Some(Entry::File(n)) => (format!("        {n}"), Color::White),
+                        None => continue,
+                    }
                 };
                 let style = if is_selected {
                     Style::default()
@@ -280,22 +308,24 @@ mod tests {
     fn down_up_navigation() {
         let dir = std::env::temp_dir();
         let mut picker = FilePicker::new(dir);
-        // Create a few entries by seeding entries directly for testing.
+        // Seed three real entries; virtual list is: "..", "alpha", "beta", "data.csv" (len=4).
         picker.entries = vec![
             Entry::Dir("alpha".into()),
             Entry::Dir("beta".into()),
             Entry::File("data.csv".into()),
         ];
-        assert_eq!(picker.selected_index, 0);
+        assert_eq!(picker.selected_index, 0); // ".."
         picker.handle_key(key(KeyCode::Down));
-        assert_eq!(picker.selected_index, 1);
+        assert_eq!(picker.selected_index, 1); // "alpha"
         picker.handle_key(key(KeyCode::Down));
-        assert_eq!(picker.selected_index, 2);
-        // Past end — stays at 2.
+        assert_eq!(picker.selected_index, 2); // "beta"
         picker.handle_key(key(KeyCode::Down));
-        assert_eq!(picker.selected_index, 2);
+        assert_eq!(picker.selected_index, 3); // "data.csv"
+        // Past end — stays at 3.
+        picker.handle_key(key(KeyCode::Down));
+        assert_eq!(picker.selected_index, 3);
         picker.handle_key(key(KeyCode::Up));
-        assert_eq!(picker.selected_index, 1);
+        assert_eq!(picker.selected_index, 2);
     }
 
     #[test]
@@ -305,9 +335,9 @@ mod tests {
         let _ = fs::write(&csv_path, "a,b,c");
 
         let mut picker = FilePicker::new(tmp.clone());
-        // Force entries to our known file.
+        // Force entries to our known file. Index 0 is "..", index 1 is the file.
         picker.entries = vec![Entry::File("test_file_picker.csv".into())];
-        picker.selected_index = 0;
+        picker.selected_index = 1;
         let action = picker.handle_key(key(KeyCode::Enter));
         let _ = fs::remove_file(&csv_path);
         assert!(matches!(action, FilePickerAction::Selected(_)));
@@ -323,8 +353,9 @@ mod tests {
         let _ = fs::create_dir_all(&sub);
 
         let mut picker = FilePicker::new(tmp.clone());
+        // Index 0 is "..", index 1 is the real dir entry.
         picker.entries = vec![Entry::Dir("file_picker_test_subdir".into())];
-        picker.selected_index = 0;
+        picker.selected_index = 1;
         picker.handle_key(key(KeyCode::Enter));
         let _ = fs::remove_dir(&sub);
         assert_eq!(picker.current_dir, sub);
@@ -337,6 +368,63 @@ mod tests {
         let mut picker = FilePicker::new(tmp);
         picker.handle_key(key(KeyCode::Backspace));
         assert_eq!(picker.current_dir, parent);
+    }
+
+    #[test]
+    fn dotdot_entry_present_when_not_at_root() {
+        // Any directory that has a parent should expose a ".." virtual entry.
+        let tmp = std::env::temp_dir();
+        let picker = FilePicker::new(tmp.clone());
+        // temp_dir always has a parent on Linux.
+        assert!(picker.has_parent(), "temp dir should have a parent");
+        assert_eq!(picker.list_len(), picker.entries.len() + 1);
+    }
+
+    #[test]
+    fn enter_on_dotdot_navigates_to_parent() {
+        let tmp = std::env::temp_dir();
+        let parent = tmp.parent().map(Path::to_path_buf).unwrap_or(tmp.clone());
+        let mut picker = FilePicker::new(tmp);
+        // ".." is always at index 0 when has_parent is true.
+        picker.selected_index = 0;
+        picker.handle_key(key(KeyCode::Enter));
+        assert_eq!(picker.current_dir, parent);
+    }
+
+    #[test]
+    fn real_entries_offset_by_one_when_has_parent() {
+        let tmp = std::env::temp_dir();
+        let mut picker = FilePicker::new(tmp);
+        picker.entries = vec![Entry::Dir("subdir".into()), Entry::File("data.csv".into())];
+        // Virtual index 0 → "..", index 1 → entries[0], index 2 → entries[1].
+        assert!(picker.entry_at(0).is_none()); // ".." slot
+        assert!(matches!(picker.entry_at(1), Some(Entry::Dir(_))));
+        assert!(matches!(picker.entry_at(2), Some(Entry::File(_))));
+    }
+
+    #[test]
+    fn down_navigation_includes_dotdot_in_bounds() {
+        let tmp = std::env::temp_dir();
+        let mut picker = FilePicker::new(tmp);
+        // Seed two real entries; virtual list is "..", "alpha", "data.csv" (len=3).
+        picker.entries = vec![Entry::Dir("alpha".into()), Entry::File("data.csv".into())];
+        assert_eq!(picker.selected_index, 0); // ".."
+        picker.handle_key(key(KeyCode::Down));
+        assert_eq!(picker.selected_index, 1); // "alpha"
+        picker.handle_key(key(KeyCode::Down));
+        assert_eq!(picker.selected_index, 2); // "data.csv"
+        // Past end — stays at 2.
+        picker.handle_key(key(KeyCode::Down));
+        assert_eq!(picker.selected_index, 2);
+    }
+
+    #[test]
+    fn no_dotdot_at_root() {
+        // Construct a picker pointed directly at "/" to verify has_parent() is false.
+        let root = PathBuf::from("/");
+        let picker = FilePicker::new(root);
+        assert!(!picker.has_parent());
+        assert_eq!(picker.list_len(), picker.entries.len());
     }
 
     #[test]
