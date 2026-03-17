@@ -52,6 +52,10 @@ pub struct ImportFlowState {
     pub picker_accounts: Vec<Account>,
     /// Account picker widget state for NewBankAccountPicker step.
     pub account_picker: crate::widgets::AccountPicker,
+    /// Indices into `matches` of Low-confidence items awaiting Pass 3 clarification.
+    pub clarification_queue: Vec<usize>,
+    /// True once the Pass 3 prompt for the current item has been shown in the chat panel.
+    pub clarification_prompted: bool,
 }
 
 impl Default for ImportFlowState {
@@ -80,6 +84,8 @@ impl ImportFlowState {
             available_banks: Vec::new(),
             picker_accounts: Vec::new(),
             account_picker: crate::widgets::AccountPicker::new(),
+            clarification_queue: Vec::new(),
+            clarification_prompted: false,
         }
     }
 }

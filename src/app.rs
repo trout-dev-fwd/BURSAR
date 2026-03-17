@@ -949,11 +949,23 @@ impl App {
             })
         };
         if let Some(ref mut f) = self.import_flow {
-            f.step = if has_low {
-                ImportFlowStep::Pass3Clarification
+            if has_low {
+                // Populate clarification queue with indices of Low-confidence matches.
+                f.clarification_queue = f
+                    .matches
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, m)| {
+                        matches!(m.confidence, Some(MatchConfidence::Low))
+                            && m.matched_account_id.is_some()
+                    })
+                    .map(|(i, _)| i)
+                    .collect();
+                f.clarification_prompted = false;
+                f.step = ImportFlowStep::Pass3Clarification;
             } else {
-                ImportFlowStep::ReviewScreen
-            };
+                f.step = ImportFlowStep::ReviewScreen;
+            }
         }
     }
 
@@ -1862,6 +1874,148 @@ impl App {
                     self.pending_pass2 = false;
                     return;
                 }
+            }
+            // Pass3Clarification: route keys to chat panel for one item at a time.
+            ImportFlowStep::Pass3Clarification => {
+                if key.code == KeyCode::Esc {
+                    // Skip remaining — advance to review with what we have.
+                    flow.step = ImportFlowStep::ReviewScreen;
+                    self.focus = FocusTarget::MainTab;
+                    self.import_flow = Some(flow);
+                    return;
+                }
+
+                // Show prompt for current item if not yet shown.
+                if !flow.clarification_prompted {
+                    if flow.clarification_queue.is_empty() {
+                        flow.step = ImportFlowStep::ReviewScreen;
+                        self.focus = FocusTarget::MainTab;
+                        self.import_flow = Some(flow);
+                        return;
+                    }
+                    let idx = flow.clarification_queue[0];
+                    let m = &flow.matches[idx];
+                    let txn = &m.transaction;
+                    let acct = m
+                        .matched_account_display
+                        .clone()
+                        .unwrap_or_else(|| "unknown".to_string());
+                    let reasoning = m.reasoning.clone().unwrap_or_default();
+                    let prompt = format!(
+                        "Transaction: {} | {} | {}\n\
+                         Best guess: {} (Low confidence)\n\
+                         Reason: {}\n\n\
+                         Type an account number to redirect, \
+                         'confirm'/'y' to accept, or 'skip'/'s' to leave unmatched.",
+                        txn.date, txn.description, txn.amount, acct, reasoning
+                    );
+                    self.chat_panel.add_system_note(&prompt);
+                    if !self.chat_panel.is_visible() {
+                        self.chat_panel.toggle_visible();
+                    }
+                    self.focus = FocusTarget::ChatPanel;
+                    flow.clarification_prompted = true;
+                    self.import_flow = Some(flow);
+                    return;
+                }
+
+                // Route key to chat panel; intercept SendMessage.
+                let action = self.chat_panel.handle_key(key);
+                match action {
+                    ChatAction::SendMessage(messages) => {
+                        // Extract the user's text from the last user message.
+                        let user_text = messages
+                            .iter()
+                            .rev()
+                            .find(|m| matches!(m.role, ApiRole::User))
+                            .and_then(|m| {
+                                if let ApiContent::Text(t) = &m.content {
+                                    Some(t.trim().to_string())
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or_default();
+                        let input_lower = user_text.to_lowercase();
+                        let idx = flow.clarification_queue.remove(0);
+
+                        if input_lower == "skip" || input_lower == "s" {
+                            // Leave unmatched.
+                            flow.matches[idx].matched_account_id = None;
+                            flow.matches[idx].matched_account_display = None;
+                            flow.matches[idx].match_source = crate::types::MatchSource::Unmatched;
+                        } else if input_lower == "confirm" || input_lower == "y" {
+                            // Accept Claude's suggestion.
+                            flow.matches[idx].match_source =
+                                crate::types::MatchSource::UserConfirmed;
+                            // Save mapping to import_mappings.
+                            if let Some(account_id) = flow.matches[idx].matched_account_id {
+                                let bank_name = flow
+                                    .bank_config
+                                    .as_ref()
+                                    .map(|c| c.name.clone())
+                                    .unwrap_or_default();
+                                let desc = flow.matches[idx].transaction.description.clone();
+                                let _ = self.entity.db.import_mappings().create(
+                                    &desc,
+                                    account_id,
+                                    crate::types::ImportMatchType::Exact,
+                                    crate::types::ImportMatchSource::Confirmed,
+                                    &bank_name,
+                                );
+                            }
+                        } else {
+                            // Try to match by account number.
+                            let accounts = self.entity.db.accounts().list_all().unwrap_or_default();
+                            let found = accounts.iter().find(|a| a.number == user_text.trim());
+                            if let Some(acct) = found {
+                                flow.matches[idx].matched_account_id = Some(acct.id);
+                                flow.matches[idx].matched_account_display =
+                                    Some(format!("{} - {}", acct.number, acct.name));
+                                flow.matches[idx].match_source =
+                                    crate::types::MatchSource::UserConfirmed;
+                                flow.matches[idx].confidence =
+                                    Some(crate::types::MatchConfidence::High);
+                                // Save mapping.
+                                let bank_name = flow
+                                    .bank_config
+                                    .as_ref()
+                                    .map(|c| c.name.clone())
+                                    .unwrap_or_default();
+                                let desc = flow.matches[idx].transaction.description.clone();
+                                let _ = self.entity.db.import_mappings().create(
+                                    &desc,
+                                    acct.id,
+                                    crate::types::ImportMatchType::Exact,
+                                    crate::types::ImportMatchSource::Confirmed,
+                                    &bank_name,
+                                );
+                            } else {
+                                self.chat_panel
+                                    .add_system_note("Account not found. Try the account number, 'confirm', or 'skip'.");
+                                // Put the index back.
+                                flow.clarification_queue.insert(0, idx);
+                            }
+                        }
+
+                        // Advance to next item or finish.
+                        if flow.clarification_queue.is_empty() {
+                            flow.step = ImportFlowStep::ReviewScreen;
+                            self.focus = FocusTarget::MainTab;
+                        } else {
+                            flow.clarification_prompted = false;
+                        }
+                    }
+                    ChatAction::Close => {
+                        // User closed chat — advance to ReviewScreen.
+                        flow.step = ImportFlowStep::ReviewScreen;
+                        self.chat_panel.toggle_visible();
+                        self.focus = FocusTarget::MainTab;
+                    }
+                    _ => {}
+                }
+                self.import_flow = Some(flow);
+                return;
             }
             // Placeholder dispatch for subsequent steps (implemented in later tasks).
             _ => {
