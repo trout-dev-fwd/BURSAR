@@ -73,6 +73,135 @@ pub enum AuditAction {
     ArPaymentRecorded,
     ApItemCreated,
     ApPaymentRecorded,
+    // V2: AI interaction audit entries
+    AiPrompt,
+    AiResponse,
+    AiToolUse,
+    CsvImport,
+    MappingLearned,
+}
+
+// ── ImportMatchType ───────────────────────────────────────────────────────────
+
+/// How a description pattern matches a bank transaction description.
+/// Stored as TEXT in `import_mappings.match_type`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImportMatchType {
+    Exact,
+    Substring,
+}
+
+impl fmt::Display for ImportMatchType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ImportMatchType::Exact => write!(f, "exact"),
+            ImportMatchType::Substring => write!(f, "substring"),
+        }
+    }
+}
+
+#[derive(Debug, Error)]
+#[error("Unknown import match type: '{0}'")]
+pub struct UnknownImportMatchType(String);
+
+impl FromStr for ImportMatchType {
+    type Err = UnknownImportMatchType;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "exact" => Ok(ImportMatchType::Exact),
+            "substring" => Ok(ImportMatchType::Substring),
+            _ => Err(UnknownImportMatchType(s.to_owned())),
+        }
+    }
+}
+
+// ── ImportMatchSource ─────────────────────────────────────────────────────────
+
+/// How an import mapping was established.
+/// Stored as TEXT in `import_mappings.source`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImportMatchSource {
+    Confirmed,
+    AiSuggested,
+}
+
+impl fmt::Display for ImportMatchSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ImportMatchSource::Confirmed => write!(f, "confirmed"),
+            ImportMatchSource::AiSuggested => write!(f, "ai_suggested"),
+        }
+    }
+}
+
+#[derive(Debug, Error)]
+#[error("Unknown import match source: '{0}'")]
+pub struct UnknownImportMatchSource(String);
+
+impl FromStr for ImportMatchSource {
+    type Err = UnknownImportMatchSource;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "confirmed" => Ok(ImportMatchSource::Confirmed),
+            "ai_suggested" => Ok(ImportMatchSource::AiSuggested),
+            _ => Err(UnknownImportMatchSource(s.to_owned())),
+        }
+    }
+}
+
+// ── AiRequestState ────────────────────────────────────────────────────────────
+
+/// Tracks the current state of an AI API interaction for UI display.
+/// In-memory only — not persisted to the database.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AiRequestState {
+    Idle,
+    CallingApi,
+    FulfillingTools,
+}
+
+// ── ChatRole ──────────────────────────────────────────────────────────────────
+
+/// Identifies the sender of a chat message.
+/// In-memory only — not persisted to the database.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatRole {
+    User,
+    Assistant,
+    System,
+}
+
+// ── FocusTarget ───────────────────────────────────────────────────────────────
+
+/// Tracks which UI element has keyboard focus when the chat panel is open.
+/// In-memory only — not persisted to the database.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusTarget {
+    MainTab,
+    ChatPanel,
+}
+
+// ── MatchSource ───────────────────────────────────────────────────────────────
+
+/// How a transaction-to-account match was determined during CSV import.
+/// In-memory only — not persisted to the database.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatchSource {
+    Local,
+    Ai,
+    UserConfirmed,
+    Unmatched,
+}
+
+// ── MatchConfidence ───────────────────────────────────────────────────────────
+
+/// Confidence level for AI-suggested import matches.
+/// In-memory only — not persisted to the database.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatchConfidence {
+    High,
+    Medium,
+    Low,
 }
 
 // ── AccountType ──────────────────────────────────────────────────────────────
@@ -307,6 +436,11 @@ impl fmt::Display for AuditAction {
             AuditAction::ArPaymentRecorded => write!(f, "ArPaymentRecorded"),
             AuditAction::ApItemCreated => write!(f, "ApItemCreated"),
             AuditAction::ApPaymentRecorded => write!(f, "ApPaymentRecorded"),
+            AuditAction::AiPrompt => write!(f, "AiPrompt"),
+            AuditAction::AiResponse => write!(f, "AiResponse"),
+            AuditAction::AiToolUse => write!(f, "AiToolUse"),
+            AuditAction::CsvImport => write!(f, "CsvImport"),
+            AuditAction::MappingLearned => write!(f, "MappingLearned"),
         }
     }
 }
@@ -338,6 +472,11 @@ impl FromStr for AuditAction {
             "ArPaymentRecorded" => Ok(AuditAction::ArPaymentRecorded),
             "ApItemCreated" => Ok(AuditAction::ApItemCreated),
             "ApPaymentRecorded" => Ok(AuditAction::ApPaymentRecorded),
+            "AiPrompt" => Ok(AuditAction::AiPrompt),
+            "AiResponse" => Ok(AuditAction::AiResponse),
+            "AiToolUse" => Ok(AuditAction::AiToolUse),
+            "CsvImport" => Ok(AuditAction::CsvImport),
+            "MappingLearned" => Ok(AuditAction::MappingLearned),
             _ => Err(UnknownAuditAction(s.to_owned())),
         }
     }
@@ -416,8 +555,67 @@ mod tests {
             ArItemCreated,
             ArPaymentRecorded,
             ApItemCreated,
-            ApPaymentRecorded
+            ApPaymentRecorded,
+            AiPrompt,
+            AiResponse,
+            AiToolUse,
+            CsvImport,
+            MappingLearned
         );
+    }
+
+    #[test]
+    fn import_match_type_round_trips() {
+        assert_eq!(ImportMatchType::Exact.to_string(), "exact");
+        assert_eq!(ImportMatchType::Substring.to_string(), "substring");
+        assert_eq!(
+            "exact".parse::<ImportMatchType>().unwrap(),
+            ImportMatchType::Exact
+        );
+        assert_eq!(
+            "substring".parse::<ImportMatchType>().unwrap(),
+            ImportMatchType::Substring
+        );
+        assert!("Exact".parse::<ImportMatchType>().is_err());
+    }
+
+    #[test]
+    fn import_match_source_round_trips() {
+        assert_eq!(ImportMatchSource::Confirmed.to_string(), "confirmed");
+        assert_eq!(ImportMatchSource::AiSuggested.to_string(), "ai_suggested");
+        assert_eq!(
+            "confirmed".parse::<ImportMatchSource>().unwrap(),
+            ImportMatchSource::Confirmed
+        );
+        assert_eq!(
+            "ai_suggested".parse::<ImportMatchSource>().unwrap(),
+            ImportMatchSource::AiSuggested
+        );
+        assert!("Confirmed".parse::<ImportMatchSource>().is_err());
+    }
+
+    #[test]
+    fn in_memory_enums_compile() {
+        // Verify in-memory-only enums exist and are usable
+        let _ = AiRequestState::Idle;
+        let _ = AiRequestState::CallingApi;
+        let _ = AiRequestState::FulfillingTools;
+
+        let _ = ChatRole::User;
+        let _ = ChatRole::Assistant;
+        let _ = ChatRole::System;
+
+        let _ = FocusTarget::MainTab;
+        let _ = FocusTarget::ChatPanel;
+
+        let _ = MatchSource::Local;
+        let _ = MatchSource::Ai;
+        let _ = MatchSource::UserConfirmed;
+        let _ = MatchSource::Unmatched;
+
+        let _ = MatchConfidence::High;
+        let _ = MatchConfidence::Medium;
+        let _ = MatchConfidence::Low;
     }
 
     #[test]

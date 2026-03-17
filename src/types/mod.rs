@@ -4,8 +4,9 @@ pub mod money;
 pub mod percentage;
 
 pub use enums::{
-    AccountType, ArApStatus, AuditAction, BalanceDirection, EntryFrequency, EnvelopeEntryType,
-    JournalEntryStatus, ReconcileState,
+    AccountType, AiRequestState, ArApStatus, AuditAction, BalanceDirection, ChatRole,
+    EntryFrequency, EnvelopeEntryType, FocusTarget, ImportMatchSource, ImportMatchType,
+    JournalEntryStatus, MatchConfidence, MatchSource, ReconcileState,
 };
 pub use ids::{
     AccountId, ApItemId, ArItemId, AuditLogId, EnvelopeAllocationId, EnvelopeLedgerId,
