@@ -20,7 +20,10 @@ use crate::{
         AiError, AiResponse, ApiContent, ApiMessage, ApiRole, client::AiClient,
         context::read_context, tools::tool_definitions,
     },
-    config::{EntityConfig, WorkspaceConfig, load_secrets, save_config, secrets_file_path},
+    config::{
+        EntityConfig, WorkspaceConfig, load_entity_toml, load_secrets, save_config,
+        save_entity_toml, secrets_file_path,
+    },
     db::EntityDb,
     inter_entity::{InterEntityMode, form::InterEntityFormAction, write_protocol},
     tabs::{
@@ -33,7 +36,7 @@ use crate::{
     types::{AiRequestState, FocusTarget},
     widgets::{
         FiscalModal, FiscalModalAction, StatusBar, UserGuide, UserGuideAction,
-        chat_panel::{ChatAction, ChatPanel},
+        chat_panel::{ChatAction, ChatPanel, SlashCommand},
     },
 };
 
@@ -118,6 +121,8 @@ pub struct App {
     ai_client: Option<AiClient>,
     /// Set by handle_key when a SendMessage action arrives; consumed by event_loop.
     pending_ai_messages: Option<Vec<ApiMessage>>,
+    /// Set by handle_key when a SlashCommand action arrives; consumed by event_loop.
+    pending_slash_command: Option<SlashCommand>,
 }
 
 impl App {
@@ -144,6 +149,7 @@ impl App {
             ai_state: AiRequestState::Idle,
             ai_client: None,
             pending_ai_messages: None,
+            pending_slash_command: None,
         }
     }
 
@@ -186,6 +192,11 @@ impl App {
             // 2b. If a SendMessage action was queued, fire the AI request now.
             if let Some(messages) = self.pending_ai_messages.take() {
                 self.handle_ai_request(terminal, messages);
+            }
+
+            // 2c. If a SlashCommand was queued, execute it now.
+            if let Some(cmd) = self.pending_slash_command.take() {
+                self.execute_slash_command(terminal, cmd);
             }
 
             // 3. Tick: advance typewriter, update status bar timeout + unsaved indicator.
@@ -412,6 +423,200 @@ impl App {
         }
     }
 
+    /// Executes a slash command entered in the chat panel.
+    fn execute_slash_command<B: ratatui::backend::Backend>(
+        &mut self,
+        terminal: &mut Terminal<B>,
+        cmd: SlashCommand,
+    ) {
+        match cmd {
+            SlashCommand::Clear => {
+                self.chat_panel.messages.clear();
+                self.chat_panel.typewriter = None;
+                let context_dir = self.context_dir();
+                let context = read_context(&self.entity.name, &context_dir).unwrap_or_default();
+                self.chat_panel.rebuild_system_prompt(
+                    &self.chat_panel.current_persona.clone(),
+                    &self.entity.name.clone(),
+                    &context,
+                );
+                self.chat_panel.build_welcome();
+                self.chat_panel.add_system_note("[Conversation cleared]");
+            }
+            SlashCommand::Context => {
+                let context_dir = self.context_dir();
+                let context = read_context(&self.entity.name, &context_dir).unwrap_or_default();
+                let tab_name = self.entity.tabs[self.active_tab].title().to_string();
+                self.chat_panel.rebuild_system_prompt(
+                    &self.chat_panel.current_persona.clone(),
+                    &self.entity.name.clone(),
+                    &context,
+                );
+                self.chat_panel
+                    .add_system_note(&format!("[Context refreshed from {tab_name} tab]"));
+            }
+            SlashCommand::Compact => {
+                let msg_count = self.chat_panel.messages.len();
+                if msg_count < 5 {
+                    self.chat_panel
+                        .add_system_note("Not enough conversation to compact (need ≥ 5 messages)");
+                    return;
+                }
+                // Lazy-init client.
+                if self.ai_client.is_none() {
+                    match load_secrets() {
+                        Err(_) => {
+                            self.status_bar.set_error(format!(
+                                "No API key — see {}",
+                                secrets_file_path().display()
+                            ));
+                            return;
+                        }
+                        Ok(secrets) => {
+                            let model = self
+                                .config
+                                .ai
+                                .as_ref()
+                                .map(|ai| ai.model.clone())
+                                .unwrap_or_else(|| "claude-sonnet-4-20250514".to_string());
+                            self.ai_client = Some(AiClient::new(secrets.anthropic_api_key, model));
+                        }
+                    }
+                }
+                // Build compaction request.
+                let history = self
+                    .chat_panel
+                    .api_messages()
+                    .iter()
+                    .map(|m| match &m.content {
+                        ApiContent::Text(t) => format!(
+                            "{}: {t}",
+                            match m.role {
+                                ApiRole::User => "User",
+                                ApiRole::Assistant => "Accountant",
+                            }
+                        ),
+                        _ => String::new(),
+                    })
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+                let system = "You are a helpful assistant. Summarise the following conversation in a concise paragraph, preserving the key accounting facts and conclusions.";
+                let compaction_messages = vec![ApiMessage {
+                    role: ApiRole::User,
+                    content: ApiContent::Text(format!(
+                        "Please summarise this conversation:\n\n{history}"
+                    )),
+                }];
+                self.status_bar
+                    .set_ai_status(Some("Calling Accountant ☏".to_string()));
+                let _ = terminal.draw(|frame| self.render_frame(frame));
+                let result = {
+                    let client = self.ai_client.as_ref().expect("just initialized");
+                    client.send_simple(system, &compaction_messages)
+                };
+                self.status_bar.set_ai_status(None);
+                match result {
+                    Ok(summary) => {
+                        self.chat_panel.replace_with_summary(summary, msg_count);
+                    }
+                    Err(e) => {
+                        self.status_bar
+                            .set_error(format!("The Call Dropped ☹: {e}"));
+                    }
+                }
+            }
+            SlashCommand::Persona(None) => {
+                let persona = self.chat_panel.current_persona.clone();
+                self.chat_panel
+                    .add_system_note(&format!("Current persona: {persona}"));
+            }
+            SlashCommand::Persona(Some(new_persona)) => {
+                // Save to entity toml.
+                let (toml_path, workspace_dir) = self.entity_toml_path();
+                let mut entity_cfg =
+                    load_entity_toml(&toml_path, &workspace_dir).unwrap_or_default();
+                entity_cfg.ai_persona = Some(new_persona.clone());
+                if let Err(e) = save_entity_toml(&toml_path, &workspace_dir, &entity_cfg) {
+                    self.status_bar
+                        .set_error(format!("Failed to save persona: {e}"));
+                    return;
+                }
+                // Rebuild system prompt with new persona.
+                let context_dir = self.context_dir();
+                let context = read_context(&self.entity.name, &context_dir).unwrap_or_default();
+                self.chat_panel.rebuild_system_prompt(
+                    &new_persona,
+                    &self.entity.name.clone(),
+                    &context,
+                );
+                self.chat_panel.add_system_note("[Persona updated]");
+            }
+            SlashCommand::Match => {
+                // Full /match implementation deferred to Phase 3 (needs import infrastructure).
+                // For now, check preconditions and show an informative note.
+                use crate::tabs::TabId;
+                let is_je_tab = self.entity.tabs[self.active_tab].title() == "Journal Entries";
+                if !is_je_tab {
+                    self.chat_panel.add_system_note(
+                        "Select an incomplete import draft in the Journal Entries tab first",
+                    );
+                } else {
+                    self.chat_panel.add_system_note(
+                        "Select an incomplete import draft in the Journal Entries tab first",
+                    );
+                    let _ = TabId::JournalEntries; // suppress unused warning
+                }
+            }
+            SlashCommand::Unknown(name) => {
+                self.chat_panel.add_system_note(&format!(
+                    "Unknown command '/{name}'. Available: /clear, /context, /compact, /persona, /match"
+                ));
+            }
+        }
+    }
+
+    /// Returns the context directory, falling back to `~/.config/bookkeeper/context`.
+    fn context_dir(&self) -> String {
+        self.config.context_dir.clone().unwrap_or_else(|| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+            format!("{home}/.config/bookkeeper/context")
+        })
+    }
+
+    /// Returns `(config_path_str, workspace_dir)` for the active entity's TOML file.
+    /// The path is derived from the entity's db_path if no explicit config_path is set.
+    fn entity_toml_path(&self) -> (String, std::path::PathBuf) {
+        let entity_config = self
+            .config
+            .entities
+            .iter()
+            .find(|e| e.name == self.entity.name);
+        if let Some(ec) = entity_config {
+            if let Some(cp) = &ec.config_path {
+                let dir = ec
+                    .db_path
+                    .parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| std::path::PathBuf::from("."));
+                return (cp.clone(), dir);
+            }
+            // Derive from db_path: same directory, same stem with .toml extension.
+            let dir = ec
+                .db_path
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| std::path::PathBuf::from("."));
+            let stem = ec
+                .db_path
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| "entity".to_string());
+            return (format!("{stem}.toml"), dir);
+        }
+        ("entity.toml".to_string(), std::path::PathBuf::from("."))
+    }
+
     /// Returns the short label for a tab, abbreviating if `abbreviate` is true.
     fn tab_label(title: &str, abbreviate: bool) -> &str {
         if !abbreviate {
@@ -575,8 +780,9 @@ impl App {
                     ChatAction::SendMessage(messages) => {
                         self.pending_ai_messages = Some(messages);
                     }
-                    // SlashCommand will be wired in Task 10.
-                    ChatAction::SlashCommand(_) => {}
+                    ChatAction::SlashCommand(cmd) => {
+                        self.pending_slash_command = Some(cmd);
+                    }
                 }
                 return;
             } else {
