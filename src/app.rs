@@ -1430,6 +1430,69 @@ impl App {
                     return;
                 }
             }
+            ImportFlowStep::NewBankConfirmation => match key.code {
+                KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => return,
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    // Load accounts for picker.
+                    let accounts = self.entity.db.accounts().list_all().unwrap_or_default();
+                    flow.picker_accounts = accounts;
+                    flow.account_picker.reset();
+                    flow.account_picker.refresh(&flow.picker_accounts);
+                    flow.step = ImportFlowStep::NewBankAccountPicker;
+                }
+                _ => {}
+            },
+            ImportFlowStep::NewBankAccountPicker => {
+                if key.code == KeyCode::Esc {
+                    return;
+                }
+                let picker_accounts = flow.picker_accounts.clone();
+                let action = flow.account_picker.handle_key(key, &picker_accounts);
+                match action {
+                    crate::widgets::account_picker::PickerAction::Selected(account_id) => {
+                        // Find account number for linked_account.
+                        let number = picker_accounts
+                            .iter()
+                            .find(|a| a.id == account_id)
+                            .map(|a| a.number.clone())
+                            .unwrap_or_default();
+                        // Complete the BankAccountConfig.
+                        if let Some(ref mut cfg) = flow.detected_config {
+                            cfg.linked_account = number;
+                        }
+                        let completed_cfg = flow.detected_config.clone().unwrap_or_else(|| {
+                            crate::config::BankAccountConfig {
+                                name: flow.new_bank_name.clone().unwrap_or_default(),
+                                linked_account: String::new(),
+                                date_column: "Date".to_string(),
+                                date_format: "%m/%d/%Y".to_string(),
+                                description_column: "Description".to_string(),
+                                amount_column: Some("Amount".to_string()),
+                                debit_column: None,
+                                credit_column: None,
+                                debit_is_negative: true,
+                            }
+                        });
+                        // Save to entity toml.
+                        let (toml_path, workspace_dir) = self.entity_toml_path();
+                        let mut entity_cfg =
+                            crate::config::load_entity_toml(&toml_path, &workspace_dir)
+                                .unwrap_or_default();
+                        entity_cfg.bank_accounts.push(completed_cfg.clone());
+                        let _ = crate::config::save_entity_toml(
+                            &toml_path,
+                            &workspace_dir,
+                            &entity_cfg,
+                        );
+                        flow.bank_config = Some(completed_cfg);
+                        flow.available_banks = entity_cfg.bank_accounts;
+                        flow.step = ImportFlowStep::DuplicateWarning;
+                        flow.selected_index = 0;
+                    }
+                    crate::widgets::account_picker::PickerAction::Cancelled => return,
+                    crate::widgets::account_picker::PickerAction::Pending => {}
+                }
+            }
             // Placeholder dispatch for subsequent steps (implemented in later tasks).
             _ => {
                 if key.code == KeyCode::Esc {
@@ -1493,6 +1556,10 @@ fn render_import_modal(
         ImportFlowStep::NewBankDetection => {
             render_new_bank_detection_modal(frame, area, "Initializing \u{21BB}")
         }
+        ImportFlowStep::NewBankConfirmation => {
+            render_new_bank_confirmation_modal(frame, area, flow)
+        }
+        ImportFlowStep::NewBankAccountPicker => render_account_picker_modal(frame, area, flow),
         ImportFlowStep::Failed(msg) => render_new_bank_detection_modal(frame, area, msg),
         // Future steps render their own modals (implemented in later tasks).
         _ => {}
@@ -1686,6 +1753,98 @@ fn render_new_bank_detection_modal(frame: &mut ratatui::Frame, area: Rect, messa
         ),
         modal,
     );
+}
+
+/// Renders the bank detection confirmation step.
+fn render_new_bank_confirmation_modal(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    flow: &crate::ai::csv_import::ImportFlowState,
+) {
+    use ratatui::{
+        style::{Color, Style},
+        text::{Line, Span},
+        widgets::{Block, Borders, Clear, Paragraph},
+    };
+
+    let modal = crate::widgets::centered_rect(70, 50, area);
+    frame.render_widget(Clear, modal);
+
+    let mut lines = vec![
+        Line::from(Span::raw("")),
+        Line::from(Span::styled(
+            "  Detected Format:",
+            Style::default().fg(Color::Gray),
+        )),
+        Line::from(Span::raw("")),
+    ];
+
+    if let Some(cfg) = &flow.detected_config {
+        lines.push(Line::from(Span::styled(
+            format!(
+                "    Date:        \"{}\"  ({})",
+                cfg.date_column, cfg.date_format
+            ),
+            Style::default().fg(Color::White),
+        )));
+        lines.push(Line::from(Span::styled(
+            format!("    Description: \"{}\"", cfg.description_column),
+            Style::default().fg(Color::White),
+        )));
+        if let Some(ref amt) = cfg.amount_column {
+            let sign = if cfg.debit_is_negative {
+                "negative = withdrawal"
+            } else {
+                "positive = withdrawal"
+            };
+            lines.push(Line::from(Span::styled(
+                format!("    Amount:      \"{}\" ({})", amt, sign),
+                Style::default().fg(Color::White),
+            )));
+        } else {
+            let debit = cfg.debit_column.as_deref().unwrap_or("?");
+            let credit = cfg.credit_column.as_deref().unwrap_or("?");
+            lines.push(Line::from(Span::styled(
+                format!("    Debit:       \"{}\"", debit),
+                Style::default().fg(Color::White),
+            )));
+            lines.push(Line::from(Span::styled(
+                format!("    Credit:      \"{}\"", credit),
+                Style::default().fg(Color::White),
+            )));
+        }
+    }
+
+    lines.push(Line::from(Span::raw("")));
+    lines.push(Line::from(Span::styled(
+        "  Is this correct?",
+        Style::default().fg(Color::Yellow),
+    )));
+    lines.push(Line::from(Span::raw("")));
+    lines.push(Line::from(Span::styled(
+        "  Y: yes, continue   N/Esc: cancel import",
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Confirm Column Mapping ")
+                .style(Style::default().fg(Color::Cyan)),
+        ),
+        modal,
+    );
+}
+
+/// Renders the account picker for the new bank account link step.
+fn render_account_picker_modal(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    flow: &crate::ai::csv_import::ImportFlowState,
+) {
+    flow.account_picker
+        .render(frame, area, &flow.picker_accounts);
 }
 
 /// Renders a centered help overlay showing global and tab-specific hotkeys.

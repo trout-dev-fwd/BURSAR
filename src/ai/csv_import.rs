@@ -6,6 +6,7 @@ use chrono::NaiveDate;
 
 use crate::ai::{ImportMatch, NormalizedTransaction};
 use crate::config::BankAccountConfig;
+use crate::db::account_repo::Account;
 use crate::types::{AccountType, Money};
 
 // ── Import Flow State ─────────────────────────────────────────────────────────
@@ -47,6 +48,10 @@ pub struct ImportFlowState {
     pub modal_error: Option<String>,
     /// Bank accounts from entity toml, populated when entering BankSelection step.
     pub available_banks: Vec<BankAccountConfig>,
+    /// Accounts loaded from DB for the account picker step.
+    pub picker_accounts: Vec<Account>,
+    /// Account picker widget state for NewBankAccountPicker step.
+    pub account_picker: crate::widgets::AccountPicker,
 }
 
 impl Default for ImportFlowState {
@@ -73,6 +78,8 @@ impl ImportFlowState {
             scroll_offset: 0,
             modal_error: None,
             available_banks: Vec::new(),
+            picker_accounts: Vec::new(),
+            account_picker: crate::widgets::AccountPicker::new(),
         }
     }
 }
