@@ -68,6 +68,8 @@ pub struct ChatPanel {
     pub typewriter: Option<TypewriterState>,
     pub entity_name: String,
     pub current_persona: String,
+    /// When true, render will auto-scroll to show the bottom of the conversation.
+    scroll_to_bottom: bool,
 }
 
 impl ChatPanel {
@@ -82,6 +84,7 @@ impl ChatPanel {
             typewriter: None,
             entity_name: entity_name.to_string(),
             current_persona: persona.to_string(),
+            scroll_to_bottom: true,
         }
     }
 
@@ -138,6 +141,7 @@ impl ChatPanel {
             pos -= 1;
         }
         tw.display_position = pos;
+        self.scroll_to_bottom = true;
         // If we've reached the end, finalize immediately.
         if pos >= full_len {
             let idx = tw.message_index;
@@ -150,7 +154,7 @@ impl ChatPanel {
 
     // ── Rendering ─────────────────────────────────────────────────────────────
 
-    pub fn render(&self, frame: &mut Frame, area: Rect, is_focused: bool) {
+    pub fn render(&mut self, frame: &mut Frame, area: Rect, is_focused: bool) {
         let border_style = if is_focused {
             Style::default().fg(Color::Cyan)
         } else {
@@ -241,8 +245,45 @@ impl ChatPanel {
             all_lines.push(Line::default());
         }
 
-        // Apply scroll offset.
+        // Apply scroll offset. When scroll_to_bottom is set, pin to the end
+        // accounting for line wrapping at the panel width.
         let total_lines = all_lines.len();
+        if self.scroll_to_bottom {
+            let panel_width = msg_area.width as usize;
+            let wrapped_height: usize = all_lines
+                .iter()
+                .map(|line| {
+                    let w: usize = line.spans.iter().map(|s| s.content.len()).sum();
+                    if panel_width == 0 {
+                        1
+                    } else {
+                        w.max(1).div_ceil(panel_width)
+                    }
+                })
+                .sum();
+            if wrapped_height > msg_height {
+                // Walk backwards through lines to find how many pre-wrap lines
+                // fit in the visible area.
+                let mut remaining = msg_height;
+                let mut skip_count = total_lines;
+                for line in all_lines.iter().rev() {
+                    let w: usize = line.spans.iter().map(|s| s.content.len()).sum();
+                    let h = if panel_width == 0 {
+                        1
+                    } else {
+                        w.max(1).div_ceil(panel_width)
+                    };
+                    if h > remaining {
+                        break;
+                    }
+                    remaining -= h;
+                    skip_count -= 1;
+                }
+                self.scroll_offset = skip_count;
+            } else {
+                self.scroll_offset = 0;
+            }
+        }
         let skip = self
             .scroll_offset
             .min(total_lines.saturating_sub(msg_height));
@@ -312,6 +353,7 @@ impl ChatPanel {
         });
         self.input_buffer.clear();
         self.cursor_pos = 0;
+        self.scroll_to_bottom = true;
         Some(self.api_messages())
     }
 
@@ -328,6 +370,7 @@ impl ChatPanel {
             display_position: 0,
             message_index: msg_index,
         });
+        self.scroll_to_bottom = true;
     }
 
     /// Add a system notification (no typewriter animation).
@@ -337,17 +380,20 @@ impl ChatPanel {
             content: note.to_string(),
             is_fully_rendered: true,
         });
+        self.scroll_to_bottom = true;
     }
 
     /// Replace conversation with a compacted summary.
     pub fn replace_with_summary(&mut self, summary: String, original_count: usize) {
         self.messages.clear();
         self.typewriter = None;
+        self.scroll_offset = 0;
         self.messages.push(ChatMessage {
             role: ChatRole::System,
             content: format!("[Compacted from {original_count} messages]\n\n{summary}"),
             is_fully_rendered: true,
         });
+        self.scroll_to_bottom = true;
     }
 
     /// Rebuild the system prompt from fresh config/context.
@@ -483,12 +529,18 @@ impl ChatPanel {
             KeyCode::Up => {
                 if self.input_buffer.is_empty() {
                     self.scroll_offset = self.scroll_offset.saturating_add(1);
+                    self.scroll_to_bottom = false;
                 }
                 ChatAction::None
             }
             KeyCode::Down => {
                 if self.input_buffer.is_empty() {
-                    self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                    if self.scroll_offset <= 1 {
+                        self.scroll_offset = 0;
+                        self.scroll_to_bottom = true;
+                    } else {
+                        self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                    }
                 }
                 ChatAction::None
             }
