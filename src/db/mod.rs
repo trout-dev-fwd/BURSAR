@@ -43,6 +43,7 @@ impl EntityDb {
         conn.execute_batch("PRAGMA journal_mode=WAL;")?;
         conn.execute_batch("PRAGMA foreign_keys=ON;")?;
         migrate_fixed_asset_details(&conn)?;
+        migrate_journal_import_ref(&conn)?;
         Ok(Self { conn })
     }
 
@@ -143,6 +144,20 @@ fn migrate_fixed_asset_details(conn: &Connection) -> Result<()> {
             "ALTER TABLE fixed_asset_details
              ADD COLUMN depreciation_expense_account_id INTEGER REFERENCES accounts(id)",
         )?;
+    }
+    Ok(())
+}
+
+/// Adds the `import_ref` column to `journal_entries` for databases created before V2.
+fn migrate_journal_import_ref(conn: &Connection) -> Result<()> {
+    let mut stmt = conn.prepare("PRAGMA table_info(journal_entries)")?;
+    let columns: Vec<String> = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    if !columns.contains(&"import_ref".to_string()) {
+        conn.execute_batch("ALTER TABLE journal_entries ADD COLUMN import_ref TEXT")?;
     }
     Ok(())
 }

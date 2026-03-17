@@ -41,7 +41,8 @@ pub fn find_orphaned_drafts(db: &EntityDb) -> Result<Vec<JournalEntry>> {
     let mut stmt = db.conn().prepare(
         "SELECT id, je_number, entry_date, memo, status, is_reversed,
                 reversed_by_je_id, reversal_of_je_id, inter_entity_uuid,
-                source_entity_name, fiscal_period_id, created_at, updated_at
+                source_entity_name, fiscal_period_id, created_at, updated_at,
+                import_ref
          FROM journal_entries
          WHERE status = 'Draft' AND inter_entity_uuid IS NOT NULL
          ORDER BY entry_date, id",

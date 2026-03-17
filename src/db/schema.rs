@@ -72,7 +72,8 @@ pub fn initialize_schema(conn: &Connection) -> Result<()> {
             source_entity_name  TEXT,
             fiscal_period_id    INTEGER NOT NULL REFERENCES fiscal_periods(id),
             created_at          TEXT    NOT NULL,
-            updated_at          TEXT    NOT NULL
+            updated_at          TEXT    NOT NULL,
+            import_ref          TEXT
         );
 
         CREATE TABLE IF NOT EXISTS journal_entry_lines (

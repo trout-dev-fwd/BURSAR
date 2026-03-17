@@ -26,6 +26,9 @@ pub struct JournalEntry {
     pub fiscal_period_id: FiscalPeriodId,
     pub created_at: String,
     pub updated_at: String,
+    /// Composite reference string for tracing a draft back to its source bank statement line.
+    /// Format: `"{bank_name}|{date}|{description}|{amount}"`. Null for non-imported entries.
+    pub import_ref: Option<String>,
 }
 
 /// A single debit/credit line within a journal entry.
@@ -139,6 +142,24 @@ impl<'conn> JournalRepo<'conn> {
     /// Creates a draft journal entry with its lines in a single operation.
     /// Returns the new JE's ID.
     pub fn create_draft(&self, entry: &NewJournalEntry) -> Result<JournalEntryId> {
+        self.create_draft_inner(entry, None)
+    }
+
+    /// Creates a draft journal entry with an optional import reference.
+    /// Used by the CSV import pipeline to link drafts back to their source bank statement lines.
+    pub fn create_draft_with_import_ref(
+        &self,
+        entry: &NewJournalEntry,
+        import_ref: Option<&str>,
+    ) -> Result<JournalEntryId> {
+        self.create_draft_inner(entry, import_ref)
+    }
+
+    fn create_draft_inner(
+        &self,
+        entry: &NewJournalEntry,
+        import_ref: Option<&str>,
+    ) -> Result<JournalEntryId> {
         // Reject if the target fiscal period is closed — drafts in closed periods cannot
         // be posted, so we refuse at creation to avoid orphaned un-postable entries.
         let is_closed: i32 = self
@@ -169,8 +190,8 @@ impl<'conn> JournalRepo<'conn> {
             .execute(
                 "INSERT INTO journal_entries
                     (je_number, entry_date, memo, status, is_reversed,
-                     reversal_of_je_id, fiscal_period_id, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, 'Draft', 0, ?4, ?5, ?6, ?7)",
+                     reversal_of_je_id, fiscal_period_id, created_at, updated_at, import_ref)
+                 VALUES (?1, ?2, ?3, 'Draft', 0, ?4, ?5, ?6, ?7, ?8)",
                 params![
                     je_number,
                     date_str,
@@ -179,6 +200,7 @@ impl<'conn> JournalRepo<'conn> {
                     i64::from(entry.fiscal_period_id),
                     now,
                     now,
+                    import_ref,
                 ],
             )
             .context("Failed to insert journal entry")?;
@@ -372,7 +394,7 @@ impl<'conn> JournalRepo<'conn> {
             .query_row(
                 "SELECT id, je_number, entry_date, memo, status, is_reversed,
                          reversed_by_je_id, reversal_of_je_id, inter_entity_uuid,
-                         source_entity_name, fiscal_period_id, created_at, updated_at
+                         source_entity_name, fiscal_period_id, created_at, updated_at, import_ref
                   FROM journal_entries WHERE id = ?1",
                 params![i64::from(id)],
                 row_to_entry,
@@ -431,7 +453,7 @@ impl<'conn> JournalRepo<'conn> {
         let sql = format!(
             "SELECT id, je_number, entry_date, memo, status, is_reversed,
                     reversed_by_je_id, reversal_of_je_id, inter_entity_uuid,
-                    source_entity_name, fiscal_period_id, created_at, updated_at
+                    source_entity_name, fiscal_period_id, created_at, updated_at, import_ref
              FROM journal_entries
              {where_clause}
              ORDER BY entry_date DESC, je_number DESC"
@@ -657,6 +679,7 @@ pub(crate) fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<JournalE
         fiscal_period_id: FiscalPeriodId::from(row.get::<_, i64>(10)?),
         created_at: row.get(11)?,
         updated_at: row.get(12)?,
+        import_ref: row.get(13)?,
     })
 }
 
