@@ -369,25 +369,25 @@ impl App {
         let _ = terminal.draw(|frame| self.render_frame(frame));
 
         // ── Issue the blocking API call ───────────────────────────────────────
-        // Extract client ref AFTER render to avoid borrow conflicts.
+        // Take the client out of self so we can borrow other fields (status_bar,
+        // entity.db) simultaneously inside the on_stage_change callback.
         let tools = tool_definitions();
+        let client = self.ai_client.take().expect("just initialized");
         let result = {
-            let client = self.ai_client.as_ref().expect("just initialized");
-            client.send_with_tools(
-                &system_prompt,
-                &messages,
-                &tools,
-                &self.entity.db,
-                5,
-                &mut |state| {
-                    // The callback is called between tool rounds.
-                    // We update the status bar AI status but cannot do a full render here
-                    // because `self.ai_client` is still borrowed via `client`.
-                    let _ = state; // state tracked by send_with_tools internally
-                },
-            )
+            // Split-borrow: status_bar (mutable) and entity.db (immutable) are
+            // disjoint fields — Rust permits this even with client owned outside self.
+            let status_bar = &mut self.status_bar;
+            let db = &self.entity.db;
+            client.send_with_tools(&system_prompt, &messages, &tools, db, 5, &mut |state| {
+                let msg = match state {
+                    AiRequestState::FulfillingTools => "Checking the books \u{1F56E}",
+                    _ => "Calling Accountant \u{260F}",
+                };
+                status_bar.set_ai_status(Some(msg.to_string()));
+            })
         };
-        // `client` borrow ends here.
+        // Return client to self now that the borrows above have ended.
+        self.ai_client = Some(client);
 
         // ── Handle result ─────────────────────────────────────────────────────
         self.ai_state = AiRequestState::Idle;
