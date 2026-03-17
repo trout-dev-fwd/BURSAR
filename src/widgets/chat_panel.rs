@@ -245,53 +245,18 @@ impl ChatPanel {
             all_lines.push(Line::default());
         }
 
-        // Apply scroll offset. When scroll_to_bottom is set, pin to the end
-        // accounting for line wrapping at the panel width.
-        let total_lines = all_lines.len();
-        if self.scroll_to_bottom {
-            let panel_width = msg_area.width as usize;
-            let wrapped_height: usize = all_lines
-                .iter()
-                .map(|line| {
-                    let w: usize = line.spans.iter().map(|s| s.content.len()).sum();
-                    if panel_width == 0 {
-                        1
-                    } else {
-                        w.max(1).div_ceil(panel_width)
-                    }
-                })
-                .sum();
-            if wrapped_height > msg_height {
-                // Walk backwards through lines to find how many pre-wrap lines
-                // fit in the visible area.
-                let mut remaining = msg_height;
-                let mut skip_count = total_lines;
-                for line in all_lines.iter().rev() {
-                    let w: usize = line.spans.iter().map(|s| s.content.len()).sum();
-                    let h = if panel_width == 0 {
-                        1
-                    } else {
-                        w.max(1).div_ceil(panel_width)
-                    };
-                    if h > remaining {
-                        break;
-                    }
-                    remaining -= h;
-                    skip_count -= 1;
-                }
-                self.scroll_offset = skip_count;
-            } else {
-                self.scroll_offset = 0;
-            }
-        }
-        let skip = self
-            .scroll_offset
-            .min(total_lines.saturating_sub(msg_height));
-        let visible: Vec<Line<'static>> = all_lines.into_iter().skip(skip).collect();
-
-        let msg_para = Paragraph::new(visible)
+        // Build paragraph and use Ratatui's own word-wrap engine for accurate
+        // line counting, then scroll by visual (wrapped) lines.
+        let msg_para = Paragraph::new(all_lines)
             .wrap(Wrap { trim: false })
             .alignment(Alignment::Left);
+        let total_wrapped = msg_para.line_count(msg_area.width);
+        let max_scroll = total_wrapped.saturating_sub(msg_height);
+        if self.scroll_to_bottom {
+            self.scroll_offset = max_scroll;
+        }
+        self.scroll_offset = self.scroll_offset.min(max_scroll);
+        let msg_para = msg_para.scroll((self.scroll_offset as u16, 0));
         frame.render_widget(msg_para, msg_area);
 
         // Input line with horizontal scrolling.
