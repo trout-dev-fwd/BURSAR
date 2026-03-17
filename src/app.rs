@@ -696,7 +696,7 @@ fn render_help_overlay(
     // Calculate popup size: width = 60, height = rows + borders + section headers.
     let row_count = global_hotkeys.len() + tab_hotkeys.len() + 3; // +3: two headers + blank line
     let popup_height = (row_count + 2).min(area.height as usize) as u16;
-    let popup_width = 62u16.min(area.width);
+    let popup_width = 66u16.min(area.width);
 
     // Center the popup.
     let x = area.x + area.width.saturating_sub(popup_width) / 2;
@@ -714,7 +714,7 @@ fn render_help_overlay(
     )));
     for (key, desc) in global_hotkeys {
         lines.push(Line::from(vec![
-            Span::styled(format!("  {key:<12}"), Style::default().fg(Color::Cyan)),
+            Span::styled(format!("  {key:<16}"), Style::default().fg(Color::Cyan)),
             Span::raw(*desc),
         ]));
     }
@@ -735,7 +735,7 @@ fn render_help_overlay(
     } else {
         for (key, desc) in &tab_hotkeys {
             lines.push(Line::from(vec![
-                Span::styled(format!("  {key:<12}"), Style::default().fg(Color::Cyan)),
+                Span::styled(format!("  {key:<16}"), Style::default().fg(Color::Cyan)),
                 Span::raw(*desc),
             ]));
         }
