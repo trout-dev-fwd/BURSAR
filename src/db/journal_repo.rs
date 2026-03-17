@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
 use rusqlite::{Connection, params};
@@ -651,6 +653,45 @@ impl<'conn> JournalRepo<'conn> {
                 )
             })?;
         Ok(())
+    }
+
+    /// Returns all non-null import_ref values from journal entries created in the last `days` days.
+    /// Used for duplicate detection before importing new CSV rows.
+    pub fn get_recent_import_refs(&self, days: i64) -> Result<HashSet<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT import_ref FROM journal_entries
+             WHERE import_ref IS NOT NULL
+               AND created_at >= datetime('now', ?1)",
+        )?;
+        let modifier = format!("-{days} days");
+        let refs = stmt
+            .query_map(params![modifier], |row| row.get::<_, String>(0))?
+            .map(|r| r.map_err(anyhow::Error::from))
+            .collect::<Result<HashSet<String>>>()?;
+        Ok(refs)
+    }
+
+    /// Returns draft journal entries that have an import_ref but fewer than 2 lines
+    /// with a non-null account_id. These are candidates for re-matching.
+    pub fn get_incomplete_imports(&self) -> Result<Vec<JournalEntry>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, je_number, entry_date, memo, status, is_reversed,
+                    reversed_by_je_id, reversal_of_je_id, inter_entity_uuid,
+                    source_entity_name, fiscal_period_id, created_at, updated_at,
+                    import_ref
+             FROM journal_entries je
+             WHERE je.status = 'Draft'
+               AND je.import_ref IS NOT NULL
+               AND (
+                   SELECT COUNT(*) FROM journal_entry_lines jel
+                   WHERE jel.journal_entry_id = je.id
+                     AND jel.account_id IS NOT NULL
+               ) < 2
+             ORDER BY je.entry_date, je.id",
+        )?;
+        stmt.query_map([], row_to_entry)?
+            .map(|r| r.map_err(anyhow::Error::from))
+            .collect()
     }
 }
 
@@ -1737,5 +1778,179 @@ mod tests {
         assert!(result.is_err(), "create_draft should reject closed period");
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("closed"), "Error should mention closed: {msg}");
+    }
+
+    // ── get_recent_import_refs ─────────────────────────────────────────────────
+
+    fn make_entry_with_import_ref(
+        conn: &Connection,
+        period_id: FiscalPeriodId,
+        acct1: AccountId,
+        acct2: AccountId,
+        import_ref: Option<&str>,
+    ) -> JournalEntryId {
+        let repo = JournalRepo::new(conn);
+        let entry = NewJournalEntry {
+            entry_date: NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+            memo: None,
+            fiscal_period_id: period_id,
+            reversal_of_je_id: None,
+            lines: vec![
+                NewJournalEntryLine {
+                    account_id: acct1,
+                    debit_amount: Money(10_000_000_000),
+                    credit_amount: Money(0),
+                    line_memo: None,
+                    sort_order: 0,
+                },
+                NewJournalEntryLine {
+                    account_id: acct2,
+                    debit_amount: Money(0),
+                    credit_amount: Money(10_000_000_000),
+                    line_memo: None,
+                    sort_order: 1,
+                },
+            ],
+        };
+        repo.create_draft_with_import_ref(&entry, import_ref)
+            .expect("create_draft_with_import_ref")
+    }
+
+    #[test]
+    fn get_recent_import_refs_returns_refs_from_recent_entries() {
+        let (conn, period_id, acct1, acct2) = db_with_fiscal_year();
+
+        make_entry_with_import_ref(
+            &conn,
+            period_id,
+            acct1,
+            acct2,
+            Some("Bank|2026-01-15|DESC|-100.00"),
+        );
+
+        let refs = JournalRepo::new(&conn)
+            .get_recent_import_refs(90)
+            .expect("get_recent_import_refs");
+        assert!(refs.contains("Bank|2026-01-15|DESC|-100.00"));
+    }
+
+    #[test]
+    fn get_recent_import_refs_empty_when_no_imports() {
+        let (conn, _period_id, _acct1, _acct2) = db_with_fiscal_year();
+        let refs = JournalRepo::new(&conn)
+            .get_recent_import_refs(90)
+            .expect("get_recent_import_refs");
+        assert!(refs.is_empty());
+    }
+
+    #[test]
+    fn get_recent_import_refs_excludes_null_import_ref() {
+        let (conn, period_id, acct1, acct2) = db_with_fiscal_year();
+        // Entry with no import_ref
+        make_entry_with_import_ref(&conn, period_id, acct1, acct2, None);
+        let refs = JournalRepo::new(&conn)
+            .get_recent_import_refs(90)
+            .expect("get_recent_import_refs");
+        assert!(refs.is_empty());
+    }
+
+    // ── get_incomplete_imports ─────────────────────────────────────────────────
+
+    /// Inserts a single-line draft JE with an import_ref directly via SQL (bypasses the
+    /// balance check in create_draft). This simulates an incomplete import where only
+    /// one side has been matched.
+    fn insert_incomplete_import(
+        conn: &Connection,
+        period_id: FiscalPeriodId,
+        acct: AccountId,
+        import_ref: Option<&str>,
+    ) -> JournalEntryId {
+        conn.execute(
+            "INSERT INTO journal_entries
+                 (je_number, entry_date, memo, status, is_reversed,
+                  reversal_of_je_id, fiscal_period_id, created_at, updated_at, import_ref)
+             VALUES ('JE-INCOMPLETE', '2026-01-15', NULL, 'Draft', 0,
+                     NULL, ?1, '2026-01-15T00:00:00', '2026-01-15T00:00:00', ?2)",
+            params![i64::from(period_id), import_ref],
+        )
+        .expect("insert je");
+        let je_id = JournalEntryId::from(conn.last_insert_rowid());
+        conn.execute(
+            "INSERT INTO journal_entry_lines
+                 (journal_entry_id, account_id, debit_amount, credit_amount,
+                  line_memo, reconcile_state, sort_order, created_at)
+             VALUES (?1, ?2, 10000000000, 0, NULL, 'None', 0, '2026-01-15T00:00:00')",
+            params![i64::from(je_id), i64::from(acct)],
+        )
+        .expect("insert line");
+        je_id
+    }
+
+    #[test]
+    fn get_incomplete_imports_returns_drafts_with_one_line() {
+        let (conn, period_id, acct1, _acct2) = db_with_fiscal_year();
+        let je_id = insert_incomplete_import(
+            &conn,
+            period_id,
+            acct1,
+            Some("Bank|2026-01-15|DESC|-100.00"),
+        );
+
+        let incomplete = JournalRepo::new(&conn)
+            .get_incomplete_imports()
+            .expect("get_incomplete_imports");
+        assert_eq!(incomplete.len(), 1);
+        assert_eq!(incomplete[0].id, je_id);
+    }
+
+    #[test]
+    fn get_incomplete_imports_excludes_entries_without_import_ref() {
+        let (conn, period_id, acct1, _acct2) = db_with_fiscal_year();
+        insert_incomplete_import(&conn, period_id, acct1, None);
+
+        let incomplete = JournalRepo::new(&conn)
+            .get_incomplete_imports()
+            .expect("get_incomplete_imports");
+        assert!(incomplete.is_empty());
+    }
+
+    #[test]
+    fn get_incomplete_imports_excludes_complete_drafts() {
+        let (conn, period_id, acct1, acct2) = db_with_fiscal_year();
+        // Both lines have accounts — not incomplete
+        make_entry_with_import_ref(
+            &conn,
+            period_id,
+            acct1,
+            acct2,
+            Some("Bank|2026-01-15|DESC|-100.00"),
+        );
+
+        let incomplete = JournalRepo::new(&conn)
+            .get_incomplete_imports()
+            .expect("get_incomplete_imports");
+        assert!(incomplete.is_empty());
+    }
+
+    #[test]
+    fn get_incomplete_imports_excludes_posted_entries() {
+        let (conn, period_id, acct1, _acct2) = db_with_fiscal_year();
+        let je_id = insert_incomplete_import(
+            &conn,
+            period_id,
+            acct1,
+            Some("Bank|2026-01-15|DESC|-100.00"),
+        );
+
+        conn.execute(
+            "UPDATE journal_entries SET status = 'Posted' WHERE id = ?1",
+            params![i64::from(je_id)],
+        )
+        .expect("post entry");
+
+        let incomplete = JournalRepo::new(&conn)
+            .get_incomplete_imports()
+            .expect("get_incomplete_imports");
+        assert!(incomplete.is_empty());
     }
 }
