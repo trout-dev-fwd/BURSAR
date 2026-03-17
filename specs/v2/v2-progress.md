@@ -3,8 +3,8 @@
 ## Current State
 
 - **Active Phase:** Phase 3 — CSV Import Pipeline
-- **Last Completed Task:** Phase 3, Task 12 — Batch Re-Match (Shift+U) and /match Completion
-- **Next Task:** Phase 3, Task 13 — Help Overlay + Final Polish
+- **Last Completed Task:** Phase 3, Task 13 — Help Overlay + Final Polish
+- **Next Task:** Phase 3 Developer Review Gate (manual testing)
 - **Blockers:** None
 - **Prerequisites:** V1 complete (372 tests passing), draft editing feature merged
 
@@ -48,7 +48,7 @@
 
 ---
 
-## Phase 3 — CSV Import Pipeline (12/13)
+## Phase 3 — CSV Import Pipeline (13/13) ✅
 
 - [x] Task 1: Import Flow State and TabAction Extension
 - [x] Task 2: Import Wizard — File Path Input Modal
@@ -62,9 +62,9 @@
 - [x] Task 10: Review Screen
 - [x] Task 11: Draft Creation
 - [x] Task 12: Batch Re-Match (Shift+U) and /match Completion
-- [ ] Task 13: Help Overlay + Final Polish
+- [x] Task 13: Help Overlay + Final Polish
 
-**Phase 3 Review:** ⬜ Pending
+**Phase 3 Review:** ⏳ Awaiting manual testing
 
 ---
 
@@ -101,4 +101,4 @@ _Track bugs, edge cases, or technical debt discovered during implementation._
 | V1 | 372 | 372 |
 | V2 Phase 1 | 115 | 487 |
 | V2 Phase 2 (Tasks 1–12) | 95 | 582 |
-| V2 Phase 3 | — | — |
+| V2 Phase 3 | 0 | 582 |

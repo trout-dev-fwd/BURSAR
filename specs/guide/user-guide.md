@@ -218,6 +218,28 @@ If you manage two entities (e.g., two LLCs), you can post a transaction that aff
 - Entity A: Debit Rent Expense $1,000, Credit Checking $1,000
 - Entity B: Debit Checking $1,000, Credit Service Revenue $1,000
 
+### Importing from Bank Statements
+Press `u` to import a bank statement CSV file and automatically categorize transactions.
+
+**The import wizard walks you through:**
+1. **File path** — enter the path to your CSV file
+2. **Bank selection** — pick a known bank or set up a new one (the app detects column layout)
+3. **Account linking** — confirm which Chart of Accounts entry is your bank account
+4. **Duplicate check** — transactions already imported are skipped automatically
+5. **Matching** — three passes categorize transactions:
+   - Pass 1: exact matches from previously learned patterns (instant)
+   - Pass 2: AI categorization for remaining transactions (requires API key)
+   - Pass 3: conversational clarification for low-confidence items (chat panel)
+6. **Review** — inspect all matches; press `r` to reject any item you don't want
+7. **Confirm** — press `Enter` or `c` to create Draft journal entries for all approved items
+
+**After importing**, review the Draft entries on the Journal Entries tab, make any corrections
+via `e` (edit), then post them with `p`.
+
+**Re-matching incomplete imports:** Press `Shift+U` to re-run AI matching on Draft entries
+that have only one journal line (the bank line was created but the contra account was not
+matched). This is useful when Pass 2 was skipped (e.g., no API key) or failed.
+
 ---
 
 ## Tab 4: Accounts Receivable (AR)
