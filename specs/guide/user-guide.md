@@ -231,7 +231,7 @@ Press `u` to import a bank statement CSV file and automatically categorize trans
    - Pass 2: AI categorization for remaining transactions (requires API key)
    - Pass 3: conversational clarification for low-confidence items (chat panel)
 6. **Review** — inspect all matches; press `r` to reject any item you don't want
-7. **Confirm** — press `Enter` or `c` to create Draft journal entries for all approved items
+7. **Confirm** — press `Enter` to create Draft journal entries for all approved items
 
 **After importing**, review the Draft entries on the Journal Entries tab, make any corrections
 via `e` (edit), then post them with `p`.

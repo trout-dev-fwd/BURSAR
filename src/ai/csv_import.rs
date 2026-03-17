@@ -114,7 +114,10 @@ pub fn run_pass1(
     let repo = db.import_mappings();
     // Load all accounts for display names.
     let accounts: Vec<crate::db::account_repo::Account> =
-        db.accounts().list_all().unwrap_or_default();
+        db.accounts().list_all().unwrap_or_else(|e| {
+            tracing::warn!("Failed to load accounts: {e}");
+            Vec::new()
+        });
 
     transactions
         .iter()

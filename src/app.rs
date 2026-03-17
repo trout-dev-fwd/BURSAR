@@ -344,7 +344,22 @@ impl App {
             guide.render(frame, tab_area);
         }
         if let Some(ref flow) = self.import_flow {
-            render_import_modal(frame, tab_area, flow);
+            // Look up bank account type for review screen preview.
+            let bank_account_type = flow
+                .bank_config
+                .as_ref()
+                .and_then(|cfg| {
+                    self.entity
+                        .db
+                        .accounts()
+                        .list_all()
+                        .ok()?
+                        .into_iter()
+                        .find(|a| a.number == cfg.linked_account)
+                        .map(|a| a.account_type)
+                })
+                .unwrap_or(crate::types::AccountType::Asset);
+            render_import_modal(frame, tab_area, flow, bank_account_type);
         }
         if let Some(area) = panel_area {
             let is_focused = matches!(self.focus, FocusTarget::ChatPanel);
@@ -420,7 +435,13 @@ impl App {
 
         // ── Tool use loop (up to 5 follow-up rounds) ─────────────────────────
         let tools = tool_definitions();
-        let client = self.ai_client.take().expect("just initialized");
+        let Some(client) = self.ai_client.take() else {
+            self.ai_state = AiRequestState::Idle;
+            self.status_bar.set_ai_status(None);
+            self.status_bar
+                .set_error("AI client not available.".to_string());
+            return;
+        };
         let max_depth: usize = 5;
         let mut msgs = messages;
         let mut accumulated_text: Option<String> = None;
@@ -643,7 +664,14 @@ impl App {
         }];
 
         let result = {
-            let client = self.ai_client.as_ref().expect("just initialized");
+            let Some(client) = self.ai_client.as_ref() else {
+                self.status_bar
+                    .set_error("AI client not available.".to_string());
+                if let Some(ref mut f) = self.import_flow {
+                    f.step = ImportFlowStep::Failed("AI client not available".to_string());
+                }
+                return;
+            };
             client.send_simple(system, &messages)
         };
 
@@ -756,7 +784,7 @@ impl App {
         terminal: &mut Terminal<B>,
     ) -> Option<String> {
         let tools = tool_definitions();
-        let client = self.ai_client.take().expect("ai_client initialized");
+        let client = self.ai_client.take()?;
         let max_depth: usize = 5;
         let mut msgs = messages;
         let mut accumulated_text: Option<String> = None;
@@ -819,7 +847,10 @@ impl App {
                 .as_ref()
                 .map(|c| c.name.clone())
                 .unwrap_or_default();
-            let accounts = self.entity.db.accounts().list_all().unwrap_or_default();
+            let accounts = self.entity.db.accounts().list_all().unwrap_or_else(|e| {
+                tracing::warn!("Failed to load accounts: {e}");
+                Vec::new()
+            });
             let unmatched_indices: Vec<usize> = flow
                 .matches
                 .iter()
@@ -1017,7 +1048,10 @@ impl App {
 
         // Force render so user sees "Creating" state.
         let _ = terminal.draw(|frame| self.render_frame(frame));
-        let all_accounts = self.entity.db.accounts().list_all().unwrap_or_default();
+        let all_accounts = self.entity.db.accounts().list_all().unwrap_or_else(|e| {
+            tracing::warn!("Failed to load accounts: {e}");
+            Vec::new()
+        });
         let bank_account = all_accounts
             .iter()
             .find(|a| a.number == bank_account_number)
@@ -1306,7 +1340,12 @@ impl App {
                     .set_ai_status(Some("Calling Accountant ☏".to_string()));
                 let _ = terminal.draw(|frame| self.render_frame(frame));
                 let result = {
-                    let client = self.ai_client.as_ref().expect("just initialized");
+                    let Some(client) = self.ai_client.as_ref() else {
+                        self.status_bar.set_ai_status(None);
+                        self.status_bar
+                            .set_error("AI client not available.".to_string());
+                        return;
+                    };
                     client.send_simple(system, &compaction_messages)
                 };
                 self.status_bar.set_ai_status(None);
@@ -1952,29 +1991,60 @@ impl App {
                 } else {
                     use crate::ai::csv_import::parse_import_ref;
                     use crate::types::MatchSource;
-                    let matches: Vec<crate::ai::ImportMatch> = incomplete
-                        .into_iter()
-                        .filter_map(|je| {
-                            let import_ref = je.import_ref?;
-                            let txn = parse_import_ref(&import_ref)?;
-                            Some(crate::ai::ImportMatch {
-                                transaction: txn,
-                                matched_account_id: None,
-                                matched_account_display: None,
-                                match_source: MatchSource::Unmatched,
-                                confidence: None,
-                                reasoning: None,
-                                rejected: false,
-                                existing_je_id: Some(je.id),
+
+                    // Look up bank config from entity toml using the bank name in
+                    // the first import_ref. All incomplete drafts from one import
+                    // share the same bank, so we only need to match once.
+                    let (toml_path, workspace_dir) = self.entity_toml_path();
+                    let entity_cfg = crate::config::load_entity_toml(&toml_path, &workspace_dir)
+                        .unwrap_or_default();
+
+                    // Extract bank name from first import_ref to find the config.
+                    let first_bank_name = incomplete
+                        .iter()
+                        .filter_map(|je| je.import_ref.as_deref())
+                        .find_map(|r| r.split('|').next().map(|s| s.to_string()));
+
+                    let bank_config = first_bank_name.as_deref().and_then(|name| {
+                        entity_cfg
+                            .bank_accounts
+                            .iter()
+                            .find(|b| b.name == name)
+                            .cloned()
+                    });
+
+                    if bank_config.is_none() {
+                        let bank_display = first_bank_name.as_deref().unwrap_or("unknown");
+                        self.status_bar.set_error(format!(
+                            "Bank config for '{}' not found in entity toml. Cannot re-match.",
+                            bank_display
+                        ));
+                    } else {
+                        let matches: Vec<crate::ai::ImportMatch> = incomplete
+                            .into_iter()
+                            .filter_map(|je| {
+                                let import_ref = je.import_ref?;
+                                let txn = parse_import_ref(&import_ref)?;
+                                Some(crate::ai::ImportMatch {
+                                    transaction: txn,
+                                    matched_account_id: None,
+                                    matched_account_display: None,
+                                    match_source: MatchSource::Unmatched,
+                                    confidence: None,
+                                    reasoning: None,
+                                    rejected: false,
+                                    existing_je_id: Some(je.id),
+                                })
                             })
-                        })
-                        .collect();
-                    let mut flow = ImportFlowState::new();
-                    flow.matches = matches;
-                    flow.is_rematch = true;
-                    flow.step = ImportFlowStep::Pass2AiMatching;
-                    self.import_flow = Some(flow);
-                    self.pending_pass2 = true;
+                            .collect();
+                        let mut flow = ImportFlowState::new();
+                        flow.matches = matches;
+                        flow.is_rematch = true;
+                        flow.bank_config = bank_config;
+                        flow.step = ImportFlowStep::Pass2AiMatching;
+                        self.import_flow = Some(flow);
+                        self.pending_pass2 = true;
+                    }
                 }
             }
             TabAction::StartInterEntityMode => {
@@ -2189,7 +2259,7 @@ impl App {
                 }
             }
             ImportFlowStep::DuplicateWarning => match key.code {
-                KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => return,
+                KeyCode::Esc => return,
                 KeyCode::Char('y') | KeyCode::Char('Y') => {
                     // Skip duplicates: keep only unique transactions.
                     let existing_refs: std::collections::HashSet<String> = flow
@@ -2202,9 +2272,9 @@ impl App {
                     flow.step = ImportFlowStep::Pass1Matching;
                     self.pending_pass1 = true;
                 }
-                KeyCode::Enter => {
-                    // Include all (duplicates included) — same as N.
-                    // Already all transactions in flow.transactions.
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Enter => {
+                    // Include all (duplicates included).
+                    // All transactions are already in flow.transactions.
                     flow.step = ImportFlowStep::Pass1Matching;
                     self.pending_pass1 = true;
                 }
@@ -2314,9 +2384,17 @@ impl App {
                                 );
                             }
                         } else {
-                            // Try to match by account number.
-                            let accounts = self.entity.db.accounts().list_all().unwrap_or_default();
-                            let found = accounts.iter().find(|a| a.number == user_text.trim());
+                            // Try to match by account number or name.
+                            let accounts =
+                                self.entity.db.accounts().list_all().unwrap_or_else(|e| {
+                                    tracing::warn!("Failed to load accounts: {e}");
+                                    Vec::new()
+                                });
+                            let trimmed = user_text.trim();
+                            let trimmed_lower = trimmed.to_lowercase();
+                            let found = accounts.iter().find(|a| {
+                                a.number == trimmed || a.name.to_lowercase() == trimmed_lower
+                            });
                             if let Some(acct) = found {
                                 flow.matches[idx].matched_account_id = Some(acct.id);
                                 flow.matches[idx].matched_account_display =
@@ -2540,6 +2618,7 @@ fn render_review_screen(
     frame: &mut ratatui::Frame,
     area: Rect,
     flow: &crate::ai::csv_import::ImportFlowState,
+    bank_account_type: crate::types::AccountType,
 ) {
     use crate::ai::csv_import::determine_debit_credit;
     use crate::types::MatchSource;
@@ -2691,9 +2770,8 @@ fn render_review_screen(
             .as_deref()
             .unwrap_or("(unmatched)");
 
-        // Determine debit/credit using account type (default Asset if unknown).
-        let acct_type = crate::types::AccountType::Asset;
-        let (debit, credit, _) = determine_debit_credit(txn.amount, acct_type);
+        // Determine debit/credit using the actual bank account type.
+        let (debit, credit, _) = determine_debit_credit(txn.amount, bank_account_type);
         let memo = format!(
             "Import: {}",
             txn.description.chars().take(200).collect::<String>()
@@ -2763,6 +2841,7 @@ fn render_import_modal(
     frame: &mut ratatui::Frame,
     area: Rect,
     flow: &crate::ai::csv_import::ImportFlowState,
+    bank_account_type: crate::types::AccountType,
 ) {
     match &flow.step {
         ImportFlowStep::FilePathInput => render_file_path_modal(frame, area, flow),
@@ -2792,7 +2871,7 @@ fn render_import_modal(
             render_new_bank_detection_modal(frame, area, &msg);
         }
         ImportFlowStep::ReviewScreen | ImportFlowStep::Creating => {
-            render_review_screen(frame, area, flow)
+            render_review_screen(frame, area, flow, bank_account_type)
         }
         ImportFlowStep::Failed(msg) => render_new_bank_detection_modal(frame, area, msg),
         // Future steps render their own modals (implemented in later tasks).
@@ -3102,7 +3181,7 @@ fn render_duplicate_warning_modal(
         )),
         Line::from(Span::raw("")),
         Line::from(Span::styled(
-            "  Y: skip duplicates   N/Esc: cancel   Enter: include all",
+            "  Y: skip duplicates   N/Enter: include all   Esc: cancel",
             Style::default().fg(Color::DarkGray),
         )),
     ];
