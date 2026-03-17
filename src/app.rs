@@ -132,6 +132,8 @@ pub struct App {
     pending_bank_detection: bool,
     /// Set when Pass1Matching step begins; consumed by event_loop to run local matching.
     pending_pass1: bool,
+    /// Set when Pass2AiMatching step begins; consumed by event_loop to run AI matching.
+    pending_pass2: bool,
 }
 
 impl App {
@@ -162,6 +164,7 @@ impl App {
             import_flow: None,
             pending_bank_detection: false,
             pending_pass1: false,
+            pending_pass2: false,
         }
     }
 
@@ -221,6 +224,12 @@ impl App {
             if self.pending_pass1 {
                 self.pending_pass1 = false;
                 self.run_pass1_step(terminal);
+            }
+
+            // 2f. If Pass 2 AI matching is pending, run it now.
+            if self.pending_pass2 {
+                self.pending_pass2 = false;
+                self.run_pass2_step(terminal);
             }
 
             // 3. Tick: advance typewriter, update status bar timeout + unsaved indicator.
@@ -720,7 +729,231 @@ impl App {
 
         if let Some(ref mut f) = self.import_flow {
             f.matches = matches;
-            f.step = next_step;
+            f.step = next_step.clone();
+        }
+        if next_step == ImportFlowStep::Pass2AiMatching {
+            self.pending_pass2 = true;
+        }
+    }
+
+    /// Runs a single AI request through the tool-use loop (no chat panel routing).
+    ///
+    /// Returns the final text response, or `None` on error/max-depth.
+    /// Used for batch AI matching in Pass 2.
+    fn run_ai_batch_request<B: ratatui::backend::Backend>(
+        &mut self,
+        system: &str,
+        messages: Vec<ApiMessage>,
+        terminal: &mut Terminal<B>,
+    ) -> Option<String> {
+        let tools = tool_definitions();
+        let client = self.ai_client.take().expect("ai_client initialized");
+        let max_depth: usize = 5;
+        let mut msgs = messages;
+        let mut accumulated_text: Option<String> = None;
+        let mut result_text: Option<String> = None;
+
+        for _round in 0..=max_depth {
+            match client.send_single_round(system, &msgs, &tools, accumulated_text.take()) {
+                Ok(RoundResult::Done(AiResponse::Text { content, .. })) => {
+                    result_text = Some(content);
+                    break;
+                }
+                Ok(RoundResult::NeedsToolCall {
+                    tool_calls,
+                    messages: updated_msgs,
+                    accumulated_text: acc,
+                }) => {
+                    let tool_results: Vec<ToolResult> = tool_calls
+                        .iter()
+                        .map(|tc| {
+                            let content = fulfill_tool_call(tc, &self.entity.db)
+                                .unwrap_or_else(|e| format!("Error: {e}"));
+                            ToolResult {
+                                tool_use_id: tc.id.clone(),
+                                content,
+                            }
+                        })
+                        .collect();
+                    msgs = updated_msgs;
+                    msgs.push(ApiMessage {
+                        role: ApiRole::User,
+                        content: ApiContent::ToolResult(tool_results),
+                    });
+                    accumulated_text = acc;
+                    let _ = terminal.draw(|frame| self.render_frame(frame));
+                }
+                Ok(RoundResult::Done(_)) | Err(_) => break,
+            }
+        }
+        self.ai_client = Some(client);
+        result_text
+    }
+
+    /// Runs Pass 2 AI matching: batches unmatched transactions through Claude with tool use.
+    ///
+    /// Called from the event loop after `pending_pass2` is set.
+    /// Advances to `Pass3Clarification` if any Low-confidence matches, else `ReviewScreen`.
+    fn run_pass2_step<B: ratatui::backend::Backend>(&mut self, terminal: &mut Terminal<B>) {
+        use crate::types::{MatchConfidence, MatchSource};
+
+        // Extract needed data before rendering (avoids holding borrow across draw).
+        let (bank_name, accounts, unmatched_indices) = {
+            let Some(ref flow) = self.import_flow else {
+                return;
+            };
+            if flow.step != ImportFlowStep::Pass2AiMatching {
+                return;
+            }
+            let bank_name = flow
+                .bank_config
+                .as_ref()
+                .map(|c| c.name.clone())
+                .unwrap_or_default();
+            let accounts = self.entity.db.accounts().list_all().unwrap_or_default();
+            let unmatched_indices: Vec<usize> = flow
+                .matches
+                .iter()
+                .enumerate()
+                .filter(|(_, m)| m.matched_account_id.is_none() && !m.rejected)
+                .map(|(i, _)| i)
+                .collect();
+            (bank_name, accounts, unmatched_indices)
+        };
+
+        // Auto-open chat panel if not already visible.
+        if !self.chat_panel.is_visible() {
+            self.chat_panel.toggle_visible();
+        }
+        // Keep focus on import, not chat panel.
+        self.focus = FocusTarget::MainTab;
+
+        // Ensure AI client is initialized.
+        if let Err(msg) = self.ensure_ai_client() {
+            if let Some(ref mut f) = self.import_flow {
+                f.step = ImportFlowStep::ReviewScreen;
+            }
+            self.chat_panel
+                .add_system_note(&format!("AI matching skipped: {msg}"));
+            return;
+        }
+
+        let total = unmatched_indices.len();
+        if total == 0 {
+            if let Some(ref mut f) = self.import_flow {
+                f.step = ImportFlowStep::ReviewScreen;
+            }
+            return;
+        }
+
+        self.chat_panel
+            .add_system_note(&format!("Matching {total} transactions with AI..."));
+
+        let batches: Vec<Vec<usize>> = unmatched_indices.chunks(25).map(|c| c.to_vec()).collect();
+        let mut completed = 0usize;
+
+        let system = "You are an expert accountant helping categorize bank transactions. \
+            Use the available tools to look up accounts and check GL history. \
+            Respond ONLY with a JSON array (no other text), one object per transaction, \
+            in the same order as provided. Each object must have: \
+            \"account_number\" (string, or null if unknown), \
+            \"confidence\" (\"high\", \"medium\", or \"low\"), \
+            \"reasoning\" (one sentence max).";
+
+        for batch in &batches {
+            // Build transaction list for this batch.
+            let transactions_text = {
+                let Some(ref flow) = self.import_flow else {
+                    break;
+                };
+                batch
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &idx)| {
+                        let txn = &flow.matches[idx].transaction;
+                        format!(
+                            "{}. {} | {} | {}",
+                            i + 1,
+                            txn.date,
+                            txn.description,
+                            txn.amount
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+
+            let prompt = format!(
+                "Match these bank transactions from \"{bank_name}\" to accounts in the \
+                 chart of accounts.\n\nTransactions:\n{transactions_text}\n\n\
+                 Use tools to look up accounts. Respond ONLY with a JSON array."
+            );
+            let messages = vec![ApiMessage {
+                role: ApiRole::User,
+                content: ApiContent::Text(prompt),
+            }];
+
+            // Force render before the blocking call.
+            let _ = terminal.draw(|frame| self.render_frame(frame));
+
+            let result = self.run_ai_batch_request(system, messages, terminal);
+
+            completed += batch.len();
+            self.chat_panel
+                .add_system_note(&format!("Matching transactions... {completed}/{total}"));
+
+            // Parse JSON response and update matches.
+            if let Some(raw) = result {
+                let json_str = extract_json_block(&raw);
+                if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(&json_str) {
+                    let Some(ref mut flow) = self.import_flow else {
+                        break;
+                    };
+                    for (i, &idx) in batch.iter().enumerate() {
+                        let Some(obj) = arr.get(i) else { continue };
+                        let confidence_str = obj["confidence"].as_str().unwrap_or("low");
+                        let confidence = match confidence_str {
+                            "high" => MatchConfidence::High,
+                            "medium" => MatchConfidence::Medium,
+                            _ => MatchConfidence::Low,
+                        };
+                        let reasoning = obj["reasoning"].as_str().map(|s| s.to_string());
+                        let acct_num = obj["account_number"].as_str();
+                        let matched = acct_num.and_then(|num| {
+                            accounts
+                                .iter()
+                                .find(|a| a.number == num)
+                                .map(|a| (a.id, format!("{} - {}", a.number, a.name)))
+                        });
+                        if let Some((account_id, display)) = matched {
+                            flow.matches[idx].matched_account_id = Some(account_id);
+                            flow.matches[idx].matched_account_display = Some(display);
+                            flow.matches[idx].match_source = MatchSource::Ai;
+                            flow.matches[idx].confidence = Some(confidence);
+                            flow.matches[idx].reasoning = reasoning;
+                        }
+                    }
+                } else {
+                    tracing::warn!("Pass2: failed to parse AI batch response as JSON array");
+                }
+            }
+        }
+
+        // Determine next step.
+        let has_low = {
+            let Some(ref flow) = self.import_flow else {
+                return;
+            };
+            flow.matches.iter().any(|m| {
+                matches!(m.confidence, Some(MatchConfidence::Low)) && m.matched_account_id.is_some()
+            })
+        };
+        if let Some(ref mut f) = self.import_flow {
+            f.step = if has_low {
+                ImportFlowStep::Pass3Clarification
+            } else {
+                ImportFlowStep::ReviewScreen
+            };
         }
     }
 
@@ -1623,6 +1856,13 @@ impl App {
                     return;
                 }
             }
+            // Pass2AiMatching: AI matching in progress; Esc cancels.
+            ImportFlowStep::Pass2AiMatching => {
+                if key.code == KeyCode::Esc {
+                    self.pending_pass2 = false;
+                    return;
+                }
+            }
             // Placeholder dispatch for subsequent steps (implemented in later tasks).
             _ => {
                 if key.code == KeyCode::Esc {
@@ -1694,6 +1934,16 @@ fn render_import_modal(
         ImportFlowStep::Pass1Matching => {
             let total = flow.transactions.len();
             let msg = format!("Importing \u{263A} {total}/{total}");
+            render_new_bank_detection_modal(frame, area, &msg);
+        }
+        ImportFlowStep::Pass2AiMatching => {
+            let matched = flow
+                .matches
+                .iter()
+                .filter(|m| m.matched_account_id.is_some())
+                .count();
+            let total = flow.matches.len();
+            let msg = format!("Matching with AI \u{263A} {matched}/{total}");
             render_new_bank_detection_modal(frame, area, &msg);
         }
         ImportFlowStep::Failed(msg) => render_new_bank_detection_modal(frame, area, msg),
