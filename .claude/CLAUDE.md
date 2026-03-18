@@ -112,6 +112,11 @@ V2 Phase N, Task M: [short description]
 
 One commit per task. See `specs/v1/implementation-protocols.md` for full protocol.
 
+## File Size Limit
+
+No single .rs file should exceed 1,500 lines. If a file approaches this limit, split it
+into a directory module (mod.rs + submodules) before adding new features.
+
 ## Gotchas
 
 _(Discoveries from implementation — update as the project evolves)_
