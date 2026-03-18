@@ -47,6 +47,12 @@ impl EntityDb {
         initialize_schema(&conn)?;
         migrate_fixed_asset_details(&conn)?;
         migrate_journal_import_ref(&conn)?;
+        // Seed default accounts on a fresh database (no rows → first open).
+        let account_count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM accounts", [], |row| row.get(0))?;
+        if account_count == 0 {
+            seed_default_accounts(&conn)?;
+        }
         Ok(Self { conn })
     }
 
