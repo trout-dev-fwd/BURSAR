@@ -594,9 +594,24 @@ impl App {
         // Parse the full CSV.
         match parse_csv(&file_path, &bank_config) {
             Err(e) => {
+                tracing::warn!("CSV parse error: {e}");
                 flow.step = ImportFlowStep::Failed(format!("CSV parse error: {e}"));
             }
             Ok(transactions) => {
+                tracing::debug!(
+                    "CSV parsed: {} transactions from {:?}",
+                    transactions.len(),
+                    file_path.file_name().unwrap_or_default()
+                );
+                if transactions.is_empty() {
+                    tracing::warn!(
+                        "parse_csv returned 0 transactions — check date_column='{}', \
+                         date_format='{}', description_column='{}'",
+                        bank_config.date_column,
+                        bank_config.date_format,
+                        bank_config.description_column
+                    );
+                }
                 // Get recent import refs for duplicate detection.
                 let existing_refs = db.journals().get_recent_import_refs(90).unwrap_or_default();
                 let (unique, duplicates) = check_duplicates(&transactions, &existing_refs);
@@ -604,9 +619,18 @@ impl App {
                 if !duplicates.is_empty() {
                     // Store all transactions and show warning.
                     flow.transactions = transactions;
+                    tracing::debug!(
+                        "Duplicate check: {} total, {} duplicate(s) — going to DuplicateWarning",
+                        flow.transactions.len(),
+                        flow.duplicates.len()
+                    );
                     flow.step = ImportFlowStep::DuplicateWarning;
                 } else {
                     // No duplicates: skip directly to matching.
+                    tracing::debug!(
+                        "Duplicate check: {} unique transaction(s) — going to Pass1Matching",
+                        unique.len()
+                    );
                     flow.transactions = unique;
                     flow.step = ImportFlowStep::Pass1Matching;
                 }
@@ -759,10 +783,25 @@ impl App {
             (bank_name, flow.transactions.clone())
         };
 
+        tracing::debug!(
+            "Pass1: starting with {} transaction(s) for bank '{}'",
+            transactions.len(),
+            bank_name
+        );
+
         // Force render so user sees progress indicator before matching begins.
         let _ = terminal.draw(|frame| self.render_frame(frame));
 
         let matches = crate::ai::csv_import::run_pass1(&transactions, &bank_name, &self.entity.db);
+
+        tracing::debug!(
+            "Pass1: produced {} match(es) ({} unmatched)",
+            matches.len(),
+            matches
+                .iter()
+                .filter(|m| m.matched_account_id.is_none() && !m.rejected)
+                .count()
+        );
 
         let has_unmatched = matches
             .iter()
@@ -776,12 +815,19 @@ impl App {
         };
 
         if let Some(ref mut f) = self.import_flow {
+            tracing::debug!(
+                "Pass1: storing {} match(es), advancing to {:?}",
+                matches.len(),
+                next_step
+            );
             f.matches = matches;
             f.step = next_step.clone();
             if next_step == ImportFlowStep::ReviewScreen {
                 f.selected_index = 0;
                 f.scroll_offset = 0;
             }
+        } else {
+            tracing::warn!("Pass1: import_flow was None when trying to store matches — data lost!");
         }
         if next_step == ImportFlowStep::Pass2AiMatching {
             self.pending_pass2 = true;
@@ -2787,6 +2833,10 @@ fn render_review_screen(
         widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
     };
 
+    // Clear the full area first so nothing from the underlying tab bleeds through
+    // (e.g., an account picker or form that was active in the JE tab).
+    frame.render_widget(Clear, area);
+
     let bank_name = flow
         .bank_config
         .as_ref()
@@ -3404,11 +3454,17 @@ fn render_duplicate_warning_modal(
 }
 
 /// Renders the account picker for the new bank account link step.
+/// Only renders when picker_accounts is non-empty (i.e., the picker was actively opened).
 fn render_account_picker_modal(
     frame: &mut ratatui::Frame,
     area: Rect,
     flow: &crate::ai::csv_import::ImportFlowState,
 ) {
+    // Guard: only render if picker state was explicitly populated for this step.
+    // This prevents stale picker state from leaking into other screens.
+    if flow.picker_accounts.is_empty() {
+        return;
+    }
     flow.account_picker
         .render(frame, area, &flow.picker_accounts);
 }
