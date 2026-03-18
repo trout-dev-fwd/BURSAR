@@ -171,9 +171,20 @@ impl StatusBar {
             };
             (text, style)
         };
+
+        // Truncate to fit the available width (minus 1 for trailing space).
+        let max_chars = chunks[2].width.saturating_sub(1) as usize;
+        let char_count = msg_text.chars().count();
+        let display_text = if char_count > max_chars && max_chars > 3 {
+            let truncated: String = msg_text.chars().take(max_chars - 1).collect();
+            format!("{truncated}…")
+        } else {
+            msg_text
+        };
+
         frame.render_widget(
             Paragraph::new(Line::from(vec![Span::styled(
-                format!("{msg_text} "),
+                format!("{display_text} "),
                 msg_style,
             )]))
             .style(bg_style)

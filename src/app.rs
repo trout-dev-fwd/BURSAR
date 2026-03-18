@@ -2122,10 +2122,8 @@ impl App {
                     .map(|(i, _)| i)
                     .collect();
                 if candidates.is_empty() {
-                    self.status_bar.set_error(
-                        "Inter-entity mode requires at least two entities in workspace config."
-                            .to_owned(),
-                    );
+                    self.status_bar
+                        .set_error("Need 2+ entities for inter-entity mode.".to_owned());
                 } else {
                     self.mode = AppMode::SecondaryEntityPicker {
                         selected: 0,

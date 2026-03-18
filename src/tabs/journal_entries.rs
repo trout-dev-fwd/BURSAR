@@ -326,9 +326,7 @@ impl JournalEntriesTab {
 
         // Only allow on Posted entries.
         if entry.status != JournalEntryStatus::Posted {
-            return TabAction::ShowMessage(
-                "Reconcile state can only be changed on Posted entries.".to_string(),
-            );
+            return TabAction::ShowMessage("Reconcile requires a Posted entry.".to_string());
         }
 
         // Block changes to Reconciled lines.
@@ -339,9 +337,7 @@ impl JournalEntriesTab {
         // Block changes if fiscal period is closed.
         match db.fiscal().get_period_by_id(entry.fiscal_period_id) {
             Ok(period) if period.is_closed => {
-                return TabAction::ShowMessage(
-                    "Cannot modify entries in a closed fiscal period.".to_string(),
-                );
+                return TabAction::ShowMessage("Fiscal period is closed.".to_string());
             }
             Err(e) => {
                 return TabAction::ShowMessage(format!("Failed to check fiscal period: {e}"));
@@ -757,16 +753,14 @@ impl JournalEntriesTab {
                 let today = chrono::Local::now().date_naive();
                 match db.recurring().generate_entries(today) {
                     Ok(ids) if ids.is_empty() => {
-                        return TabAction::ShowMessage(
-                            "No recurring entries are due today or earlier.".to_string(),
-                        );
+                        return TabAction::ShowMessage("No recurring entries due.".to_string());
                     }
                     Ok(ids) => {
                         let n = ids.len();
                         // Reload the sub-view so next_due_dates reflect the advances.
                         self.open_recurring_view(db);
                         return TabAction::ShowMessage(format!(
-                            "Generated {n} draft entr{}. Review in the main list.",
+                            "Generated {n} draft entr{}.",
                             if n == 1 { "y" } else { "ies" }
                         ));
                     }
