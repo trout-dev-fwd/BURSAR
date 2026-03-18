@@ -2147,39 +2147,81 @@ impl App {
 
         let step = flow.step.clone();
         match step {
-            ImportFlowStep::BankSelection => match key.code {
-                KeyCode::Esc => return,
-                KeyCode::Up => {
-                    flow.selected_index = flow.selected_index.saturating_sub(1);
-                }
-                KeyCode::Down => {
-                    // +1 for the "New Bank Account" option at the bottom.
-                    let max = flow.available_banks.len(); // index of "New" option
-                    if flow.selected_index < max {
-                        flow.selected_index += 1;
-                    }
-                }
-                KeyCode::Enter => {
-                    let new_idx = flow.available_banks.len();
-                    if flow.selected_index == new_idx {
-                        // "New Bank Account" selected.
-                        flow.step = ImportFlowStep::NewBankName;
-                        flow.is_new_bank = true;
-                        flow.input_buffer = String::new();
-                    } else {
-                        // Known bank selected.
-                        let cfg = flow.available_banks[flow.selected_index].clone();
-                        flow.bank_config = Some(cfg);
-                        flow.is_new_bank = false;
-                        App::enter_duplicate_check(&mut flow, &self.entity.db);
-                        flow.selected_index = 0;
-                        if flow.step == ImportFlowStep::Pass1Matching {
-                            self.pending_pass1 = true;
+            ImportFlowStep::BankSelection => {
+                // Handle delete confirmation sub-state first.
+                if let Some(del_idx) = flow.delete_confirm {
+                    match key.code {
+                        KeyCode::Char('y') | KeyCode::Char('Y') => {
+                            let (toml_path, workspace_dir) = self.entity_toml_path();
+                            let mut entity_cfg =
+                                crate::config::load_entity_toml(&toml_path, &workspace_dir)
+                                    .unwrap_or_default();
+                            if del_idx < entity_cfg.bank_accounts.len() {
+                                entity_cfg.bank_accounts.remove(del_idx);
+                                if let Err(e) = crate::config::save_entity_toml(
+                                    &toml_path,
+                                    &workspace_dir,
+                                    &entity_cfg,
+                                ) {
+                                    self.status_bar
+                                        .set_error(format!("Failed to delete bank config: {e}"));
+                                } else {
+                                    flow.available_banks = entity_cfg.bank_accounts;
+                                    // Keep selected_index in bounds.
+                                    let max = flow.available_banks.len();
+                                    if flow.selected_index > 0 && flow.selected_index >= max {
+                                        flow.selected_index = max.saturating_sub(1);
+                                    }
+                                }
+                            }
+                            flow.delete_confirm = None;
+                        }
+                        _ => {
+                            flow.delete_confirm = None;
                         }
                     }
+                } else {
+                    match key.code {
+                        KeyCode::Esc => return,
+                        KeyCode::Up => {
+                            flow.selected_index = flow.selected_index.saturating_sub(1);
+                        }
+                        KeyCode::Down => {
+                            // +1 for the "New Bank Account" option at the bottom.
+                            let max = flow.available_banks.len(); // index of "New" option
+                            if flow.selected_index < max {
+                                flow.selected_index += 1;
+                            }
+                        }
+                        KeyCode::Char('d') => {
+                            let new_idx = flow.available_banks.len();
+                            if flow.selected_index < new_idx {
+                                flow.delete_confirm = Some(flow.selected_index);
+                            }
+                        }
+                        KeyCode::Enter => {
+                            let new_idx = flow.available_banks.len();
+                            if flow.selected_index == new_idx {
+                                // "New Bank Account" selected.
+                                flow.step = ImportFlowStep::NewBankName;
+                                flow.is_new_bank = true;
+                                flow.input_buffer = String::new();
+                            } else {
+                                // Known bank selected.
+                                let cfg = flow.available_banks[flow.selected_index].clone();
+                                flow.bank_config = Some(cfg);
+                                flow.is_new_bank = false;
+                                App::enter_duplicate_check(&mut flow, &self.entity.db);
+                                flow.selected_index = 0;
+                                if flow.step == ImportFlowStep::Pass1Matching {
+                                    self.pending_pass1 = true;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
                 }
-                _ => {}
-            },
+            }
             ImportFlowStep::NewBankName => match key.code {
                 KeyCode::Esc => return,
                 KeyCode::Enter => {
@@ -3041,10 +3083,25 @@ fn render_bank_selection_modal(
         new_style,
     )));
     lines.push(Line::from(Span::raw("")));
-    lines.push(Line::from(Span::styled(
-        "  \u{2191}/\u{2193}: navigate   Enter: select   Esc: cancel",
-        Style::default().fg(Color::DarkGray),
-    )));
+
+    if let Some(del_idx) = flow.delete_confirm {
+        let bank_name = flow
+            .available_banks
+            .get(del_idx)
+            .map(|b| b.name.as_str())
+            .unwrap_or("?");
+        lines.push(Line::from(Span::styled(
+            format!("  Delete bank config '{bank_name}'? Y/N"),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )));
+    } else {
+        lines.push(Line::from(Span::styled(
+            "  \u{2191}/\u{2193}: navigate   Enter: select   d: delete   Esc: cancel",
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
 
     frame.render_widget(
         Paragraph::new(lines).block(

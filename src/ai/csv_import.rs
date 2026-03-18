@@ -66,6 +66,8 @@ pub struct ImportFlowState {
     pub confirmation_editing: bool,
     /// Buffer for inline field editing on the confirmation screen.
     pub confirmation_edit_buffer: String,
+    /// When Some(idx), shows delete confirmation prompt for that bank index.
+    pub delete_confirm: Option<usize>,
 }
 
 impl Default for ImportFlowState {
@@ -102,6 +104,7 @@ impl ImportFlowState {
             confirmation_cursor: 0,
             confirmation_editing: false,
             confirmation_edit_buffer: String::new(),
+            delete_confirm: None,
         }
     }
 }
