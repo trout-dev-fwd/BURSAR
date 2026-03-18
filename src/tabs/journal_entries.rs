@@ -555,11 +555,11 @@ impl JournalEntriesTab {
     fn handle_recurring_setup_key(&mut self, key: KeyEvent, db: &EntityDb) -> TabAction {
         let Some(Modal::RecurringSetup {
             je_id,
+            je_number,
             start_date_str,
             frequency,
             focused_field,
             error,
-            ..
         }) = self.modal.take()
         else {
             return TabAction::None;
@@ -574,7 +574,19 @@ impl JournalEntriesTab {
                 let next_field = if focused_field == 0 { 1 } else { 0 };
                 self.modal = Some(Modal::RecurringSetup {
                     je_id,
-                    je_number: String::new(),
+                    je_number: je_number.clone(),
+                    start_date_str,
+                    frequency,
+                    focused_field: next_field,
+                    error,
+                });
+                TabAction::None
+            }
+            KeyCode::Up | KeyCode::Down => {
+                let next_field = if focused_field == 0 { 1 } else { 0 };
+                self.modal = Some(Modal::RecurringSetup {
+                    je_id,
+                    je_number,
                     start_date_str,
                     frequency,
                     focused_field: next_field,
@@ -590,7 +602,7 @@ impl JournalEntriesTab {
                 };
                 self.modal = Some(Modal::RecurringSetup {
                     je_id,
-                    je_number: String::new(),
+                    je_number: je_number.clone(),
                     start_date_str,
                     frequency: next_freq,
                     focused_field,
@@ -603,7 +615,7 @@ impl JournalEntriesTab {
                 s.pop();
                 self.modal = Some(Modal::RecurringSetup {
                     je_id,
-                    je_number: String::new(),
+                    je_number: je_number.clone(),
                     start_date_str: s,
                     frequency,
                     focused_field,
@@ -616,7 +628,7 @@ impl JournalEntriesTab {
                 s.push(c);
                 self.modal = Some(Modal::RecurringSetup {
                     je_id,
-                    je_number: String::new(),
+                    je_number: je_number.clone(),
                     start_date_str: s,
                     frequency,
                     focused_field,
@@ -629,7 +641,7 @@ impl JournalEntriesTab {
                     let err_msg = format!("Invalid date: '{start_date_str}'");
                     self.modal = Some(Modal::RecurringSetup {
                         je_id,
-                        je_number: String::new(),
+                        je_number: je_number.clone(),
                         start_date_str,
                         frequency,
                         focused_field,
@@ -648,7 +660,7 @@ impl JournalEntriesTab {
                         Err(e) => {
                             self.modal = Some(Modal::RecurringSetup {
                                 je_id,
-                                je_number: String::new(),
+                                je_number: je_number.clone(),
                                 start_date_str,
                                 frequency,
                                 focused_field,
@@ -662,7 +674,7 @@ impl JournalEntriesTab {
             _ => {
                 self.modal = Some(Modal::RecurringSetup {
                     je_id,
-                    je_number: String::new(),
+                    je_number: je_number.clone(),
                     start_date_str,
                     frequency,
                     focused_field,
@@ -1074,11 +1086,15 @@ impl JournalEntriesTab {
             } => {
                 let popup = centered_rect(50, 30, area);
                 frame.render_widget(Clear, popup);
+                frame.render_widget(
+                    Block::default().style(Style::default().bg(Color::Black)),
+                    popup,
+                );
                 let date_indicator = if *focused_field == 0 { ">" } else { " " };
                 let freq_indicator = if *focused_field == 1 { ">" } else { " " };
                 let error_line = error.as_deref().unwrap_or("");
                 let content = format!(
-                    "\n  {date_indicator} Start Date (YYYY-MM-DD): {start_date_str}_\n\n  {freq_indicator} Frequency: {frequency}  (←/→ to change)\n\n  {error_line}\n\n  Tab: switch field   Enter: create   Esc: cancel"
+                    "\n  {date_indicator} Start Date (YYYY-MM-DD): {start_date_str}_\n\n  {freq_indicator} Frequency: {frequency}  (←/→ to change)\n\n  {error_line}\n\n  Tab/↑↓: switch field   Enter: create   Esc: cancel"
                 );
                 frame.render_widget(
                     Paragraph::new(content).block(
