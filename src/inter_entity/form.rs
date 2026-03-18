@@ -392,11 +392,8 @@ impl InterEntityForm {
             top_area,
             primary_name,
             secondary_name,
-            primary_accounts,
-            secondary_accounts,
             primary_avail,
             secondary_avail,
-            area,
         );
         self.render_bottom_pane(
             frame,
@@ -409,24 +406,26 @@ impl InterEntityForm {
             secondary_avail,
         );
 
+        // Account picker overlay (rendered on top of everything).
+        self.form_a
+            .render_picker_overlay(frame, area, primary_accounts);
+        self.form_b
+            .render_picker_overlay(frame, area, secondary_accounts);
+
         // Exit confirmation overlay (rendered on top).
         if let Some(ref confirm) = self.exit_confirm {
             confirm.render(frame, area);
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn render_top_pane(
         &self,
         frame: &mut Frame,
         area: Rect,
         primary_name: &str,
         secondary_name: &str,
-        primary_accounts: &[Account],
-        secondary_accounts: &[Account],
         primary_avail: &HashMap<AccountId, Money>,
         secondary_avail: &HashMap<AccountId, Money>,
-        overlay_area: Rect,
     ) {
         // Split top pane: header row + Entity A section + Entity B section.
         let sections = Layout::default()
@@ -443,19 +442,15 @@ impl InterEntityForm {
             frame,
             sections[1],
             primary_name,
-            primary_accounts,
             primary_avail,
             true, // is_primary
-            overlay_area,
         );
         self.render_entity_section(
             frame,
             sections[2],
             secondary_name,
-            secondary_accounts,
             secondary_avail,
             false, // is_secondary
-            overlay_area,
         );
 
         // Error bar at the bottom of the top pane.
@@ -512,16 +507,13 @@ impl InterEntityForm {
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn render_entity_section(
         &self,
         frame: &mut Frame,
         area: Rect,
         entity_name: &str,
-        accounts: &[Account],
         avail: &HashMap<AccountId, Money>,
         is_primary: bool,
-        overlay_area: Rect,
     ) {
         let active_section = if is_primary {
             Section::EntityA
@@ -553,7 +545,7 @@ impl InterEntityForm {
         } else {
             &self.form_b
         };
-        form.render_lines_only(frame, inner, accounts, avail, overlay_area);
+        form.render_lines_only(frame, inner, avail);
     }
 
     #[allow(clippy::too_many_arguments)]
