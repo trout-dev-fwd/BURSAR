@@ -16,12 +16,12 @@ pub struct AiClient {
 }
 
 impl AiClient {
-    /// Create a new client with a 10-second timeout.
+    /// Create a new client with a 120-second timeout.
     pub fn new(api_key: String, model: String) -> Self {
         Self {
             api_key,
             model,
-            timeout: Duration::from_secs(10),
+            timeout: Duration::from_secs(120),
         }
     }
 
