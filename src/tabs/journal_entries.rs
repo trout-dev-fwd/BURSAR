@@ -811,7 +811,7 @@ impl JournalEntriesTab {
         };
         let today = chrono::Local::now().date_naive();
 
-        let title = " Scheduled Entries  ↑↓: scroll  Enter: source JE  [g] generate due  [d] toggle active  Esc: back ";
+        let title = " Scheduled Entries ";
 
         let block = Block::default().title(title).borders(Borders::ALL);
 
