@@ -12,9 +12,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
             name: "get_account".to_string(),
-            description: "Look up a specific account by number or name. Returns account details \
-                           including type, balance, and whether it is a placeholder. Use this when \
-                           the user refers to a specific account number or name."
+            description: "Look up account by number or name. Returns type, balance, placeholder flag."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -29,9 +27,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "get_account_children".to_string(),
-            description: "Get all direct child accounts under a placeholder (parent) account. \
-                           Returns the list of children with their balances. Use this to explore \
-                           the chart of accounts hierarchy."
+            description: "Get child accounts under a placeholder account with balances."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -46,9 +42,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "search_accounts".to_string(),
-            description: "Search accounts by name or number substring. Returns all matching \
-                           accounts with their current balances. Use this to find accounts when \
-                           you are not sure of the exact number or name."
+            description: "Search accounts by name/number substring. Returns matches with balances."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -63,9 +57,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "get_gl_transactions".to_string(),
-            description: "Get general ledger transactions for a specific account, optionally \
-                           filtered by date range. Returns transaction lines with dates, \
-                           descriptions, debit/credit amounts, and running balance."
+            description: "Get GL transactions for an account. Optional date range filter. Returns lines with debit/credit and running balance."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -88,9 +80,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "get_journal_entry".to_string(),
-            description: "Get full details of a journal entry by its number, including all debit \
-                           and credit lines, accounts, amounts, memo, status (Draft/Posted), and \
-                           date."
+            description: "Get journal entry by number: all lines, accounts, amounts, memo, status, date."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -105,8 +95,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "get_open_ar_items".to_string(),
-            description: "Get accounts receivable items. Returns invoices, their amounts, due \
-                           dates, and current status. Optionally filter by status."
+            description: "Get AR items: amounts, due dates, status. Optional status filter."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -121,8 +110,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "get_open_ap_items".to_string(),
-            description: "Get accounts payable items. Returns bills, their amounts, due dates, \
-                           and current status. Optionally filter by status."
+            description: "Get AP items: amounts, due dates, status. Optional status filter."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -137,11 +125,8 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "get_envelope_balances".to_string(),
-            description:
-                "Get all budget envelope allocations and their current available amounts. \
-                           Shows envelope name, allocated amount, spent amount, and remaining \
-                           balance."
-                    .to_string(),
+            description: "Get all envelope allocations with available amounts."
+                .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {}
@@ -149,10 +134,8 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "get_trial_balance".to_string(),
-            description:
-                "Get a trial balance across all active accounts, showing debit and credit \
-                           balances. Optionally specify an as-of date for a historical snapshot."
-                    .to_string(),
+            description: "Trial balance across all accounts. Optional as-of date."
+                .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -165,9 +148,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "get_audit_log".to_string(),
-            description: "Search the audit log for recorded actions. Can filter by action type \
-                           (e.g., 'AiPrompt', 'AiResponse', 'JeCreated', 'JePosted') and/or date \
-                           range. Use this to review past AI interactions or track changes."
+            description: "Search audit log by action type and/or date range."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -323,14 +304,31 @@ fn handle_get_gl_transactions(params: &Value, db: &EntityDb) -> anyhow::Result<S
 
 fn handle_get_journal_entry(params: &Value, db: &EntityDb) -> anyhow::Result<String> {
     use crate::db::journal_repo::JournalFilter;
-    let je_number_int = require_i64(params, "je_number")?;
-    let je_number_str = je_number_int.to_string();
+
+    // Accept integer (2), string ("JE-0002", "0002", "2"), strip prefix and leading zeros.
+    let je_number_str = if let Some(n) = params["je_number"].as_i64() {
+        format!("JE-{n:04}")
+    } else if let Some(s) = params["je_number"].as_str() {
+        let digits = s
+            .strip_prefix("JE-")
+            .or_else(|| s.strip_prefix("je-"))
+            .unwrap_or(s);
+        let n: u32 = digits
+            .parse()
+            .map_err(|_| anyhow::anyhow!("Invalid je_number '{s}'"))?;
+        format!("JE-{n:04}")
+    } else {
+        return Err(anyhow::anyhow!(
+            "Required parameter 'je_number' missing or not an integer/string"
+        ));
+    };
+
     // Find the JE by scanning (no direct get_by_number on JournalRepo).
     let all = db.journals().list(&JournalFilter::default())?;
     let je = all
         .into_iter()
         .find(|j| j.je_number == je_number_str)
-        .ok_or_else(|| anyhow::anyhow!("Journal entry #{je_number_str} not found"))?;
+        .ok_or_else(|| anyhow::anyhow!("Journal entry {je_number_str} not found"))?;
     let (je, lines) = db.journals().get_with_lines(je.id)?;
     let line_items: Vec<Value> = lines
         .iter()
@@ -855,6 +853,56 @@ mod tests {
         let tc = make_tool_call("get_open_ar_items", json!({"status": "Invalid"}));
         let result = fulfill_tool_call(&tc, &db);
         assert!(result.is_err(), "Expected error for invalid status");
+    }
+
+    #[test]
+    fn get_journal_entry_integer_not_found_returns_error() {
+        let db = EntityDb::open_in_memory().unwrap();
+        // No JEs in seed data — any lookup should return not-found (not a parse error).
+        let tc = make_tool_call("get_journal_entry", json!({"je_number": 1}));
+        let result = fulfill_tool_call(&tc, &db);
+        assert!(result.is_err(), "Expected error for missing JE");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("not found"), "Expected 'not found' in: {err}");
+    }
+
+    #[test]
+    fn get_journal_entry_string_je_prefix_not_found_returns_error() {
+        let db = EntityDb::open_in_memory().unwrap();
+        let tc = make_tool_call("get_journal_entry", json!({"je_number": "JE-0001"}));
+        let result = fulfill_tool_call(&tc, &db);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("not found"), "Expected 'not found' in: {err}");
+    }
+
+    #[test]
+    fn get_journal_entry_string_digits_not_found_returns_error() {
+        let db = EntityDb::open_in_memory().unwrap();
+        let tc = make_tool_call("get_journal_entry", json!({"je_number": "0001"}));
+        let result = fulfill_tool_call(&tc, &db);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("not found"), "Expected 'not found' in: {err}");
+    }
+
+    #[test]
+    fn get_journal_entry_missing_param_returns_error() {
+        let db = EntityDb::open_in_memory().unwrap();
+        let tc = make_tool_call("get_journal_entry", json!({}));
+        let result = fulfill_tool_call(&tc, &db);
+        assert!(result.is_err(), "Expected error for missing je_number");
+    }
+
+    #[test]
+    fn get_journal_entry_invalid_string_returns_error() {
+        let db = EntityDb::open_in_memory().unwrap();
+        let tc = make_tool_call("get_journal_entry", json!({"je_number": "not-a-number"}));
+        let result = fulfill_tool_call(&tc, &db);
+        assert!(
+            result.is_err(),
+            "Expected error for invalid je_number string"
+        );
     }
 
     #[test]
