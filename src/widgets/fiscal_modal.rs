@@ -59,6 +59,9 @@ struct ListRow {
 
 enum ModalState {
     Browsing,
+    AddYear {
+        input: String,
+    },
     ConfirmClose {
         id: FiscalPeriodId,
         confirm: Confirmation,
@@ -163,6 +166,9 @@ impl FiscalModal {
         if matches!(self.state, ModalState::Browsing) {
             return self.handle_browsing(key, db);
         }
+        if matches!(self.state, ModalState::AddYear { .. }) {
+            return self.handle_add_year(key, db);
+        }
         if matches!(self.state, ModalState::ConfirmClose { .. }) {
             return self.handle_confirm_close(key, db);
         }
@@ -188,6 +194,12 @@ impl FiscalModal {
                 let sel = self.list_state.selected().unwrap_or(0);
                 let new_sel = (sel + 1).min(self.rows.len().saturating_sub(1));
                 self.list_state.select(Some(new_sel));
+            }
+
+            KeyCode::Char('a') if key.modifiers == KeyModifiers::NONE => {
+                self.state = ModalState::AddYear {
+                    input: String::new(),
+                };
             }
 
             KeyCode::Char('c') if key.modifiers == KeyModifiers::NONE => {
@@ -265,6 +277,66 @@ impl FiscalModal {
                 }
             }
 
+            _ => {}
+        }
+        FiscalModalAction::None
+    }
+
+    fn handle_add_year(&mut self, key: KeyEvent, db: &EntityDb) -> FiscalModalAction {
+        match key.code {
+            KeyCode::Esc => {
+                self.state = ModalState::Browsing;
+            }
+            KeyCode::Backspace => {
+                if let ModalState::AddYear { input } = &mut self.state {
+                    input.pop();
+                }
+            }
+            KeyCode::Char(c) if c.is_ascii_digit() => {
+                if let ModalState::AddYear { input } = &mut self.state
+                    && input.len() < 4
+                {
+                    input.push(c);
+                }
+            }
+            KeyCode::Enter => {
+                let year_str = if let ModalState::AddYear { input } = &self.state {
+                    input.clone()
+                } else {
+                    return FiscalModalAction::None;
+                };
+                let year: i32 = match year_str.parse() {
+                    Ok(y) if (1000..=9999).contains(&y) => y,
+                    _ => {
+                        self.error = Some("Enter a 4-digit year (e.g., 2026).".to_owned());
+                        self.state = ModalState::Browsing;
+                        return FiscalModalAction::None;
+                    }
+                };
+                // Check for duplicate: compare start_date year.
+                let existing = db.fiscal().list_fiscal_years().unwrap_or_default();
+                if existing
+                    .iter()
+                    .any(|fy| fy.start_date.format("%Y").to_string() == year_str)
+                {
+                    self.error = Some(format!("Fiscal year {year} already exists."));
+                    self.state = ModalState::Browsing;
+                    return FiscalModalAction::None;
+                }
+                match db.fiscal().create_fiscal_year(1, year) {
+                    Ok(_) => {
+                        self.state = ModalState::Browsing;
+                        self.reload(db);
+                        return FiscalModalAction::Mutated(format!(
+                            "Fiscal year {year} created with 12 monthly periods."
+                        ));
+                    }
+                    Err(e) => {
+                        self.error = Some(format!("Failed to create fiscal year: {e}"));
+                        self.state = ModalState::Browsing;
+                    }
+                }
+            }
             _ => {}
         }
         FiscalModalAction::None
@@ -439,6 +511,10 @@ impl FiscalModal {
 
         // Non-list states render and return early; borrow of self.state ends at each arm.
         match &self.state {
+            ModalState::AddYear { input } => {
+                render_add_year_prompt(frame, modal_area, input);
+                return;
+            }
             ModalState::ConfirmClose { confirm, .. } => {
                 confirm.render(frame, area);
                 return;
@@ -461,7 +537,7 @@ impl FiscalModal {
 
     fn render_list(&mut self, frame: &mut Frame, area: Rect) {
         let block = Block::default()
-            .title(" Fiscal Period Management  (c: close  o: reopen  y: year-end  Esc: dismiss) ")
+            .title(" Fiscal Period Management ")
             .borders(Borders::ALL)
             .style(Style::default().fg(Color::Cyan));
         let inner = block.inner(area);
@@ -502,7 +578,7 @@ impl FiscalModal {
             Line::from(Span::styled(err.as_str(), Style::default().fg(Color::Red)))
         } else {
             Line::from(Span::styled(
-                " ↑↓/jk: navigate   c: close period   o: reopen   y: year-end close   Esc: dismiss",
+                " a: add year  c: close  o: reopen  y: year-end  Esc: close",
                 Style::default().fg(Color::DarkGray),
             ))
         };
@@ -511,6 +587,46 @@ impl FiscalModal {
 }
 
 // ── Free functions ────────────────────────────────────────────────────────────
+
+/// Renders the "add fiscal year" text-input prompt.
+fn render_add_year_prompt(frame: &mut Frame, area: Rect, input: &str) {
+    use ratatui::{
+        style::{Color, Style},
+        text::{Line, Span},
+        widgets::{Block, Borders, Clear, Paragraph},
+    };
+
+    let modal = centered_rect(50, 25, area);
+    frame.render_widget(Clear, modal);
+
+    let lines = vec![
+        Line::from(Span::raw("")),
+        Line::from(Span::styled(
+            "  Enter fiscal year (e.g., 2026):",
+            Style::default().fg(Color::Gray),
+        )),
+        Line::from(Span::raw("")),
+        Line::from(Span::styled(
+            format!("  > {input}_"),
+            Style::default().fg(Color::White),
+        )),
+        Line::from(Span::raw("")),
+        Line::from(Span::styled(
+            "  Enter: confirm   Esc: cancel",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Add Fiscal Year ")
+                .style(Style::default().fg(Color::Cyan)),
+        ),
+        modal,
+    );
+}
 
 /// Renders the year-end review screen (free function to avoid borrow conflicts).
 fn render_year_end_review(
