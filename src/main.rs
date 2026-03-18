@@ -11,12 +11,26 @@ fn default_config_path() -> PathBuf {
 }
 
 fn main() -> Result<()> {
-    // Initialize tracing subscriber for logging.
+    // Write tracing output to a log file so it never bleeds into the TUI display.
+    // The TUI uses the alternate screen buffer but stderr can still corrupt rendering.
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/bursar.log")
+        .unwrap_or_else(|_| {
+            // If we can't open the log file, open /dev/null to suppress output entirely.
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open("/dev/null")
+                .expect("failed to open /dev/null")
+        });
     tracing_subscriber::fmt()
+        .with_writer(std::sync::Mutex::new(log_file))
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
                 .add_directive(tracing::Level::WARN.into()),
         )
+        .with_ansi(false)
         .init();
 
     // Parse optional config path from command-line arguments.
