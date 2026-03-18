@@ -455,7 +455,13 @@ impl App {
         let mut result: Result<AiResponse, AiError> = Err(AiError::MaxToolDepth);
 
         for round in 0..=max_depth {
-            match client.send_single_round(&system_prompt, &msgs, &tools, accumulated_text.take()) {
+            match client.send_single_round(
+                &system_prompt,
+                &msgs,
+                &tools,
+                accumulated_text.take(),
+                true,
+            ) {
                 Ok(RoundResult::Done(response)) => {
                     result = Ok(response);
                     break;
@@ -652,17 +658,12 @@ impl App {
             return;
         }
 
-        let system = "You are a CSV format analyzer. Respond ONLY with valid JSON, no other text.";
+        let system = "Respond ONLY with valid JSON.";
         let prompt = format!(
-            "Analyze this CSV header and sample rows from a bank statement named \"{bank_name}\".\n\
-             Identify: date column name, date format (chrono-compatible like %m/%d/%Y or %Y-%m-%d),\n\
-             description/memo column name, and either a single amount column (with sign convention)\n\
-             or separate debit/credit columns.\n\
-             Respond ONLY with JSON containing these exact fields:\n\
-             {{\"date_column\": \"...\", \"date_format\": \"...\", \"description_column\": \"...\",\n\
-             \"amount_column\": \"...\" or null, \"debit_column\": \"...\" or null,\n\
-             \"credit_column\": \"...\" or null, \"debit_is_negative\": true/false}}\n\n\
-             CSV sample:\n{csv_sample}"
+            "Analyze this bank CSV from \"{bank_name}\". Return JSON with: date_column, \
+             date_format (chrono: %m/%d/%Y etc), description_column, amount_column (or null), \
+             debit_column (or null), credit_column (or null), debit_is_negative (bool).\n\n\
+             {csv_sample}"
         );
 
         let messages = vec![ApiMessage {
@@ -777,6 +778,10 @@ impl App {
         if let Some(ref mut f) = self.import_flow {
             f.matches = matches;
             f.step = next_step.clone();
+            if next_step == ImportFlowStep::ReviewScreen {
+                f.selected_index = 0;
+                f.scroll_offset = 0;
+            }
         }
         if next_step == ImportFlowStep::Pass2AiMatching {
             self.pending_pass2 = true;
@@ -792,6 +797,7 @@ impl App {
         system: &str,
         messages: Vec<ApiMessage>,
         terminal: &mut Terminal<B>,
+        use_cache: bool,
     ) -> Option<String> {
         let tools = tool_definitions();
         let client = self.ai_client.take()?;
@@ -801,7 +807,13 @@ impl App {
         let mut result_text: Option<String> = None;
 
         for _round in 0..=max_depth {
-            match client.send_single_round(system, &msgs, &tools, accumulated_text.take()) {
+            match client.send_single_round(
+                system,
+                &msgs,
+                &tools,
+                accumulated_text.take(),
+                use_cache,
+            ) {
                 Ok(RoundResult::Done(AiResponse::Text { content, .. })) => {
                     result_text = Some(content);
                     break;
@@ -902,13 +914,10 @@ impl App {
         let batches: Vec<Vec<usize>> = unmatched_indices.chunks(25).map(|c| c.to_vec()).collect();
         let mut completed = 0usize;
 
-        let system = "You are an expert accountant helping categorize bank transactions. \
-            Use the available tools to look up accounts and check GL history. \
-            Respond ONLY with a JSON array (no other text), one object per transaction, \
-            in the same order as provided. Each object must have: \
-            \"account_number\" (string, or null if unknown), \
-            \"confidence\" (\"high\", \"medium\", or \"low\"), \
-            \"reasoning\" (one sentence max).";
+        let system = "Expert accountant. Use tools to look up accounts. \
+            Respond ONLY as JSON array, one object per transaction in order: \
+            {\"account_number\": string|null, \"confidence\": \"high\"|\"medium\"|\"low\", \
+            \"reasoning\": \"one sentence\"}";
 
         for batch in &batches {
             // Build transaction list for this batch.
@@ -933,11 +942,8 @@ impl App {
                     .join("\n")
             };
 
-            let prompt = format!(
-                "Match these bank transactions from \"{bank_name}\" to accounts in the \
-                 chart of accounts.\n\nTransactions:\n{transactions_text}\n\n\
-                 Use tools to look up accounts. Respond ONLY with a JSON array."
-            );
+            let prompt =
+                format!("Match to chart of accounts. Bank: \"{bank_name}\"\n{transactions_text}");
             let messages = vec![ApiMessage {
                 role: ApiRole::User,
                 content: ApiContent::Text(prompt),
@@ -946,7 +952,7 @@ impl App {
             // Force render before the blocking call.
             let _ = terminal.draw(|frame| self.render_frame(frame));
 
-            let result = self.run_ai_batch_request(system, messages, terminal);
+            let result = self.run_ai_batch_request(system, messages, terminal, true);
 
             completed += batch.len();
             self.chat_panel
@@ -1015,6 +1021,8 @@ impl App {
                 f.step = ImportFlowStep::Pass3Clarification;
             } else {
                 f.step = ImportFlowStep::ReviewScreen;
+                f.selected_index = 0;
+                f.scroll_offset = 0;
             }
         }
     }
@@ -1274,8 +1282,10 @@ impl App {
             "Imported {created_count} draft entries from {bank_name}."
         ));
 
-        // Complete: clear import flow.
+        // Clear all import flow state.
         self.import_flow = None;
+        self.file_picker = None;
+        self.focus = FocusTarget::MainTab;
     }
 
     /// Executes a slash command entered in the chat panel.
@@ -1339,11 +1349,12 @@ impl App {
                     .filter(|s| !s.is_empty())
                     .collect::<Vec<_>>()
                     .join("\n\n");
-                let system = "You are a helpful assistant. Summarise the following conversation in a concise paragraph, preserving the key accounting facts and conclusions.";
+                let system = "";
                 let compaction_messages = vec![ApiMessage {
                     role: ApiRole::User,
                     content: ApiContent::Text(format!(
-                        "Please summarise this conversation:\n\n{history}"
+                        "Summarize this conversation in one paragraph. Preserve all account \
+                         numbers, amounts, dates, and decisions:\n\n{history}"
                     )),
                 }];
                 self.status_bar
@@ -1415,11 +1426,10 @@ impl App {
                     self.status_bar.set_error(msg);
                     return;
                 }
-                let system = "You are an expert accountant. Suggest the best chart-of-accounts \
-                    category for this bank transaction. Respond with: account_number, \
-                    confidence (high/medium/low), reasoning (one sentence).";
+                let system = self.chat_panel.system_prompt.clone();
                 let prompt = format!(
-                    "Match this bank transaction to an account:\n{} | {} | {}",
+                    "What account should this transaction map to? {} | {} | {}. \
+                     Give account_number, confidence, and one-sentence reasoning.",
                     txn.date, txn.description, txn.amount
                 );
                 let messages = vec![ApiMessage {
@@ -1429,7 +1439,7 @@ impl App {
                 self.status_bar
                     .set_ai_status(Some("Calling Accountant \u{260F}".to_string()));
                 let _ = terminal.draw(|frame| self.render_frame(frame));
-                let result = self.run_ai_batch_request(system, messages, terminal);
+                let result = self.run_ai_batch_request(&system, messages, terminal, false);
                 self.status_bar.set_ai_status(None);
                 match result {
                     Some(response) => {
@@ -2162,6 +2172,7 @@ impl App {
                         flow.bank_config = Some(cfg);
                         flow.is_new_bank = false;
                         App::enter_duplicate_check(&mut flow, &self.entity.db);
+                        flow.selected_index = 0;
                         if flow.step == ImportFlowStep::Pass1Matching {
                             self.pending_pass1 = true;
                         }
@@ -2306,6 +2317,11 @@ impl App {
             }
             ImportFlowStep::NewBankAccountPicker => {
                 if key.code == KeyCode::Esc {
+                    // Go back to the confirmation screen instead of cancelling the whole import.
+                    flow.account_picker.reset();
+                    flow.picker_accounts.clear();
+                    flow.step = ImportFlowStep::NewBankConfirmation;
+                    self.import_flow = Some(flow);
                     return;
                 }
                 let picker_accounts = flow.picker_accounts.clone();
@@ -2348,13 +2364,17 @@ impl App {
                         );
                         flow.bank_config = Some(completed_cfg);
                         flow.available_banks = entity_cfg.bank_accounts;
+                        // Dismiss the picker widget before advancing.
+                        flow.account_picker.reset();
+                        flow.picker_accounts.clear();
                         App::enter_duplicate_check(&mut flow, &self.entity.db);
+                        flow.selected_index = 0;
                         if flow.step == ImportFlowStep::Pass1Matching {
                             self.pending_pass1 = true;
                         }
-                        flow.selected_index = 0;
                     }
-                    crate::widgets::account_picker::PickerAction::Cancelled => return,
+                    // Enter with no selection: stay in picker (don't cancel the import).
+                    crate::widgets::account_picker::PickerAction::Cancelled => {}
                     crate::widgets::account_picker::PickerAction::Pending => {}
                 }
             }
@@ -2399,6 +2419,8 @@ impl App {
                 if key.code == KeyCode::Esc {
                     // Skip remaining — advance to review with what we have.
                     flow.step = ImportFlowStep::ReviewScreen;
+                    flow.selected_index = 0;
+                    flow.scroll_offset = 0;
                     self.focus = FocusTarget::MainTab;
                     self.import_flow = Some(flow);
                     return;
@@ -2528,6 +2550,8 @@ impl App {
                         // Advance to next item or finish.
                         if flow.clarification_queue.is_empty() {
                             flow.step = ImportFlowStep::ReviewScreen;
+                            flow.selected_index = 0;
+                            flow.scroll_offset = 0;
                             self.focus = FocusTarget::MainTab;
                         } else {
                             flow.clarification_prompted = false;
@@ -2536,6 +2560,8 @@ impl App {
                     ChatAction::Close => {
                         // User closed chat — advance to ReviewScreen.
                         flow.step = ImportFlowStep::ReviewScreen;
+                        flow.selected_index = 0;
+                        flow.scroll_offset = 0;
                         self.chat_panel.toggle_visible();
                         self.focus = FocusTarget::MainTab;
                     }
