@@ -38,13 +38,17 @@ entity management, and an update checker.
 
 ## Codebase Overview
 
-**68 Rust source files, ~43,060 lines of code, 638 tests.**
+**71 Rust source files, ~43,116 lines of code, 638 tests.**
 
 ```
 src/
 ├── main.rs                          205 lines   — Terminal setup, AppState wrapper loop
 ├── lib.rs                            16 lines   — Module declarations
-├── app.rs                         4,185 lines   — Application core, key dispatch, AI/import
+├── app/                           4,241 lines   — Application core (directory module)
+│   ├── mod.rs                       927 lines   — App struct, EntityContext, render, tick, run
+│   ├── key_dispatch.rs              687 lines   — handle_key, help overlay, entity picker
+│   ├── ai_handler.rs                494 lines   — handle_ai_request, tool-use loop
+│   └── import_handler.rs          2,133 lines   — CSV import flow, bank detection, review
 ├── config.rs                        722 lines   — Config loading (workspace, entity, secrets)
 ├── startup.rs                       588 lines   — DB/config initialization, entity selection
 ├── startup_screen.rs                676 lines   — Startup screen: entity picker, add/edit/delete
@@ -58,7 +62,7 @@ src/
 │   ├── csv_import.rs                810 lines   — CSV parsing, 3-pass matching pipeline
 │   └── tools.rs                     925 lines   — 10 read-only tool definitions + fulfillment
 │
-├── db/                            7,452 lines   — Database layer
+├── db/                            9,452 lines   — Database layer
 │   ├── mod.rs                       263 lines   — EntityDb wrapper, migrations
 │   ├── schema.rs                    633 lines   — CREATE TABLE statements (15 tables)
 │   ├── account_repo.rs            1,096 lines   — Chart of accounts CRUD
@@ -114,7 +118,7 @@ src/
 │   ├── money.rs                     179 lines   — Money(i64), 8 decimal places
 │   └── percentage.rs                 94 lines   — Percentage(i64), 6 decimal places
 │
-└── widgets/                       5,469 lines   — Reusable UI components
+└── widgets/                       5,734 lines   — Reusable UI components
     ├── mod.rs                        44 lines   — centered_rect helper
     ├── chat_panel.rs                936 lines   — AI chat interface
     ├── je_form.rs                 1,338 lines   — Journal entry create/edit form
@@ -188,7 +192,7 @@ loop {
 runs the event loop, restores on exit). The extracted methods allow `main.rs` to drive
 the loop externally.
 
-### Key Dispatch Order (`handle_key` in `app.rs`)
+### Key Dispatch Order (`handle_key` in `app/key_dispatch.rs`)
 
 Priority from highest to lowest:
 
