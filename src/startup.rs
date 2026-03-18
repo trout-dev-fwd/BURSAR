@@ -123,7 +123,7 @@ fn run_check_loop<B: ratatui::backend::Backend>(
         let n = findings.due_recurring.len();
         let first_date = findings.due_recurring[0].next_due_date;
         let msg = format!(
-            "{} recurring entr{} {} due (earliest: {}).\n\n\
+            "{} scheduled entr{} {} due (earliest: {}).\n\n\
              Generate draft JEs now for review?\n\n\
              Y — generate  N / Esc — skip",
             n,
@@ -131,7 +131,7 @@ fn run_check_loop<B: ratatui::backend::Backend>(
             if n == 1 { "is" } else { "are" },
             first_date,
         );
-        if show_yes_no(terminal, entity_name, "Recurring Entries Due", &msg)? {
+        if show_yes_no(terminal, entity_name, "Scheduled Entries Due", &msg)? {
             let today = Local::now().date_naive();
             let _ = db.recurring().generate_entries(today)?;
         }

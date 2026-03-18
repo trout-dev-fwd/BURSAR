@@ -648,7 +648,7 @@ impl JournalEntriesTab {
                 Ok(start_date) => {
                     match db.recurring().create_template(je_id, frequency, start_date) {
                         Ok(template_id) => TabAction::ShowMessage(format!(
-                            "Recurring template #{} created ({} starting {})",
+                            "Scheduled entry #{} created ({} starting {})",
                             i64::from(template_id),
                             frequency,
                             start_date
@@ -811,14 +811,14 @@ impl JournalEntriesTab {
         };
         let today = chrono::Local::now().date_naive();
 
-        let title = " Recurring Templates  ↑↓: scroll  Enter: source JE  [g] generate due  [d] toggle active  Esc: back ";
+        let title = " Scheduled Entries  ↑↓: scroll  Enter: source JE  [g] generate due  [d] toggle active  Esc: back ";
 
         let block = Block::default().title(title).borders(Borders::ALL);
 
         if sub.templates.is_empty() {
             frame.render_widget(
                 Paragraph::new(
-                    "  No recurring templates configured. Use [t] on a Posted JE to create one.",
+                    "  No scheduled entries configured. Use [t] on a Posted JE to create one.",
                 )
                 .block(block),
                 area,
@@ -1093,7 +1093,7 @@ impl JournalEntriesTab {
                 frame.render_widget(
                     Paragraph::new(content).block(
                         Block::default()
-                            .title(format!(" Recurring template for {} ", je_number))
+                            .title(format!(" Scheduled entry for {} ", je_number))
                             .borders(Borders::ALL)
                             .style(Style::default().fg(Color::Cyan)),
                     ),
@@ -1110,20 +1110,30 @@ impl Tab for JournalEntriesTab {
     }
 
     fn hotkey_help(&self) -> Vec<(&'static str, &'static str)> {
-        vec![
-            ("↑/↓ or k/j", "Navigate"),
-            ("n", "New journal entry"),
-            ("e", "Edit draft entry"),
-            ("p", "Post selected entry"),
-            ("r", "Reverse posted entry"),
-            ("R", "Recurring templates sub-view"),
-            ("i", "New inter-entity entry"),
-            ("g", "Go to General Ledger"),
-            ("f", "Cycle fiscal period filter"),
-            ("t", "Create recurring template"),
-            ("u", "Import CSV statement"),
-            ("U", "Re-match incomplete imports"),
-        ]
+        if self.recurring.is_some() {
+            vec![
+                ("↑/↓", "Navigate"),
+                ("Enter", "Jump to source JE"),
+                ("g", "Generate due entries"),
+                ("d", "Toggle active/inactive"),
+                ("Esc", "Back to Journal Entries"),
+            ]
+        } else {
+            vec![
+                ("↑/↓ or k/j", "Navigate"),
+                ("n", "New journal entry"),
+                ("e", "Edit draft entry"),
+                ("p", "Post selected entry"),
+                ("r", "Reverse posted entry"),
+                ("R", "Scheduled entries sub-view"),
+                ("i", "New inter-entity entry"),
+                ("g", "Go to General Ledger"),
+                ("f", "Cycle fiscal period filter"),
+                ("t", "Create scheduled entry"),
+                ("u", "Import CSV statement"),
+                ("U", "Re-match incomplete imports"),
+            ]
+        }
     }
 
     fn selected_draft_import_ref(&self) -> Option<String> {
@@ -1283,7 +1293,7 @@ impl Tab for JournalEntriesTab {
                         });
                     } else {
                         return TabAction::ShowMessage(
-                            "Only Posted entries can be made recurring.".to_string(),
+                            "Only Posted entries can be scheduled.".to_string(),
                         );
                     }
                 }

@@ -191,15 +191,15 @@ In the entry detail view (press `Enter` on an entry):
 2. Press `c` again to un-clear it
 3. Cleared marks help you track which transactions you've verified against bank statements
 
-### Creating a Recurring Template
+### Creating a Scheduled Entry
 1. Select a posted entry and press `t`
 2. Choose the frequency: Monthly, Quarterly, or Annually
 3. Set the start date for the first recurrence
-4. The template will prompt you to generate entries when they're due (at startup and on-demand)
+4. The app will prompt you to generate entries when they're due (at startup and on-demand)
 
-### Viewing Recurring Templates
-1. Press `R` (uppercase) to open the recurring entries sub-view
-2. See all templates with their source JE number, memo, frequency, next due date, and status
+### Viewing Scheduled Entries
+1. Press `R` (uppercase) to open the scheduled entries sub-view
+2. See all entries with their source JE number, memo, frequency, next due date, and status
 3. Color coding: **red** = overdue, **yellow** = due today, **gray** = inactive
 4. Press `Enter` to jump to the source journal entry in the main list
 5. Press `g` to generate all due entries (creates them as Drafts for review)
@@ -616,7 +616,7 @@ Posted entries cannot be edited. Instead:
 
 ### Month-End Routine
 1. Generate and post any pending depreciation (Fixed Assets tab → `g`)
-2. Generate and post any due recurring entries (Journal Entries tab → `R` → `g`)
+2. Generate and post any due scheduled entries (Journal Entries tab → `R` → `g`)
 3. Review the Trial Balance report (debits should equal credits)
 4. Close the month (press `f` → select the period → `c`)
 
