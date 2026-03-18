@@ -131,7 +131,7 @@ mod tests {
     #[test]
     fn read_context_auto_creates_file_and_directory() {
         let dir = std::env::temp_dir()
-            .join("accounting_test_context_autocreate")
+            .join("bursar_test_context_autocreate")
             .join("subdir");
         let dir_str = dir.to_string_lossy().to_string();
 
@@ -152,7 +152,7 @@ mod tests {
 
     #[test]
     fn read_context_returns_skeleton_contents() {
-        let dir = std::env::temp_dir().join("accounting_test_context_skeleton");
+        let dir = std::env::temp_dir().join("bursar_test_context_skeleton");
         let dir_str = dir.to_string_lossy().to_string();
         let _ = fs::remove_dir_all(&dir);
 
@@ -165,7 +165,7 @@ mod tests {
 
     #[test]
     fn read_context_returns_existing_file_unchanged() {
-        let dir = std::env::temp_dir().join("accounting_test_context_existing");
+        let dir = std::env::temp_dir().join("bursar_test_context_existing");
         let dir_str = dir.to_string_lossy().to_string();
         fs::create_dir_all(&dir).unwrap();
 
@@ -181,7 +181,7 @@ mod tests {
 
     #[test]
     fn read_context_auto_create_contains_entity_name_in_heading() {
-        let dir = std::env::temp_dir().join("accounting_test_context_heading");
+        let dir = std::env::temp_dir().join("bursar_test_context_heading");
         let dir_str = dir.to_string_lossy().to_string();
         let _ = fs::remove_dir_all(&dir);
 

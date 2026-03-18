@@ -473,7 +473,7 @@ mod tests {
 
     #[test]
     fn write_report_creates_file_with_correct_content() {
-        let dir = std::env::temp_dir().join("accounting_report_test");
+        let dir = std::env::temp_dir().join("bursar_report_test");
         let content = "Report content here.";
         let path = write_report(content, "TestReport", &dir).expect("write_report failed");
 
@@ -498,7 +498,7 @@ mod tests {
     #[test]
     fn write_report_creates_output_dir_if_missing() {
         let dir = std::env::temp_dir()
-            .join("accounting_report_dir_create_test")
+            .join("bursar_report_dir_create_test")
             .join("subdir");
         // Ensure the directory does not exist.
         let _ = std::fs::remove_dir_all(&dir);
@@ -514,7 +514,7 @@ mod tests {
 
     #[test]
     fn write_report_filename_includes_date() {
-        let dir = std::env::temp_dir().join("accounting_report_date_test");
+        let dir = std::env::temp_dir().join("bursar_report_date_test");
         let path = write_report("x", "MyReport", &dir).expect("write_report failed");
         let filename = path.file_name().unwrap().to_string_lossy().to_string();
         // Date portion is MM-DD-YYYY: two digits, dash, two digits, dash, four digits.

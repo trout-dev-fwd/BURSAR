@@ -356,7 +356,7 @@ mod tests {
         assert!(periods_after[0].is_closed, "January 2026 should be closed");
 
         // ── Step 13: Generate all 8 reports and verify output files exist ───────
-        let output_dir = std::env::temp_dir().join("accounting_integration_test_reports");
+        let output_dir = std::env::temp_dir().join("bursar_integration_test_reports");
         let _ = std::fs::remove_dir_all(&output_dir); // clean slate
 
         let entity_name = "Test Entity".to_string();

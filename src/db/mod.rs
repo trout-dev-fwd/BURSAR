@@ -203,7 +203,7 @@ mod tests {
 
     #[test]
     fn create_and_reopen_has_schema_and_accounts() {
-        let dir = std::env::temp_dir().join("accounting_entity_db_test");
+        let dir = std::env::temp_dir().join("bursar_entity_db_test");
         let path = dir.join("test_entity.sqlite");
 
         // Clean up from any previous test run.

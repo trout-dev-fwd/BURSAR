@@ -564,7 +564,7 @@ mod tests {
     /// Writes CSV content to a temp file and returns the path.
     /// The caller must not delete the returned path before use.
     fn write_csv(test_name: &str, content: &str) -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(format!("accounting_csv_test_{test_name}.csv"));
+        let path = std::env::temp_dir().join(format!("bursar_csv_test_{test_name}.csv"));
         fs::write(&path, content).expect("write test csv");
         path
     }

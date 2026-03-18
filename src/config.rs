@@ -63,7 +63,7 @@ pub struct EntityConfig {
 impl Default for WorkspaceConfig {
     fn default() -> Self {
         Self {
-            report_output_dir: PathBuf::from("~/accounting/reports"),
+            report_output_dir: PathBuf::from("~/bursar/reports"),
             entities: Vec::new(),
             ai: None,
             context_dir: None,
@@ -264,7 +264,7 @@ mod tests {
 
     #[test]
     fn round_trip_with_two_entities() {
-        let dir = std::env::temp_dir().join("accounting_test_config");
+        let dir = std::env::temp_dir().join("bursar_test_config");
         let path = dir.join("workspace.toml");
 
         let config = WorkspaceConfig {
@@ -297,7 +297,7 @@ mod tests {
 
     #[test]
     fn load_creates_default_when_missing() {
-        let dir = std::env::temp_dir().join("accounting_test_config_missing");
+        let dir = std::env::temp_dir().join("bursar_test_config_missing");
         let path = dir.join("workspace.toml");
 
         // Ensure file does not exist
@@ -323,11 +323,8 @@ mod tests {
     #[test]
     fn expand_tilde_replaces_home() {
         let home = std::env::var("HOME").expect("HOME must be set");
-        let expanded = expand_tilde(Path::new("~/accounting/reports"));
-        assert_eq!(
-            expanded,
-            PathBuf::from(format!("{}/accounting/reports", home))
-        );
+        let expanded = expand_tilde(Path::new("~/bursar/reports"));
+        assert_eq!(expanded, PathBuf::from(format!("{}/bursar/reports", home)));
     }
 
     #[test]
@@ -338,7 +335,7 @@ mod tests {
 
     #[test]
     fn load_config_expands_tilde_in_entity_db_path() {
-        let dir = std::env::temp_dir().join("accounting_test_tilde_entity");
+        let dir = std::env::temp_dir().join("bursar_test_tilde_entity");
         let path = dir.join("workspace.toml");
 
         let config = WorkspaceConfig {
@@ -371,10 +368,10 @@ mod tests {
     #[test]
     fn toml_format_has_report_output_dir() {
         let config = WorkspaceConfig {
-            report_output_dir: PathBuf::from("~/accounting/reports"),
+            report_output_dir: PathBuf::from("~/bursar/reports"),
             entities: vec![EntityConfig {
                 name: "Acme LLC".to_owned(),
-                db_path: PathBuf::from("~/accounting/database/acme.sqlite"),
+                db_path: PathBuf::from("~/bursar/database/acme.sqlite"),
                 config_path: None,
             }],
             ai: None,
@@ -390,7 +387,7 @@ mod tests {
 
     #[test]
     fn workspace_config_with_ai_section_round_trips() {
-        let dir = std::env::temp_dir().join("accounting_test_ai_config");
+        let dir = std::env::temp_dir().join("bursar_test_ai_config");
         let path = dir.join("workspace.toml");
 
         let config = WorkspaceConfig {
@@ -415,7 +412,7 @@ mod tests {
 
     #[test]
     fn workspace_config_without_ai_section_is_backwards_compatible() {
-        let dir = std::env::temp_dir().join("accounting_test_no_ai_config");
+        let dir = std::env::temp_dir().join("bursar_test_no_ai_config");
         let path = dir.join("workspace.toml");
 
         // Write a V1-style workspace.toml with no [ai] section
@@ -449,7 +446,7 @@ db_path = "/tmp/acme.sqlite"
 
     #[test]
     fn entity_toml_single_amount_bank_account_round_trips() {
-        let dir = std::env::temp_dir().join("accounting_test_entity_toml_single");
+        let dir = std::env::temp_dir().join("bursar_test_entity_toml_single");
         let path = dir.join("entity.toml");
         fs::create_dir_all(&dir).unwrap();
 
@@ -487,7 +484,7 @@ db_path = "/tmp/acme.sqlite"
 
     #[test]
     fn entity_toml_split_column_bank_account_round_trips() {
-        let dir = std::env::temp_dir().join("accounting_test_entity_toml_split");
+        let dir = std::env::temp_dir().join("bursar_test_entity_toml_split");
         let path = dir.join("entity.toml");
         fs::create_dir_all(&dir).unwrap();
 
@@ -526,7 +523,7 @@ db_path = "/tmp/acme.sqlite"
 
     #[test]
     fn entity_toml_no_bank_accounts() {
-        let dir = std::env::temp_dir().join("accounting_test_entity_toml_empty");
+        let dir = std::env::temp_dir().join("bursar_test_entity_toml_empty");
         let path = dir.join("entity.toml");
         fs::create_dir_all(&dir).unwrap();
 
@@ -542,7 +539,7 @@ db_path = "/tmp/acme.sqlite"
 
     #[test]
     fn entity_toml_missing_file_returns_default() {
-        let dir = std::env::temp_dir().join("accounting_test_entity_toml_missing");
+        let dir = std::env::temp_dir().join("bursar_test_entity_toml_missing");
         // Don't create the file
         let loaded = load_entity_toml("nonexistent.toml", &dir).expect("missing file ok");
         assert!(loaded.bank_accounts.is_empty());
@@ -616,7 +613,7 @@ db_path = "/tmp/acme.sqlite"
     #[test]
     fn load_secrets_returns_error_when_file_missing() {
         // Override HOME to a temp dir to avoid reading the real secrets file
-        let dir = std::env::temp_dir().join("accounting_test_secrets_missing");
+        let dir = std::env::temp_dir().join("bursar_test_secrets_missing");
         let _ = fs::create_dir_all(&dir);
 
         // We can't easily override HOME in a thread-safe way; just verify the
