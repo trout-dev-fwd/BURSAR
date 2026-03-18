@@ -329,13 +329,7 @@ impl App {
                     &std::collections::HashMap::new(),
                     &std::collections::HashMap::new(),
                 );
-                let popup_w = 60u16.min(tab_area.width);
-                let popup_h = 6u16.min(tab_area.height);
-                let px = tab_area.x + tab_area.width.saturating_sub(popup_w) / 2;
-                let py = tab_area.y + tab_area.height.saturating_sub(popup_h) / 2;
-                let popup_area = ratatui::layout::Rect::new(px, py, popup_w, popup_h);
-                frame.render_widget(ratatui::widgets::Clear, popup_area);
-                confirm.render(frame, popup_area);
+                confirm.render(frame, tab_area);
             }
             AppMode::InterEntity(mode) => {
                 mode.form.render(

@@ -154,6 +154,9 @@ _(Discoveries from implementation — update as the project evolves)_
 - `[*]` unsaved indicator: driven by `Tab::has_unsaved_changes()`; App polls each tick.
 - JournalEntriesTab overrides `has_unsaved_changes()` to reflect new-entry form content.
 
+### Confirmation widget
+- **Confirmation widget handles its own centering** via `centered_rect()`. Never call `centered_rect()` on the area before passing it to `Confirmation::render()` — this causes double-centering that makes the content area too small to display anything.
+
 ### V2 — AI & Import
 - **Tab key conflict:** Tab is intercepted at App level when chat panel is open. JE form uses arrow keys + Enter as fallback navigation. Envelopes uses `v` for view toggle always.
 - **Forced render before blocking calls:** Must call `terminal.draw()` before any `ureq` call so the user sees the loading state before the UI freezes.
