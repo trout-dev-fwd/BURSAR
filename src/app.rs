@@ -326,8 +326,6 @@ impl App {
                     &mode.secondary_name,
                     &mode.primary_accounts,
                     &mode.secondary_accounts,
-                    &std::collections::HashMap::new(),
-                    &std::collections::HashMap::new(),
                 );
                 confirm.render(frame, tab_area);
             }
@@ -339,8 +337,6 @@ impl App {
                     &mode.secondary_name,
                     &mode.primary_accounts,
                     &mode.secondary_accounts,
-                    &std::collections::HashMap::new(),
-                    &std::collections::HashMap::new(),
                 );
             }
         }

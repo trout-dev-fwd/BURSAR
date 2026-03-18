@@ -4,8 +4,6 @@
 //! - A shared header: Date and Memo (one date, one memo for both sides of the transaction).
 //! - Entity A line-item section: debit/credit rows with account picker from Entity A.
 //! - Entity B line-item section: debit/credit rows with account picker from Entity B.
-//! - Bottom left: Entity A chart of accounts with earmarked amounts.
-//! - Bottom right: Entity B chart of accounts with earmarked amounts.
 //!
 //! The `JeForm` widget (from `widgets/je_form.rs`) is **reused** for each entity's
 //! line-item section. Its Date/Memo header is bypassed; the `InterEntityForm` owns
@@ -13,7 +11,9 @@
 //!
 //! # Navigation
 //! - `Tab` in Header → moves to Entity A lines.
-//! - `Tab` in Entity A / B → navigates fields within the form; wraps to next section.
+//! - `Tab` past Entity A's last field → moves to Entity B's first field.
+//! - `Tab` past Entity B's last field → wraps back to Header.
+//! - `F2` / `F3`: add/remove rows in the focused entity's form.
 //! - `Ctrl+S` → validate both sides, return `Submitted` if valid.
 //! - `Esc` → `Cancelled` (with unsaved-changes prompt if content exists).
 
@@ -26,12 +26,12 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table},
+    widgets::{Block, Borders, Paragraph},
 };
 
 use crate::db::account_repo::Account;
 use crate::db::journal_repo::NewJournalEntryLine;
-use crate::types::{AccountId, Money};
+use crate::types::Money;
 use crate::widgets::JeForm;
 use crate::widgets::confirmation::{ConfirmAction, Confirmation};
 
@@ -201,9 +201,9 @@ impl InterEntityForm {
             KeyCode::BackTab => {
                 match self.header_focus {
                     HeaderFocus::Date => {
-                        // Wrap back to Entity B (move to bottom of cycle).
+                        // Wrap back to Entity B's last field.
                         self.section = Section::EntityB;
-                        // form_b's focus stays wherever it is; user was just here.
+                        self.form_b.skip_to_last_line_field();
                     }
                     HeaderFocus::Memo => {
                         self.header_focus = HeaderFocus::Date;
@@ -253,8 +253,11 @@ impl InterEntityForm {
         // Detect header-position BEFORE forwarding Tab, so we know if the form is
         // about to wrap out of its last field back to Date (which we intercept).
         let was_at_header = form.is_at_header();
-
         let action = form.handle_key(key, accounts);
+        let now_at_header = form.is_at_header();
+
+        // End the mutable borrow on `form` so we can access both form_a and form_b below.
+        let _ = form;
 
         match action {
             JeFormAction::Cancelled => {
@@ -264,23 +267,32 @@ impl InterEntityForm {
                         "Unsaved changes. Exit anyway?".to_owned(),
                     ));
                 }
-                // Note: we already handled global Esc above; this handles Esc
-                // forwarded from form's inner state (e.g., picker).
             }
             JeFormAction::Submitted(_) => {
                 // Ctrl+S within a sub-form — we handle Ctrl+S globally above,
                 // so this shouldn't fire. Ignore if it does.
             }
             JeFormAction::Pending => {
-                // Check if Tab caused a wrap from Lines → Header (section change).
-                if key.code == KeyCode::Tab && !was_at_header && form.is_at_header() {
-                    // Form wrapped back to its own Date; we intercept and move sections.
+                let wrapped_to_header = !was_at_header && now_at_header;
+
+                // Tab caused a wrap from last field → Header: move to next section.
+                if key.code == KeyCode::Tab && wrapped_to_header {
                     if is_primary {
                         self.section = Section::EntityB;
                         self.form_b.skip_to_lines();
                     } else {
                         self.section = Section::Header;
                         self.header_focus = HeaderFocus::Date;
+                    }
+                }
+                // BackTab caused a wrap from first field → Header: move to previous section.
+                if key.code == KeyCode::BackTab && wrapped_to_header {
+                    if is_primary {
+                        self.section = Section::Header;
+                        self.header_focus = HeaderFocus::Memo;
+                    } else {
+                        self.section = Section::EntityA;
+                        self.form_a.skip_to_last_line_field();
                     }
                 }
             }
@@ -347,12 +359,10 @@ impl InterEntityForm {
 
     // ── Render ────────────────────────────────────────────────────────────────
 
-    /// Renders the full inter-entity form (┬ layout).
+    /// Renders the full inter-entity form.
     ///
     /// - `primary_name` / `secondary_name`: entity display names for section labels.
     /// - `primary_accounts` / `secondary_accounts`: account lists for pickers.
-    /// - `primary_avail` / `secondary_avail`: envelope available balances (may be empty).
-    #[allow(clippy::too_many_arguments)]
     pub fn render(
         &self,
         frame: &mut Frame,
@@ -361,8 +371,6 @@ impl InterEntityForm {
         secondary_name: &str,
         primary_accounts: &[Account],
         secondary_accounts: &[Account],
-        primary_avail: &HashMap<AccountId, Money>,
-        secondary_avail: &HashMap<AccountId, Money>,
     ) {
         // Outer block.
         let block = Block::default()
@@ -375,36 +383,34 @@ impl InterEntityForm {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        // Split vertically: top pane (form) and bottom pane (account lists).
-        let top_bottom = Layout::default()
+        // Split: header row + Entity A section + Entity B section + error bar.
+        let sections = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Percentage(65), // top: header + line sections
-                Constraint::Percentage(35), // bottom: account lists
+                Constraint::Length(3), // shared date + memo header
+                Constraint::Min(5),    // Entity A lines
+                Constraint::Min(5),    // Entity B lines
             ])
             .split(inner);
 
-        let top_area = top_bottom[0];
-        let bottom_area = top_bottom[1];
+        self.render_header(frame, sections[0]);
+        self.render_entity_section(frame, sections[1], primary_name, true);
+        self.render_entity_section(frame, sections[2], secondary_name, false);
 
-        self.render_top_pane(
-            frame,
-            top_area,
-            primary_name,
-            secondary_name,
-            primary_avail,
-            secondary_avail,
-        );
-        self.render_bottom_pane(
-            frame,
-            bottom_area,
-            primary_name,
-            secondary_name,
-            primary_accounts,
-            secondary_accounts,
-            primary_avail,
-            secondary_avail,
-        );
+        // Error bar at the bottom.
+        if let Some(ref err) = self.error {
+            let err_area = Rect::new(
+                inner.x,
+                inner.y + inner.height.saturating_sub(1),
+                inner.width,
+                1,
+            );
+            frame.render_widget(
+                Paragraph::new(format!("  Error: {err}"))
+                    .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+                err_area,
+            );
+        }
 
         // Account picker overlay (rendered on top of everything).
         self.form_a
@@ -415,57 +421,6 @@ impl InterEntityForm {
         // Exit confirmation overlay (rendered on top).
         if let Some(ref confirm) = self.exit_confirm {
             confirm.render(frame, area);
-        }
-    }
-
-    fn render_top_pane(
-        &self,
-        frame: &mut Frame,
-        area: Rect,
-        primary_name: &str,
-        secondary_name: &str,
-        primary_avail: &HashMap<AccountId, Money>,
-        secondary_avail: &HashMap<AccountId, Money>,
-    ) {
-        // Split top pane: header row + Entity A section + Entity B section.
-        let sections = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(3), // shared date + memo header
-                Constraint::Min(5),    // Entity A lines
-                Constraint::Min(5),    // Entity B lines
-            ])
-            .split(area);
-
-        self.render_header(frame, sections[0]);
-        self.render_entity_section(
-            frame,
-            sections[1],
-            primary_name,
-            primary_avail,
-            true, // is_primary
-        );
-        self.render_entity_section(
-            frame,
-            sections[2],
-            secondary_name,
-            secondary_avail,
-            false, // is_secondary
-        );
-
-        // Error bar at the bottom of the top pane.
-        if let Some(ref err) = self.error {
-            let err_area = Rect::new(
-                area.x,
-                area.y + area.height.saturating_sub(1),
-                area.width,
-                1,
-            );
-            frame.render_widget(
-                Paragraph::new(format!("  Error: {err}"))
-                    .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
-                err_area,
-            );
         }
     }
 
@@ -512,7 +467,6 @@ impl InterEntityForm {
         frame: &mut Frame,
         area: Rect,
         entity_name: &str,
-        avail: &HashMap<AccountId, Money>,
         is_primary: bool,
     ) {
         let active_section = if is_primary {
@@ -545,41 +499,7 @@ impl InterEntityForm {
         } else {
             &self.form_b
         };
-        form.render_lines_only(frame, inner, avail);
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn render_bottom_pane(
-        &self,
-        frame: &mut Frame,
-        area: Rect,
-        primary_name: &str,
-        secondary_name: &str,
-        primary_accounts: &[Account],
-        secondary_accounts: &[Account],
-        primary_avail: &HashMap<AccountId, Money>,
-        secondary_avail: &HashMap<AccountId, Money>,
-    ) {
-        // Side-by-side account lists.
-        let halves = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(area);
-
-        render_account_list(
-            frame,
-            halves[0],
-            primary_name,
-            primary_accounts,
-            primary_avail,
-        );
-        render_account_list(
-            frame,
-            halves[1],
-            secondary_name,
-            secondary_accounts,
-            secondary_avail,
-        );
+        form.render_lines_only(frame, inner, &HashMap::new());
     }
 }
 
@@ -587,90 +507,6 @@ impl Default for InterEntityForm {
     fn default() -> Self {
         Self::new()
     }
-}
-
-// ── Bottom-pane account list renderer ─────────────────────────────────────────
-
-fn render_account_list(
-    frame: &mut Frame,
-    area: Rect,
-    entity_name: &str,
-    accounts: &[Account],
-    avail: &HashMap<AccountId, Money>,
-) {
-    let block = Block::default()
-        .title(format!(" {entity_name} Accounts "))
-        .borders(Borders::ALL)
-        .style(Style::default().fg(Color::DarkGray));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    if accounts.is_empty() {
-        frame.render_widget(
-            Paragraph::new("(no accounts)").style(Style::default().fg(Color::DarkGray)),
-            inner,
-        );
-        return;
-    }
-
-    let has_avail = !avail.is_empty();
-    let header_row = if has_avail {
-        Row::new(vec![
-            Cell::from("#").style(Style::default().add_modifier(Modifier::BOLD)),
-            Cell::from("Name").style(Style::default().add_modifier(Modifier::BOLD)),
-            Cell::from("Avail").style(Style::default().add_modifier(Modifier::BOLD)),
-        ])
-    } else {
-        Row::new(vec![
-            Cell::from("#").style(Style::default().add_modifier(Modifier::BOLD)),
-            Cell::from("Name").style(Style::default().add_modifier(Modifier::BOLD)),
-        ])
-    };
-
-    let rows: Vec<Row> = accounts
-        .iter()
-        .map(|a| {
-            let style = if a.is_placeholder {
-                Style::default().fg(Color::DarkGray)
-            } else {
-                Style::default().fg(Color::White)
-            };
-            if has_avail {
-                let avail_cell = match avail.get(&a.id) {
-                    Some(amt) => {
-                        Cell::from(amt.to_string()).style(Style::default().fg(Color::Cyan))
-                    }
-                    None => Cell::from("").style(Style::default().fg(Color::DarkGray)),
-                };
-                Row::new(vec![
-                    Cell::from(a.number.as_str()).style(style),
-                    Cell::from(a.name.as_str()).style(style),
-                    avail_cell,
-                ])
-            } else {
-                Row::new(vec![
-                    Cell::from(a.number.as_str()).style(style),
-                    Cell::from(a.name.as_str()).style(style),
-                ])
-            }
-        })
-        .collect();
-
-    let widths: &[Constraint] = if has_avail {
-        &[
-            Constraint::Length(6),
-            Constraint::Min(10),
-            Constraint::Length(12),
-        ]
-    } else {
-        &[Constraint::Length(6), Constraint::Min(10)]
-    };
-
-    let table = Table::new(rows, widths)
-        .header(header_row)
-        .block(Block::default());
-
-    frame.render_widget(table, inner);
 }
 
 // ── Style helper ──────────────────────────────────────────────────────────────
@@ -700,7 +536,7 @@ pub fn hint_line() -> Line<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::AccountType;
+    use crate::types::{AccountId, AccountType};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     fn key(code: KeyCode) -> KeyEvent {

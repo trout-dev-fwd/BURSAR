@@ -622,6 +622,16 @@ impl JeForm {
         self.focus = Focus::LineAccount(0);
     }
 
+    /// Advances focus to the last line-item field (Note of the last row).
+    /// Called by `InterEntityForm` when BackTab-ing into this form from the next section.
+    pub fn skip_to_last_line_field(&mut self) {
+        if self.lines.is_empty() {
+            self.focus = Focus::Memo;
+        } else {
+            self.focus = Focus::LineNote(self.lines.len() - 1);
+        }
+    }
+
     /// Returns `true` if the form has any user-entered content (account selected,
     /// any text typed in date, memo, debit, credit, or note fields).
     /// Used by `InterEntityForm` to decide whether to show an "unsaved changes" prompt.
