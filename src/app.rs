@@ -2391,16 +2391,21 @@ impl App {
                                     flow.account_picker.refresh(&flow.picker_accounts);
                                     flow.step = ImportFlowStep::NewBankAccountPicker;
                                 }
+                            } else if cur == 1 {
+                                // Cycle through date formats.
+                                if let Some(ref mut cfg) = flow.detected_config {
+                                    cfg.date_format =
+                                        cycle_date_format(&cfg.date_format).to_string();
+                                }
                             } else if cur == 4 && is_single {
                                 // Toggle sign convention.
                                 if let Some(ref mut cfg) = flow.detected_config {
                                     cfg.debit_is_negative = !cfg.debit_is_negative;
                                 }
                             } else {
-                                // Open inline edit for text fields.
+                                // Open inline edit for text fields (rows 0, 2, 3, 4-split).
                                 let val = flow.detected_config.as_ref().map(|cfg| match cur {
                                     0 => cfg.date_column.clone(),
-                                    1 => cfg.date_format.clone(),
                                     2 => cfg.description_column.clone(),
                                     3 if is_single => cfg.amount_column.clone().unwrap_or_default(),
                                     3 => cfg.debit_column.clone().unwrap_or_default(),
@@ -3293,14 +3298,33 @@ fn render_new_bank_detection_modal(frame: &mut ratatui::Frame, area: Rect, messa
     );
 }
 
+/// Standard date formats available in the cycle selector, in cycle order.
+const DATE_FORMAT_CYCLE: &[&str] = &[
+    "%m/%d/%Y", "%Y-%m-%d", "%d/%m/%Y", "%m-%d-%Y", "%Y/%m/%d", "%d-%m-%Y",
+];
+
+/// Advances to the next date format in the cycle.
+///
+/// If `current` matches a standard format, returns the next one (wrapping).
+/// If `current` is an unrecognised format, returns the first standard format
+/// (preserving the unknown value as the implicit starting point).
+fn cycle_date_format(current: &str) -> &'static str {
+    if let Some(pos) = DATE_FORMAT_CYCLE.iter().position(|&f| f == current) {
+        DATE_FORMAT_CYCLE[(pos + 1) % DATE_FORMAT_CYCLE.len()]
+    } else {
+        DATE_FORMAT_CYCLE[0]
+    }
+}
+
 /// Returns a human-readable label for a chrono date format string.
 fn friendly_date_format(fmt: &str) -> String {
     match fmt {
-        "%m/%d/%Y" => "MM/DD/YYYY (e.g., 03/17/2026)".to_string(),
-        "%Y-%m-%d" => "YYYY-MM-DD (e.g., 2026-03-17)".to_string(),
-        "%d/%m/%Y" => "DD/MM/YYYY (e.g., 17/03/2026)".to_string(),
-        "%m-%d-%Y" => "MM-DD-YYYY (e.g., 03-17-2026)".to_string(),
-        "%d-%m-%Y" => "DD-MM-YYYY (e.g., 17-03-2026)".to_string(),
+        "%m/%d/%Y" => "MM/DD/YYYY e.g., 01/27/2026".to_string(),
+        "%Y-%m-%d" => "YYYY-MM-DD e.g., 2026-01-27".to_string(),
+        "%d/%m/%Y" => "DD/MM/YYYY e.g., 27/01/2026".to_string(),
+        "%m-%d-%Y" => "MM-DD-YYYY e.g., 01-27-2026".to_string(),
+        "%Y/%m/%d" => "YYYY/MM/DD e.g., 2026/01/27".to_string(),
+        "%d-%m-%Y" => "DD-MM-YYYY e.g., 27-01-2026".to_string(),
         other => other.to_string(),
     }
 }
@@ -3345,14 +3369,10 @@ fn render_new_bank_confirmation_modal(
         let mark = if sel { "\u{25b6}" } else { " " };
         let lbl_text = format!("  {} {:<14}", mark, label);
         if sel && is_editing {
-            let mut spans = vec![
+            Line::from(vec![
                 Span::styled(lbl_text, label_s),
                 Span::styled(format!("{}_", edit_buf), edit_s),
-            ];
-            if idx == 1 {
-                spans.push(Span::styled("  (chrono fmt)", dim_s));
-            }
-            Line::from(spans)
+            ])
         } else if sel {
             Line::from(vec![
                 Span::styled(lbl_text, sel_s),
@@ -3362,6 +3382,26 @@ fn render_new_bank_confirmation_modal(
             Line::from(vec![
                 Span::styled(lbl_text, label_s),
                 Span::styled(format!("\"{}\"", display_val), normal_s),
+            ])
+        }
+    };
+
+    // Builds the date format cycle row (row 1).
+    let make_date_format_row = |fmt: &str| -> Line {
+        let sel = cursor == 1;
+        let mark = if sel { "\u{25b6}" } else { " " };
+        let lbl_text = format!("  {} {:<14}", mark, "Date format:");
+        let display = friendly_date_format(fmt);
+        if sel {
+            Line::from(vec![
+                Span::styled(lbl_text, sel_s),
+                Span::styled(display, sel_s),
+                Span::styled("  [Enter/Space: cycle]", dim_s),
+            ])
+        } else {
+            Line::from(vec![
+                Span::styled(lbl_text, label_s),
+                Span::styled(display, normal_s),
             ])
         }
     };
@@ -3380,12 +3420,8 @@ fn render_new_bank_confirmation_modal(
     if let Some(cfg) = &flow.detected_config {
         // Row 0: date column
         lines.push(make_row(0, "Date column:", &cfg.date_column));
-        // Row 1: date format — display friendly label, edit raw chrono string
-        lines.push(make_row(
-            1,
-            "Date format:",
-            &friendly_date_format(&cfg.date_format),
-        ));
+        // Row 1: date format — cycle selector (not free-text edit)
+        lines.push(make_date_format_row(&cfg.date_format));
         // Row 2: description column
         lines.push(make_row(2, "Description:", &cfg.description_column));
 
