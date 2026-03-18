@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use anyhow::Result;
 use crossterm::event::{Event, KeyCode};
 use ratatui::{
     Frame,
@@ -12,8 +13,9 @@ use ratatui::{
 };
 
 use crate::config::WorkspaceConfig;
+use crate::widgets::{ConfirmAction, Confirmation, TextInputAction, TextInputModal};
 
-const BANNER: &str = r"  _____  __ __  _____  _____ _____  _____
+const BANNER: &str = r" _____  __ __  _____  _____ _____  _____
  /  _  \/  |  \/  _  \/  ___>  _  \/  _  \
  |  _  <|  |  ||  _  <|___  |  _  ||  _  <
  \_____/\_____/\__|\_/<_____|__|__/\__|\_/";
@@ -35,6 +37,12 @@ pub enum StartupAction {
     None,
 }
 
+/// Which entity management operation is awaiting text-input confirmation.
+enum PendingEntityAction {
+    Add,
+    Edit(usize),
+}
+
 /// TUI screen displayed after the splash screen.
 /// Shows all configured entities and lets the user select one to open.
 pub struct StartupScreen {
@@ -42,23 +50,23 @@ pub struct StartupScreen {
     pub selected_index: usize,
     /// Reserved for Task 4 (update check). Always `None` for now.
     pub update_notice: Option<String>,
-    /// Path to `workspace.toml` — used by Task 3 entity management writes.
+    /// Path to `workspace.toml` — used by entity management writes.
     pub workspace_path: PathBuf,
+    /// Active text-input modal (add / edit).
+    text_input: Option<TextInputModal>,
+    /// What to do when the text-input modal confirms.
+    pending_action: Option<PendingEntityAction>,
+    /// Active delete-confirmation modal.
+    confirm_delete: Option<Confirmation>,
+    /// Status or error message shown below the entity list.
+    status_message: Option<String>,
 }
 
 impl StartupScreen {
     /// Creates a new `StartupScreen` from the workspace config.
     /// Pre-selects the last-opened entity if recorded in `config.last_opened_entity`.
     pub fn new(config: &WorkspaceConfig, workspace_path: PathBuf) -> Self {
-        let entities: Vec<EntityEntry> = config
-            .entities
-            .iter()
-            .map(|e| EntityEntry {
-                name: e.name.clone(),
-                db_path: e.db_path.to_string_lossy().to_string(),
-                config_path: e.config_path.clone(),
-            })
-            .collect();
+        let entities = Self::entities_from_config(config);
 
         let selected_index = config
             .last_opened_entity
@@ -71,8 +79,14 @@ impl StartupScreen {
             selected_index,
             update_notice: None,
             workspace_path,
+            text_input: None,
+            pending_action: None,
+            confirm_delete: None,
+            status_message: None,
         }
     }
+
+    // ── Rendering ─────────────────────────────────────────────────────────────
 
     /// Renders the complete startup screen.
     pub fn render(&self, frame: &mut Frame) {
@@ -82,13 +96,22 @@ impl StartupScreen {
             .constraints([
                 Constraint::Length(5), // banner (4 lines) + version line
                 Constraint::Min(3),    // entity list
+                Constraint::Length(1), // status message
                 Constraint::Length(1), // hotkey bar
             ])
             .split(area);
 
         render_banner_area(frame, chunks[0]);
         self.render_entity_list(frame, chunks[1]);
-        self.render_hotkey_bar(frame, chunks[2]);
+        self.render_status_bar(frame, chunks[2]);
+        self.render_hotkey_bar(frame, chunks[3]);
+
+        // Overlay modals last so they appear on top.
+        if let Some(modal) = &self.text_input {
+            modal.render(frame, area);
+        } else if let Some(confirm) = &self.confirm_delete {
+            confirm.render(frame, area);
+        }
     }
 
     fn render_entity_list(&self, frame: &mut Frame, area: Rect) {
@@ -133,6 +156,20 @@ impl StartupScreen {
         frame.render_widget(Paragraph::new(lines), inner);
     }
 
+    fn render_status_bar(&self, frame: &mut Frame, area: Rect) {
+        if let Some(msg) = &self.status_message {
+            let color = if msg.starts_with("Error") || msg.starts_with("error") {
+                Color::Red
+            } else {
+                Color::Green
+            };
+            let p = Paragraph::new(msg.as_str())
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(color));
+            frame.render_widget(p, area);
+        }
+    }
+
     fn render_hotkey_bar(&self, frame: &mut Frame, area: Rect) {
         let bar = Paragraph::new("[Enter] Open  [a] Add  [e] Edit  [d] Delete  [q] Quit")
             .alignment(Alignment::Center)
@@ -140,28 +177,232 @@ impl StartupScreen {
         frame.render_widget(bar, area);
     }
 
+    // ── Event handling ────────────────────────────────────────────────────────
+
     /// Handles one input event. Returns a [`StartupAction`] describing any state change.
     pub fn handle_event(&mut self, event: &Event) -> StartupAction {
-        if let Event::Key(key) = event {
-            match key.code {
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.selected_index = self.selected_index.saturating_sub(1);
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    if self.selected_index + 1 < self.entities.len() {
-                        self.selected_index += 1;
+        let Event::Key(key) = event else {
+            return StartupAction::None;
+        };
+
+        // ── Text-input modal is active ─────────────────────────────────────
+        if let Some(mut modal) = self.text_input.take() {
+            match modal.handle_key(*key) {
+                TextInputAction::Confirm(text) => {
+                    let text = text.trim().to_string();
+                    if text.is_empty() {
+                        self.status_message = Some("Name cannot be empty.".to_string());
+                    } else if let Some(action) = self.pending_action.take()
+                        && let Err(e) = self.apply_text_action(action, text)
+                    {
+                        self.status_message = Some(format!("Error: {e}"));
                     }
+                    self.pending_action = None;
                 }
-                KeyCode::Enter => {
-                    if !self.entities.is_empty() {
-                        return StartupAction::OpenEntity(self.selected_index);
-                    }
+                TextInputAction::Cancel => {
+                    self.pending_action = None;
                 }
-                KeyCode::Char('q') => return StartupAction::Quit,
-                _ => {}
+                TextInputAction::None => {
+                    // Put modal back — still editing.
+                    self.text_input = Some(modal);
+                }
             }
+            return StartupAction::None;
         }
+
+        // ── Delete confirmation modal is active ────────────────────────────
+        if let Some(mut confirm) = self.confirm_delete.take() {
+            match confirm.handle_key(*key) {
+                ConfirmAction::Confirmed => {
+                    let idx = self.selected_index;
+                    if let Err(e) = self.delete_entity(idx) {
+                        self.status_message = Some(format!("Error: {e}"));
+                    }
+                }
+                ConfirmAction::Cancelled => {}
+                ConfirmAction::Pending => {
+                    self.confirm_delete = Some(confirm);
+                }
+            }
+            return StartupAction::None;
+        }
+
+        // ── Normal navigation ──────────────────────────────────────────────
+        // Any key clears the previous status message.
+        self.status_message = None;
+
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.selected_index = self.selected_index.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if self.selected_index + 1 < self.entities.len() {
+                    self.selected_index += 1;
+                }
+            }
+            KeyCode::Enter => {
+                if !self.entities.is_empty() {
+                    return StartupAction::OpenEntity(self.selected_index);
+                }
+            }
+            KeyCode::Char('q') => return StartupAction::Quit,
+
+            KeyCode::Char('a') => {
+                self.text_input = Some(TextInputModal::new("Entity name", ""));
+                self.pending_action = Some(PendingEntityAction::Add);
+            }
+            KeyCode::Char('e') => {
+                if !self.entities.is_empty() {
+                    let current_name = self.entities[self.selected_index].name.clone();
+                    self.text_input = Some(TextInputModal::new("Entity name", current_name));
+                    self.pending_action = Some(PendingEntityAction::Edit(self.selected_index));
+                }
+            }
+            KeyCode::Char('d') => {
+                if !self.entities.is_empty() {
+                    let name = &self.entities[self.selected_index].name;
+                    self.confirm_delete = Some(Confirmation::new(format!(
+                        "Remove '{name}' from workspace? (files are preserved)"
+                    )));
+                }
+            }
+            _ => {}
+        }
+
         StartupAction::None
+    }
+
+    // ── Entity management helpers ─────────────────────────────────────────────
+
+    /// Dispatches a confirmed text action to the appropriate add/edit handler.
+    fn apply_text_action(&mut self, action: PendingEntityAction, name: String) -> Result<()> {
+        match action {
+            PendingEntityAction::Add => self.add_entity(name),
+            PendingEntityAction::Edit(idx) => self.edit_entity(idx, name),
+        }
+    }
+
+    /// Adds a new entity to workspace.toml and creates its entity .toml file.
+    fn add_entity(&mut self, name: String) -> Result<()> {
+        let workspace_dir = self
+            .workspace_path
+            .parent()
+            .unwrap_or(std::path::Path::new("."))
+            .to_path_buf();
+
+        // Derive filenames from the name.
+        let stem = name.to_lowercase().replace(' ', "-");
+        let db_filename = format!("{stem}.sqlite");
+        let config_filename = format!("{stem}.toml");
+
+        // Resolve directory: sibling of first existing entity db, or workspace dir.
+        let entity_dir = self
+            .entities
+            .first()
+            .and_then(|e| {
+                let p = std::path::Path::new(&e.db_path);
+                if p.is_absolute() {
+                    p.parent().map(|d| d.to_path_buf())
+                } else {
+                    workspace_dir.join(p).parent().map(|d| d.to_path_buf())
+                }
+            })
+            .unwrap_or_else(|| workspace_dir.clone());
+
+        // Write to workspace.toml using toml_edit.
+        let content = std::fs::read_to_string(&self.workspace_path)?;
+        let mut doc = content.parse::<toml_edit::DocumentMut>()?;
+
+        let mut entity = toml_edit::Table::new();
+        entity["name"] = toml_edit::value(&name);
+        entity["db_path"] = toml_edit::value(&db_filename);
+        entity["config_path"] = toml_edit::value(&config_filename);
+
+        if doc.get("entities").is_none() {
+            doc["entities"] = toml_edit::Item::ArrayOfTables(toml_edit::ArrayOfTables::new());
+        }
+        doc["entities"]
+            .as_array_of_tables_mut()
+            .ok_or_else(|| anyhow::anyhow!("entities is not an array of tables"))?
+            .push(entity);
+
+        std::fs::write(&self.workspace_path, doc.to_string())?;
+
+        // Create a minimal entity .toml file (does not overwrite if it exists).
+        let config_path = entity_dir.join(&config_filename);
+        if !config_path.exists() {
+            if let Some(parent) = config_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&config_path, format!("# Entity configuration for {name}\n"))?;
+        }
+
+        // Refresh.
+        self.reload_entities()?;
+        // Select the newly added entity.
+        if let Some(idx) = self.entities.iter().position(|e| e.name == name) {
+            self.selected_index = idx;
+        }
+        self.status_message = Some(format!("Added '{name}'."));
+        Ok(())
+    }
+
+    /// Renames the display name of entity at `index` in workspace.toml.
+    fn edit_entity(&mut self, index: usize, new_name: String) -> Result<()> {
+        let content = std::fs::read_to_string(&self.workspace_path)?;
+        let mut doc = content.parse::<toml_edit::DocumentMut>()?;
+        doc["entities"]
+            .as_array_of_tables_mut()
+            .ok_or_else(|| anyhow::anyhow!("entities is not an array of tables"))?
+            .get_mut(index)
+            .ok_or_else(|| anyhow::anyhow!("entity index out of bounds"))?["name"] =
+            toml_edit::value(&new_name);
+        std::fs::write(&self.workspace_path, doc.to_string())?;
+
+        self.reload_entities()?;
+        self.status_message = Some(format!("Renamed to '{new_name}'."));
+        Ok(())
+    }
+
+    /// Removes entity at `index` from workspace.toml (files are preserved).
+    fn delete_entity(&mut self, index: usize) -> Result<()> {
+        let db_path = self.entities[index].db_path.clone();
+
+        let content = std::fs::read_to_string(&self.workspace_path)?;
+        let mut doc = content.parse::<toml_edit::DocumentMut>()?;
+        doc["entities"]
+            .as_array_of_tables_mut()
+            .ok_or_else(|| anyhow::anyhow!("entities is not an array of tables"))?
+            .remove(index);
+        std::fs::write(&self.workspace_path, doc.to_string())?;
+
+        self.reload_entities()?;
+        // Keep selected_index in bounds.
+        if self.selected_index >= self.entities.len() {
+            self.selected_index = self.entities.len().saturating_sub(1);
+        }
+        self.status_message = Some(format!("Removed. Database preserved at {db_path}"));
+        Ok(())
+    }
+
+    /// Re-reads workspace.toml and refreshes `self.entities`.
+    fn reload_entities(&mut self) -> Result<()> {
+        let config = crate::config::load_config(&self.workspace_path)?;
+        self.entities = Self::entities_from_config(&config);
+        Ok(())
+    }
+
+    /// Converts a [`WorkspaceConfig`] into a flat list of [`EntityEntry`] values.
+    fn entities_from_config(config: &WorkspaceConfig) -> Vec<EntityEntry> {
+        config
+            .entities
+            .iter()
+            .map(|e| EntityEntry {
+                name: e.name.clone(),
+                db_path: e.db_path.to_string_lossy().to_string(),
+                config_path: e.config_path.clone(),
+            })
+            .collect()
     }
 }
 
