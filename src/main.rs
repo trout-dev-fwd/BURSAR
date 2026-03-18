@@ -127,19 +127,16 @@ fn main() -> Result<()> {
                 if event::poll(Duration::from_millis(500))? {
                     let evt = event::read()?;
                     match screen.handle_event(&evt) {
-                        StartupAction::OpenEntity(idx) => {
-                            let entity_cfg = &config.entities[idx];
-                            let entity_name = entity_cfg.name.clone();
-                            let db_path = entity_cfg.db_path.clone();
+                        StartupAction::OpenEntity { name, db_path } => {
                             let report_dir = config.report_output_dir.clone();
 
                             // Persist the selection so it is pre-selected on next launch.
-                            write_last_opened(&config_path, &entity_name)?;
+                            write_last_opened(&config_path, &name)?;
 
                             let db = EntityDb::open(&db_path)?;
-                            run_startup_checks(&mut terminal, &db, &entity_name, &config)?;
+                            run_startup_checks(&mut terminal, &db, &name, &config)?;
 
-                            let entity_ctx = EntityContext::new(db, entity_name, report_dir);
+                            let entity_ctx = EntityContext::new(db, name, report_dir);
                             let app = Box::new(App::new(entity_ctx, config.clone()));
                             Transition::ToRunning(app)
                         }

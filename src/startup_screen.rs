@@ -1,6 +1,6 @@
 //! TUI startup screen: entity picker shown after the splash, before any entity DB is loaded.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use crossterm::event::{Event, KeyCode};
@@ -29,8 +29,8 @@ pub struct EntityEntry {
 
 /// Actions returned by [`StartupScreen::handle_event`].
 pub enum StartupAction {
-    /// Open the entity at the given index in the entity list.
-    OpenEntity(usize),
+    /// Open the entity with the given name and resolved database path.
+    OpenEntity { name: String, db_path: PathBuf },
     /// Quit the application cleanly.
     Quit,
     /// No state change required.
@@ -256,8 +256,11 @@ impl StartupScreen {
                 }
             }
             KeyCode::Enter => {
-                if !self.entities.is_empty() {
-                    return StartupAction::OpenEntity(self.selected_index);
+                if let Some(entry) = self.entities.get(self.selected_index) {
+                    return StartupAction::OpenEntity {
+                        name: entry.name.clone(),
+                        db_path: Path::new(&entry.db_path).to_path_buf(),
+                    };
                 }
             }
             KeyCode::Char('q') => return StartupAction::Quit,
