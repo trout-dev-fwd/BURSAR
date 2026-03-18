@@ -11,7 +11,8 @@
 
 A terminal-based double-entry bookkeeping application for small businesses. Single-user,
 single-entity (with inter-entity modal for transfers), fully synchronous. Includes an
-AI Accountant chat panel (Claude API) and a CSV bank import pipeline.
+AI Accountant chat panel (Claude API), a CSV bank import pipeline, a startup screen with
+entity management, and an update checker.
 
 ---
 
@@ -19,15 +20,17 @@ AI Accountant chat panel (Claude API) and a CSV bank import pipeline.
 
 | Layer | Technology |
 |-------|-----------|
-| Language | Rust (stable) |
+| Language | Rust (stable, edition 2024) |
 | TUI framework | Ratatui + Crossterm |
 | Database | SQLite via rusqlite (WAL mode, FK enabled) |
-| HTTP client | ureq (synchronous, blocking) |
+| HTTP client | ureq (synchronous, blocking, `json` feature) |
 | AI | Claude API (Anthropic) |
 | CSV parsing | csv crate |
 | Error handling | thiserror (domain), anyhow (CLI boundary) |
 | Logging | tracing crate |
-| Serialization | serde + serde_json + toml |
+| Serialization | serde + serde_json + toml + toml_edit |
+
+**Crate name:** `bursar` (binary: `bursar`). Config directory: `~/.config/bursar/`.
 
 **Hard constraints:** No async. No tokio. No threading. No `unsafe`. No `.unwrap()`.
 
@@ -35,122 +38,157 @@ AI Accountant chat panel (Claude API) and a CSV bank import pipeline.
 
 ## Codebase Overview
 
-**63 Rust source files, ~41,600 lines of code, 609 tests.**
+**68 Rust source files, ~43,060 lines of code, 638 tests.**
 
 ```
 src/
-├── main.rs                          60 lines   — Entry point
-├── lib.rs                           14 lines   — Module declarations
-├── app.rs                        4,149 lines   — Application core, event loop, key dispatch
-├── config.rs                       643 lines   — Config loading (workspace, entity, secrets)
-├── startup.rs                      601 lines   — DB/config initialization, entity selection
-├── integration_tests.rs            478 lines   — Cross-module integration tests
+├── main.rs                          205 lines   — Terminal setup, AppState wrapper loop
+├── lib.rs                            16 lines   — Module declarations
+├── app.rs                         4,185 lines   — Application core, key dispatch, AI/import
+├── config.rs                        722 lines   — Config loading (workspace, entity, secrets)
+├── startup.rs                       588 lines   — DB/config initialization, entity selection
+├── startup_screen.rs                676 lines   — Startup screen: entity picker, add/edit/delete
+├── update.rs                         72 lines   — GitHub release update checker (semver)
+├── integration_tests.rs             478 lines   — Cross-module integration tests
 │
-├── ai/                           3,047 lines   — AI Accountant
-│   ├── mod.rs                      283 lines   — Wire types (ApiMessage, ToolCall, RoundResult, etc.)
-│   ├── client.rs                   832 lines   — HTTP client, request/response, classify_round
-│   ├── context.rs                  197 lines   — Context file loading for system prompts
-│   ├── csv_import.rs               810 lines   — CSV parsing, 3-pass matching pipeline
-│   └── tools.rs                    925 lines   — 10 read-only tool definitions + fulfillment
+├── ai/                            3,047 lines   — AI Accountant
+│   ├── mod.rs                       283 lines   — Wire types (ApiMessage, ToolCall, RoundResult, etc.)
+│   ├── client.rs                    832 lines   — HTTP client, request/response, classify_round
+│   ├── context.rs                   197 lines   — Context file loading for system prompts
+│   ├── csv_import.rs                810 lines   — CSV parsing, 3-pass matching pipeline
+│   └── tools.rs                     925 lines   — 10 read-only tool definitions + fulfillment
 │
-├── db/                           7,452 lines   — Database layer
-│   ├── mod.rs                      263 lines   — EntityDb wrapper, migrations
-│   ├── schema.rs                   633 lines   — CREATE TABLE statements (15 tables)
-│   ├── account_repo.rs           1,096 lines   — Chart of accounts CRUD
-│   ├── journal_repo.rs           1,955 lines   — Journal entries, lines, import queries
-│   ├── asset_repo.rs             1,225 lines   — Fixed assets, depreciation
-│   ├── fiscal_repo.rs              654 lines   — Fiscal years and periods
-│   ├── envelope_repo.rs            662 lines   — Envelope allocations and ledger
-│   ├── ar_repo.rs                  689 lines   — Accounts receivable
-│   ├── ap_repo.rs                  535 lines   — Accounts payable
-│   ├── recurring_repo.rs           685 lines   — Recurring entry templates
-│   ├── audit_repo.rs               560 lines   — Audit log
-│   └── import_mapping_repo.rs      495 lines   — Learned CSV mappings
+├── db/                            7,452 lines   — Database layer
+│   ├── mod.rs                       263 lines   — EntityDb wrapper, migrations
+│   ├── schema.rs                    633 lines   — CREATE TABLE statements (15 tables)
+│   ├── account_repo.rs            1,096 lines   — Chart of accounts CRUD
+│   ├── journal_repo.rs             1,955 lines   — Journal entries, lines, import queries
+│   ├── asset_repo.rs              1,225 lines   — Fixed assets, depreciation
+│   ├── fiscal_repo.rs               654 lines   — Fiscal years and periods
+│   ├── envelope_repo.rs             662 lines   — Envelope allocations and ledger
+│   ├── ar_repo.rs                   689 lines   — Accounts receivable
+│   ├── ap_repo.rs                   535 lines   — Accounts payable
+│   ├── recurring_repo.rs            685 lines   — Recurring entry templates
+│   ├── audit_repo.rs                560 lines   — Audit log
+│   └── import_mapping_repo.rs       495 lines   — Learned CSV mappings
 │
-├── inter_entity/                 2,292 lines   — Inter-entity transfers
-│   ├── mod.rs                      427 lines   — Mode management
-│   ├── form.rs                     878 lines   — Transfer form
-│   ├── recovery.rs                 453 lines   — Orphan detection and recovery
-│   └── write_protocol.rs          534 lines   — Atomic two-DB write
+├── inter_entity/                  2,156 lines   — Inter-entity transfers
+│   ├── mod.rs                       427 lines   — Mode management
+│   ├── form.rs                      742 lines   — Transfer form
+│   ├── recovery.rs                  453 lines   — Orphan detection and recovery
+│   └── write_protocol.rs           534 lines   — Atomic two-DB write
 │
-├── reports/                      3,081 lines   — Report generation
-│   ├── mod.rs                      539 lines   — Report trait, shared rendering
-│   ├── trial_balance.rs            286 lines
-│   ├── balance_sheet.rs            272 lines
-│   ├── income_statement.rs         260 lines
-│   ├── cash_flow.rs                295 lines
-│   ├── account_detail.rs           288 lines
-│   ├── ar_aging.rs                 311 lines
-│   ├── ap_aging.rs                 249 lines
-│   ├── fixed_asset_schedule.rs     227 lines
-│   └── envelope_budget.rs          354 lines
+├── reports/                       3,081 lines   — Report generation
+│   ├── mod.rs                       539 lines   — Report trait, shared rendering
+│   ├── trial_balance.rs             286 lines
+│   ├── balance_sheet.rs             272 lines
+│   ├── income_statement.rs          260 lines
+│   ├── cash_flow.rs                 295 lines
+│   ├── account_detail.rs            288 lines
+│   ├── ar_aging.rs                  311 lines
+│   ├── ap_aging.rs                  249 lines
+│   ├── fixed_asset_schedule.rs      227 lines
+│   └── envelope_budget.rs           354 lines
 │
-├── services/                     2,036 lines   — Business logic
-│   ├── mod.rs                        2 lines
-│   ├── journal.rs                1,370 lines   — Posting, reversal, depreciation, year-end
-│   └── fiscal.rs                   664 lines   — Period management, close/reopen
+├── services/                      2,036 lines   — Business logic
+│   ├── mod.rs                         2 lines
+│   ├── journal.rs                 1,370 lines   — Posting, reversal, depreciation, year-end
+│   └── fiscal.rs                    664 lines   — Period management, close/reopen
 │
-├── tabs/                         9,569 lines   — TUI tabs (one file each)
-│   ├── mod.rs                      136 lines   — Tab trait, TabId, TabAction enums
-│   ├── chart_of_accounts.rs      1,759 lines   — Account tree with CRUD
-│   ├── journal_entries.rs        1,876 lines   — JE list/detail, recurring, import triggers
-│   ├── accounts_receivable.rs    1,277 lines   — AR items and payments
-│   ├── accounts_payable.rs       1,186 lines   — AP items and payments
-│   ├── envelopes.rs              1,060 lines   — Allocations and balance views
-│   ├── general_ledger.rs           646 lines   — Per-account transaction ledger
-│   ├── reports.rs                  692 lines   — Report menu and parameter entry
-│   ├── fixed_assets.rs             409 lines   — Asset register, depreciation schedule
-│   └── audit_log.rs                528 lines   — Filterable audit event viewer
+├── tabs/                          9,587 lines   — TUI tabs (one file each)
+│   ├── mod.rs                       136 lines   — Tab trait, TabId, TabAction enums
+│   ├── chart_of_accounts.rs       1,759 lines   — Account tree with CRUD
+│   ├── journal_entries.rs         1,894 lines   — JE list/detail, recurring, import triggers
+│   ├── accounts_receivable.rs     1,277 lines   — AR items and payments
+│   ├── accounts_payable.rs        1,186 lines   — AP items and payments
+│   ├── envelopes.rs               1,060 lines   — Allocations and balance views
+│   ├── general_ledger.rs            646 lines   — Per-account transaction ledger
+│   ├── reports.rs                   692 lines   — Report menu and parameter entry
+│   ├── fixed_assets.rs              409 lines   — Asset register, depreciation schedule
+│   └── audit_log.rs                 528 lines   — Filterable audit event viewer
 │
-├── types/                        1,025 lines   — Domain types
-│   ├── mod.rs                       17 lines
-│   ├── enums.rs                    663 lines   — 15 enums (10 persisted, 5 in-memory)
-│   ├── ids.rs                       72 lines   — 12 ID newtypes (macro-generated)
-│   ├── money.rs                    179 lines   — Money(i64), 8 decimal places
-│   └── percentage.rs                94 lines   — Percentage(i64), 6 decimal places
+├── types/                         1,025 lines   — Domain types
+│   ├── mod.rs                        17 lines
+│   ├── enums.rs                     663 lines   — 15 enums (10 persisted, 5 in-memory)
+│   ├── ids.rs                        72 lines   — 12 ID newtypes (macro-generated)
+│   ├── money.rs                     179 lines   — Money(i64), 8 decimal places
+│   └── percentage.rs                 94 lines   — Percentage(i64), 6 decimal places
 │
-└── widgets/                      4,975 lines   — Reusable UI components
-    ├── mod.rs                       40 lines
-    ├── chat_panel.rs               936 lines   — AI chat interface
-    ├── je_form.rs                1,294 lines   — Journal entry create/edit form
-    ├── user_guide.rs               773 lines   — Embedded user guide viewer
-    ├── fiscal_modal.rs             719 lines   — Fiscal year/period management
-    ├── file_picker.rs              487 lines   — CSV file browser
-    ├── account_picker.rs           460 lines   — Account selection widget
-    ├── status_bar.rs               253 lines   — Status messages + hotkey hints
-    └── confirmation.rs             213 lines   — Y/N confirmation dialog
+└── widgets/                       5,469 lines   — Reusable UI components
+    ├── mod.rs                        44 lines   — centered_rect helper
+    ├── chat_panel.rs                936 lines   — AI chat interface
+    ├── je_form.rs                 1,338 lines   — Journal entry create/edit form
+    ├── user_guide.rs                773 lines   — Embedded user guide viewer
+    ├── fiscal_modal.rs              719 lines   — Fiscal year/period management
+    ├── file_picker.rs               487 lines   — CSV file browser
+    ├── account_picker.rs            464 lines   — Account selection widget
+    ├── text_input_modal.rs          337 lines   — Reusable single-line text input dialog
+    ├── status_bar.rs                264 lines   — Status messages + hotkey hints
+    ├── confirmation.rs              215 lines   — Y/N confirmation dialog
+    └── existing_db_modal.rs         157 lines   — Restore/fresh/cancel for existing DB files
 ```
 
 ---
 
 ## Architecture
 
-### Event Loop (`App::run` in `app.rs`)
+### Three-State Wrapper Loop (`main.rs`)
 
-Synchronous, crossterm-based, 500ms tick rate:
+The application lifecycle is managed by an `AppState` enum in `main.rs`:
 
-```
-loop {
-    terminal.draw(render_frame)
-    poll(500ms) → handle_key(key)
-    // After handle_key, process pending actions:
-    if pending_ai_messages    → handle_ai_request(terminal, messages)
-    if pending_slash_command   → execute_slash_command(terminal, cmd)
-    if pending_bank_detection  → run_bank_detection(terminal)
-    if pending_pass1           → run_pass1_step(terminal)
-    if pending_pass2           → run_pass2_step(terminal)
-    if pending_draft_creation  → run_draft_creation_step(terminal)
-    // Tick:
-    chat_panel.tick()          // advance typewriter
-    status_bar.tick()          // expire messages
-    check unsaved changes      // update [*] indicator
+```rust
+enum AppState {
+    Splash,                      // ASCII banner + optional update check
+    Startup(Box<StartupScreen>), // Entity picker (before any DB is opened)
+    Running(Box<App>),           // Main application (entity DB is open)
 }
 ```
 
-**Key pattern:** `handle_key` never makes blocking API calls. It sets `pending_*` flags,
-which are consumed in the event loop body where `terminal` is available for forced renders.
+The wrapper loop in `main()` owns the terminal and drives whichever state is active:
 
-### Key Dispatch Order (`handle_key`)
+```
+Splash ──(1s minimum)──→ Startup ──(user selects entity)──→ Running
+                                                                │
+                                                           q → Quit
+```
+
+**Splash** renders the ASCII banner and version. If `[updates]` is configured, it checks
+GitHub for a newer release (3s timeout). Enforces a minimum 1-second display.
+
+**Startup** shows `StartupScreen` — the entity picker with add/edit/delete flows. Returns
+`StartupAction::OpenEntity { name, db_path }` when the user selects an entity. On
+transition to Running, the wrapper re-reads `workspace.toml` (to pick up entity changes),
+persists `last_opened_entity` via `toml_edit`, opens the `EntityDb`, runs startup checks,
+and creates `App`.
+
+**Running** delegates to `App`'s extracted methods:
+
+```
+loop {
+    app.render(&mut terminal)?;       // draw one frame
+    poll(500ms) → app.handle_event(&evt);  // process key input
+    app.process_pending(&mut terminal);     // dispatch AI/import/slash
+    app.tick();                             // typewriter, status bar, unsaved
+    if app.should_quit() { break; }
+}
+```
+
+### Extracted App Methods
+
+| Method | Signature | Purpose |
+|--------|-----------|---------|
+| `render` | `(&mut self, terminal: &mut Terminal<B>) -> Result<()>` | Draws one frame |
+| `handle_event` | `(&mut self, event: &Event)` | Routes key events to `handle_key` |
+| `tick` | `(&mut self)` | Typewriter, status expiry, unsaved indicator |
+| `process_pending` | `(&mut self, terminal: &mut Terminal<B>)` | Dispatches pending AI/import/slash |
+| `should_quit` | `(&self) -> bool` | True when app should exit |
+| `run` | `(&mut self) -> Result<()>` | Convenience: sets up terminal and runs its own event loop |
+
+`App::run` still exists as a self-contained convenience method (sets up its own terminal,
+runs the event loop, restores on exit). The extracted methods allow `main.rs` to drive
+the loop externally.
+
+### Key Dispatch Order (`handle_key` in `app.rs`)
 
 Priority from highest to lowest:
 
@@ -169,6 +207,9 @@ Priority from highest to lowest:
 13. **Global hotkeys** → q, ?, f, Ctrl+K, 1-9, Ctrl+Left/Right
 14. **Fallback** → delegate to active tab's `handle_key`
 
+**Note:** Startup screen key handling is in `StartupScreen::handle_event` (called from
+`main.rs`), not in `App::handle_key`.
+
 ### App Struct (key fields)
 
 ```rust
@@ -180,6 +221,7 @@ pub struct App {
     status_bar: StatusBar,
     fiscal_modal: Option<FiscalModal>,
     show_help: bool,
+    inter_entity_help: bool,
     user_guide: Option<UserGuide>,
     should_quit: bool,
     chat_panel: ChatPanel,
@@ -194,6 +236,23 @@ pub struct App {
     pending_pass1: bool,
     pending_pass2: bool,
     pending_draft_creation: bool,
+}
+```
+
+### StartupScreen Struct (key fields)
+
+```rust
+pub struct StartupScreen {
+    pub entities: Vec<EntityEntry>,     // parsed from workspace.toml
+    pub selected_index: usize,          // currently highlighted entity
+    pub update_notice: Option<String>,  // "New version v1.2.0 available..."
+    pub workspace_path: PathBuf,        // path to workspace.toml
+    text_input: Option<TextInputModal>, // active add/edit modal
+    pending_action: Option<PendingEntityAction>,  // Add | Edit(index)
+    confirm_delete: Option<Confirmation>,
+    existing_db_modal: Option<ExistingDbModal>,
+    pending_add: Option<PendingAdd>,    // deferred add awaiting modal decision
+    status_message: Option<String>,     // status/error below entity list
 }
 ```
 
@@ -321,6 +380,16 @@ Enums stored as `TEXT`. Foreign keys enforced. WAL journal mode.
 
 ## Feature Summary
 
+### Startup Screen
+
+- ASCII banner splash with version display
+- Optional GitHub release update check (`[updates]` config section)
+- Entity picker with pre-selection of last-opened entity
+- Add entity (auto-generates db/config filenames, handles existing DB files)
+- Edit entity name (renames db/config files on disk)
+- Delete entity (with confirmation, removes db/config files)
+- Entity changes are persisted to `workspace.toml` via `toml_edit` (format-preserving)
+
 ### 9 Tabs
 
 | # | Tab | Key Features |
@@ -360,7 +429,18 @@ Account Detail, AR Aging, AP Aging, Fixed Asset Schedule, Envelope Budget Summar
 
 ## All Hotkeys
 
-### Global
+### Startup Screen
+
+| Key | Action |
+|-----|--------|
+| `Up/k`, `Down/j` | Navigate entity list |
+| `Enter` | Open selected entity |
+| `a` | Add new entity |
+| `e` | Edit selected entity name |
+| `d` | Delete selected entity |
+| `q` | Quit |
+
+### Global (Running state)
 
 | Key | Action |
 |-----|--------|
@@ -404,7 +484,7 @@ Account Detail, AR Aging, AP Aging, Fixed Asset Schedule, Envelope Budget Summar
 | `e` | Edit draft |
 | `p` | Post draft |
 | `r` | Reverse posted entry |
-| `R` | Recurring templates |
+| `s` | Scheduled entry templates |
 | `t` | Create recurring template |
 | `c` | Toggle reconcile state |
 | `g` | Go to GL for line's account |
@@ -512,6 +592,7 @@ Account Detail, AR Aging, AP Aging, Fixed Asset Schedule, Envelope Budget Summar
 2. Widget returns actions; App processes them (same as Tab pattern)
 3. Add to App struct as `Option<MyWidget>` if modal
 4. Add key dispatch priority level in `handle_key` if it captures input
+5. Register module and re-exports in `src/widgets/mod.rs`
 
 ---
 
@@ -555,19 +636,38 @@ Account Detail, AR Aging, AP Aging, Fixed Asset Schedule, Envelope Budget Summar
 - `ai_client` is `.take()`n during `handle_ai_request` to split borrows on `status_bar` (mut)
   and `entity.db` (shared).
 
+### Entity Path Resolution
+- Entity `db_path` values in `workspace.toml` are resolved relative to the workspace.toml
+  directory (not CWD) via `resolve_relative` in `expand_config_paths`.
+
+### Startup Screen Config Writes
+- Entity add/edit/delete use `toml_edit` for format-preserving TOML writes. When working
+  with `[[entities]]` array-of-tables, edits must target the correct array index.
+- `last_opened_entity` is written to `workspace.toml` on every entity open.
+- Config is re-read from disk on transition from Startup → Running, so entity changes
+  made during the startup session are picked up.
+
+### Secrets Path
+- API key is at `~/.config/bookkeeper/secrets.toml` (note: `bookkeeper`, not `bursar`).
+  This is a historical path that has not been renamed.
+
 ---
 
 ## Configuration Reference
 
-### `workspace.toml` (project root)
+### `workspace.toml` (`~/.config/bursar/workspace.toml` by default)
 
 ```toml
-report_output_dir = "~/accounting/reports"
+report_output_dir = "~/bursar/reports"
 context_dir = "context"               # optional, for AI system prompt context files
+last_opened_entity = "My Business"    # auto-set on entity open, used for pre-selection
 
 [ai]
 persona = "Professional Tax Accountant"
 model = "claude-sonnet-4-20250514"
+
+[updates]
+github_repo = "owner/bursar"          # optional, enables update check on startup
 
 [[entities]]
 name = "My Business"
@@ -601,6 +701,29 @@ Loaded lazily on first AI interaction. Never stored in version control.
 
 ---
 
+## Dependencies
+
+```toml
+[dependencies]
+ratatui = { version = "0.29", features = ["unstable-rendered-line-info"] }
+crossterm = "0.28"
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+toml_edit = "0.25"              # format-preserving TOML editing for workspace.toml writes
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde_json = "1"
+csv = "1"
+ureq = { version = "2", features = ["json"] }
+```
+
+---
+
 ## Out of Scope
 
 These are explicitly excluded from the project:
@@ -610,6 +733,6 @@ These are explicitly excluded from the project:
 - Mouse input
 - PDF report output
 - Invoice management
-- Network features beyond Claude API
+- Network features beyond Claude API and update check
 - Inter-entity with more than 2 entities
 - Auto-writing to entity context files without user action
