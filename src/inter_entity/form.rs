@@ -302,10 +302,15 @@ impl InterEntityForm {
                     self.section = Section::EntityB;
                     self.form_b.skip_to_lines();
                 }
-                // ↑ at Entity B's first row → move to Entity A's last line.
+                // ↑ at Entity B's first row → move to Entity A's last line (Account column).
                 if key.code == KeyCode::Up && !is_primary && was_at_first_row {
                     self.section = Section::EntityA;
-                    self.form_a.skip_to_last_line_field();
+                    self.form_a.skip_to_last_line_account();
+                }
+                // ↑ at Entity A's first row moved focus to Date (invisible header).
+                // Undo that: put focus back on first line.
+                if key.code == KeyCode::Up && is_primary && was_at_first_row {
+                    self.form_a.skip_to_lines();
                 }
             }
         }

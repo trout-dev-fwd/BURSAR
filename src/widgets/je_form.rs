@@ -650,6 +650,16 @@ impl JeForm {
         }
     }
 
+    /// Advances focus to the Account column of the last line row.
+    /// Called by `InterEntityForm` when ↑ arrow navigates from the next entity.
+    pub fn skip_to_last_line_account(&mut self) {
+        if self.lines.is_empty() {
+            self.focus = Focus::Memo;
+        } else {
+            self.focus = Focus::LineAccount(self.lines.len() - 1);
+        }
+    }
+
     /// Returns `true` if the form has any user-entered content (account selected,
     /// any text typed in date, memo, debit, credit, or note fields).
     /// Used by `InterEntityForm` to decide whether to show an "unsaved changes" prompt.
