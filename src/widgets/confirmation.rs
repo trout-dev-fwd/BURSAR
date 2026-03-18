@@ -8,7 +8,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 
 use super::centered_rect;
@@ -119,12 +119,14 @@ impl Confirmation {
         ];
 
         frame.render_widget(
-            Paragraph::new(lines).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" Confirm ")
-                    .style(Style::default().fg(Color::Yellow)),
-            ),
+            Paragraph::new(lines)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(" Confirm ")
+                        .style(Style::default().fg(Color::Yellow)),
+                )
+                .wrap(Wrap { trim: true }),
             modal,
         );
     }
