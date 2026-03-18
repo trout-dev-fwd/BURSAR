@@ -675,12 +675,17 @@ impl JeForm {
 
     /// Renders only the line-item table and running totals, without the Date/Memo header
     /// or the help bar. Used by `InterEntityForm` to embed this form as a sub-section.
+    ///
+    /// `overlay_area` is the area used for floating overlays (account picker). Pass a
+    /// larger area (e.g. the full form area) so the picker dropdown isn't clipped by
+    /// the constrained entity section.
     pub fn render_lines_only(
         &self,
         frame: &mut Frame,
         area: Rect,
         accounts: &[Account],
         envelope_avail: &HashMap<AccountId, Money>,
+        overlay_area: Rect,
     ) {
         // Lines area takes most of the space; totals row is fixed at 2 lines.
         let layout = Layout::default()
@@ -692,7 +697,7 @@ impl JeForm {
         self.render_totals(frame, layout[1]);
 
         if self.picker_active {
-            self.account_picker.render(frame, area, accounts);
+            self.account_picker.render(frame, overlay_area, accounts);
         }
     }
 
