@@ -254,6 +254,7 @@ impl InterEntityForm {
         let was_at_header = form.is_at_header();
         let was_at_last_row = form.is_at_last_line_row();
         let was_at_first_row = form.is_at_first_line_row();
+        let picker_was_active = form.is_picker_active();
 
         let action = form.handle_key(key, accounts);
         let now_at_header = form.is_at_header();
@@ -275,6 +276,12 @@ impl InterEntityForm {
                 // so this shouldn't fire. Ignore if it does.
             }
             JeFormAction::Pending => {
+                // When the picker is open, it consumes all keys — don't also
+                // move focus between sections based on stale position snapshots.
+                if picker_was_active {
+                    return;
+                }
+
                 let wrapped_to_header = !was_at_header && now_at_header;
 
                 // Tab caused a wrap from last field → Header: move to next section.
