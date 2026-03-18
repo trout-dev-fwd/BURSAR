@@ -163,6 +163,10 @@ impl AccountPicker {
     pub fn render(&self, frame: &mut Frame, area: Rect, accounts: &[Account]) {
         let popup = centered_rect(80, 60, area);
         frame.render_widget(Clear, popup);
+        frame.render_widget(
+            Block::default().style(Style::default().bg(Color::Black)),
+            popup,
+        );
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
