@@ -60,6 +60,12 @@ pub struct ImportFlowState {
     /// True when re-matching existing drafts (Shift+U). Creating step calls update_draft
     /// instead of create_draft for matches with existing_je_id set.
     pub is_rematch: bool,
+    /// Selected row index on the NewBankConfirmation screen (0-5).
+    pub confirmation_cursor: usize,
+    /// True while the user is typing into an inline edit field on the confirmation screen.
+    pub confirmation_editing: bool,
+    /// Buffer for inline field editing on the confirmation screen.
+    pub confirmation_edit_buffer: String,
 }
 
 impl Default for ImportFlowState {
@@ -93,6 +99,9 @@ impl ImportFlowState {
             // Local expanded=false (dimmed/collapsed by default), others expanded.
             review_section_expanded: [false, true, true, true],
             is_rematch: false,
+            confirmation_cursor: 0,
+            confirmation_editing: false,
+            confirmation_edit_buffer: String::new(),
         }
     }
 }

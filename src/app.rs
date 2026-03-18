@@ -707,6 +707,9 @@ impl App {
                         };
                         if let Some(ref mut f) = self.import_flow {
                             f.detected_config = Some(cfg);
+                            f.confirmation_cursor = 0;
+                            f.confirmation_editing = false;
+                            f.confirmation_edit_buffer.clear();
                             f.step = ImportFlowStep::NewBankConfirmation;
                         }
                     }
@@ -2193,18 +2196,114 @@ impl App {
                     return;
                 }
             }
-            ImportFlowStep::NewBankConfirmation => match key.code {
-                KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => return,
-                KeyCode::Char('y') | KeyCode::Char('Y') => {
-                    // Load accounts for picker.
-                    let accounts = self.entity.db.accounts().list_all().unwrap_or_default();
-                    flow.picker_accounts = accounts;
-                    flow.account_picker.reset();
-                    flow.account_picker.refresh(&flow.picker_accounts);
-                    flow.step = ImportFlowStep::NewBankAccountPicker;
+            ImportFlowStep::NewBankConfirmation => {
+                if flow.confirmation_editing {
+                    match key.code {
+                        KeyCode::Esc => {
+                            flow.confirmation_editing = false;
+                            flow.confirmation_edit_buffer.clear();
+                        }
+                        KeyCode::Enter => {
+                            // Apply the edit buffer to the appropriate config field.
+                            let buf = flow.confirmation_edit_buffer.trim().to_string();
+                            let cur = flow.confirmation_cursor;
+                            let is_single = flow
+                                .detected_config
+                                .as_ref()
+                                .is_none_or(|c| c.amount_column.is_some());
+                            if let Some(ref mut cfg) = flow.detected_config {
+                                match cur {
+                                    0 => {
+                                        if !buf.is_empty() {
+                                            cfg.date_column = buf;
+                                        }
+                                    }
+                                    1 => {
+                                        if !buf.is_empty() {
+                                            cfg.date_format = buf;
+                                        }
+                                    }
+                                    2 => {
+                                        if !buf.is_empty() {
+                                            cfg.description_column = buf;
+                                        }
+                                    }
+                                    3 => {
+                                        if is_single {
+                                            cfg.amount_column =
+                                                if buf.is_empty() { None } else { Some(buf) };
+                                        } else {
+                                            cfg.debit_column =
+                                                if buf.is_empty() { None } else { Some(buf) };
+                                        }
+                                    }
+                                    4 if !is_single => {
+                                        cfg.credit_column =
+                                            if buf.is_empty() { None } else { Some(buf) };
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            flow.confirmation_editing = false;
+                            flow.confirmation_edit_buffer.clear();
+                        }
+                        KeyCode::Backspace => {
+                            flow.confirmation_edit_buffer.pop();
+                        }
+                        KeyCode::Char(c) => {
+                            flow.confirmation_edit_buffer.push(c);
+                        }
+                        _ => {}
+                    }
+                } else {
+                    let is_single = flow
+                        .detected_config
+                        .as_ref()
+                        .is_none_or(|c| c.amount_column.is_some());
+                    match key.code {
+                        KeyCode::Esc => return,
+                        KeyCode::Up => {
+                            flow.confirmation_cursor = flow.confirmation_cursor.saturating_sub(1);
+                        }
+                        KeyCode::Down => {
+                            if flow.confirmation_cursor < 5 {
+                                flow.confirmation_cursor += 1;
+                            }
+                        }
+                        KeyCode::Enter | KeyCode::Char(' ') => {
+                            let cur = flow.confirmation_cursor;
+                            if cur == 5 {
+                                // Confirm — advance to account picker.
+                                let accounts =
+                                    self.entity.db.accounts().list_all().unwrap_or_default();
+                                flow.picker_accounts = accounts;
+                                flow.account_picker.reset();
+                                flow.account_picker.refresh(&flow.picker_accounts);
+                                flow.step = ImportFlowStep::NewBankAccountPicker;
+                            } else if cur == 4 && is_single {
+                                // Toggle sign convention.
+                                if let Some(ref mut cfg) = flow.detected_config {
+                                    cfg.debit_is_negative = !cfg.debit_is_negative;
+                                }
+                            } else {
+                                // Open inline edit for text fields.
+                                let val = flow.detected_config.as_ref().map(|cfg| match cur {
+                                    0 => cfg.date_column.clone(),
+                                    1 => cfg.date_format.clone(),
+                                    2 => cfg.description_column.clone(),
+                                    3 if is_single => cfg.amount_column.clone().unwrap_or_default(),
+                                    3 => cfg.debit_column.clone().unwrap_or_default(),
+                                    4 => cfg.credit_column.clone().unwrap_or_default(),
+                                    _ => String::new(),
+                                });
+                                flow.confirmation_edit_buffer = val.unwrap_or_default();
+                                flow.confirmation_editing = true;
+                            }
+                        }
+                        _ => {}
+                    }
                 }
-                _ => {}
-            },
+            }
             ImportFlowStep::NewBankAccountPicker => {
                 if key.code == KeyCode::Esc {
                     return;
@@ -3009,76 +3108,159 @@ fn render_new_bank_detection_modal(frame: &mut ratatui::Frame, area: Rect, messa
     );
 }
 
-/// Renders the bank detection confirmation step.
+/// Returns a human-readable label for a chrono date format string.
+fn friendly_date_format(fmt: &str) -> String {
+    match fmt {
+        "%m/%d/%Y" => "MM/DD/YYYY (e.g., 03/17/2026)".to_string(),
+        "%Y-%m-%d" => "YYYY-MM-DD (e.g., 2026-03-17)".to_string(),
+        "%d/%m/%Y" => "DD/MM/YYYY (e.g., 17/03/2026)".to_string(),
+        "%m-%d-%Y" => "MM-DD-YYYY (e.g., 03-17-2026)".to_string(),
+        "%d-%m-%Y" => "DD-MM-YYYY (e.g., 17-03-2026)".to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// Renders the editable bank detection confirmation step.
 fn render_new_bank_confirmation_modal(
     frame: &mut ratatui::Frame,
     area: Rect,
     flow: &crate::ai::csv_import::ImportFlowState,
 ) {
     use ratatui::{
-        style::{Color, Style},
+        style::{Color, Modifier, Style},
         text::{Line, Span},
         widgets::{Block, Borders, Clear, Paragraph},
     };
 
-    let modal = crate::widgets::centered_rect(70, 50, area);
+    let modal = crate::widgets::centered_rect(70, 70, area);
     frame.render_widget(Clear, modal);
 
-    let mut lines = vec![
+    let cursor = flow.confirmation_cursor;
+    let is_editing = flow.confirmation_editing;
+    let edit_buf = &flow.confirmation_edit_buffer;
+    let is_single = flow
+        .detected_config
+        .as_ref()
+        .is_none_or(|c| c.amount_column.is_some());
+
+    let sel_s = Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
+    let edit_s = Style::default()
+        .fg(Color::Green)
+        .add_modifier(Modifier::BOLD);
+    let normal_s = Style::default().fg(Color::White);
+    let label_s = Style::default().fg(Color::Gray);
+    let dim_s = Style::default().fg(Color::DarkGray);
+
+    // Builds one editable text-field row.
+    let make_row = |idx: usize, label: &str, display_val: &str| -> Line {
+        let sel = cursor == idx;
+        let mark = if sel { "\u{25b6}" } else { " " };
+        let lbl_text = format!("  {} {:<14}", mark, label);
+        if sel && is_editing {
+            let mut spans = vec![
+                Span::styled(lbl_text, label_s),
+                Span::styled(format!("{}_", edit_buf), edit_s),
+            ];
+            if idx == 1 {
+                spans.push(Span::styled("  (chrono fmt)", dim_s));
+            }
+            Line::from(spans)
+        } else if sel {
+            Line::from(vec![
+                Span::styled(lbl_text, sel_s),
+                Span::styled(format!("\"{}\"", display_val), sel_s),
+            ])
+        } else {
+            Line::from(vec![
+                Span::styled(lbl_text, label_s),
+                Span::styled(format!("\"{}\"", display_val), normal_s),
+            ])
+        }
+    };
+
+    let mut lines: Vec<Line> = vec![
         Line::from(Span::raw("")),
-        Line::from(Span::styled(
-            "  Detected Format:",
-            Style::default().fg(Color::Gray),
-        )),
+        Line::from(Span::styled("  Detected Format:", label_s)),
         Line::from(Span::raw("")),
     ];
 
     if let Some(cfg) = &flow.detected_config {
-        lines.push(Line::from(Span::styled(
-            format!(
-                "    Date:        \"{}\"  ({})",
-                cfg.date_column, cfg.date_format
-            ),
-            Style::default().fg(Color::White),
-        )));
-        lines.push(Line::from(Span::styled(
-            format!("    Description: \"{}\"", cfg.description_column),
-            Style::default().fg(Color::White),
-        )));
-        if let Some(ref amt) = cfg.amount_column {
-            let sign = if cfg.debit_is_negative {
+        // Row 0: date column
+        lines.push(make_row(0, "Date column:", &cfg.date_column));
+        // Row 1: date format — display friendly label, edit raw chrono string
+        lines.push(make_row(
+            1,
+            "Date format:",
+            &friendly_date_format(&cfg.date_format),
+        ));
+        // Row 2: description column
+        lines.push(make_row(2, "Description:", &cfg.description_column));
+
+        if is_single {
+            // Row 3: amount column
+            lines.push(make_row(
+                3,
+                "Amount col:",
+                cfg.amount_column.as_deref().unwrap_or(""),
+            ));
+            // Row 4: sign convention (toggle, not an editable text field)
+            let sign_val = if cfg.debit_is_negative {
                 "negative = withdrawal"
             } else {
                 "positive = withdrawal"
             };
-            lines.push(Line::from(Span::styled(
-                format!("    Amount:      \"{}\" ({})", amt, sign),
-                Style::default().fg(Color::White),
-            )));
+            let mark = if cursor == 4 { "\u{25b6}" } else { " " };
+            let sign_line = if cursor == 4 {
+                Line::from(vec![
+                    Span::styled(format!("  {} {:<14}", mark, "Sign:"), sel_s),
+                    Span::styled(sign_val, sel_s),
+                    Span::styled("  [Enter/Space: toggle]", dim_s),
+                ])
+            } else {
+                Line::from(vec![
+                    Span::styled(format!("  {} {:<14}", mark, "Sign:"), label_s),
+                    Span::styled(sign_val, normal_s),
+                ])
+            };
+            lines.push(sign_line);
         } else {
-            let debit = cfg.debit_column.as_deref().unwrap_or("?");
-            let credit = cfg.credit_column.as_deref().unwrap_or("?");
-            lines.push(Line::from(Span::styled(
-                format!("    Debit:       \"{}\"", debit),
-                Style::default().fg(Color::White),
-            )));
-            lines.push(Line::from(Span::styled(
-                format!("    Credit:      \"{}\"", credit),
-                Style::default().fg(Color::White),
-            )));
+            // Row 3: debit column, Row 4: credit column
+            lines.push(make_row(
+                3,
+                "Debit col:",
+                cfg.debit_column.as_deref().unwrap_or(""),
+            ));
+            lines.push(make_row(
+                4,
+                "Credit col:",
+                cfg.credit_column.as_deref().unwrap_or(""),
+            ));
         }
     }
 
+    // Row 5: Confirm option
     lines.push(Line::from(Span::raw("")));
-    lines.push(Line::from(Span::styled(
-        "  Is this correct?",
-        Style::default().fg(Color::Yellow),
-    )));
+    let confirm_line = if cursor == 5 {
+        Line::from(Span::styled(
+            "  \u{25b6} [ Confirm ]",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ))
+    } else {
+        Line::from(Span::styled("    [ Confirm ]", dim_s))
+    };
+    lines.push(confirm_line);
     lines.push(Line::from(Span::raw("")));
-    lines.push(Line::from(Span::styled(
-        "  Y: yes, continue   N/Esc: cancel import",
-        Style::default().fg(Color::DarkGray),
-    )));
+
+    let hint = if is_editing {
+        "  Enter: apply  Esc: discard"
+    } else {
+        "  \u{2191}\u{2193}: navigate  Enter: edit  Esc: cancel"
+    };
+    lines.push(Line::from(Span::styled(hint, dim_s)));
 
     frame.render_widget(
         Paragraph::new(lines).block(
