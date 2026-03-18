@@ -113,18 +113,8 @@ fn main() -> Result<()> {
                             // Persist the selection so it is pre-selected on next launch.
                             write_last_opened(&config_path, &entity_name)?;
 
-                            // Startup checks manage their own terminal session,
-                            // so briefly leave the alternate screen before calling them.
-                            disable_raw_mode()?;
-                            execute!(io::stdout(), LeaveAlternateScreen)?;
-
                             let db = EntityDb::open(&db_path)?;
-                            run_startup_checks(&db, &entity_name, &config)?;
-
-                            // Re-enter the alternate screen for the Running state.
-                            enable_raw_mode()?;
-                            execute!(io::stdout(), EnterAlternateScreen)?;
-                            terminal.clear()?;
+                            run_startup_checks(&mut terminal, &db, &entity_name, &config)?;
 
                             let entity_ctx = EntityContext::new(db, entity_name, report_dir);
                             let app = Box::new(App::new(entity_ctx, config.clone()));

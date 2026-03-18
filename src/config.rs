@@ -222,28 +222,41 @@ fn expand_tilde(p: &Path) -> PathBuf {
 }
 
 /// Loads `WorkspaceConfig` from `path`. Creates a default config if the file does not exist.
-/// Expands leading `~` in `report_output_dir` and entity `db_path` values.
+/// Expands leading `~` and resolves relative paths against the workspace.toml directory.
 pub fn load_config(path: &Path) -> Result<WorkspaceConfig> {
+    let workspace_dir = path.parent().unwrap_or(Path::new("."));
     if !path.exists() {
         let default = WorkspaceConfig::default();
         save_config(path, &default)
             .with_context(|| format!("Failed to create default config at {}", path.display()))?;
-        return Ok(expand_config_paths(default));
+        return Ok(expand_config_paths(default, workspace_dir));
     }
     let contents = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read config file: {}", path.display()))?;
     let config: WorkspaceConfig = toml::from_str(&contents)
         .with_context(|| format!("Failed to parse config file: {}", path.display()))?;
-    Ok(expand_config_paths(config))
+    Ok(expand_config_paths(config, workspace_dir))
 }
 
-/// Applies tilde expansion to all path fields in the config.
-fn expand_config_paths(mut config: WorkspaceConfig) -> WorkspaceConfig {
-    config.report_output_dir = expand_tilde(&config.report_output_dir);
+/// Applies tilde expansion to all path fields in the config, then resolves
+/// any remaining relative paths against `workspace_dir` (the directory
+/// containing `workspace.toml`).
+fn expand_config_paths(mut config: WorkspaceConfig, workspace_dir: &Path) -> WorkspaceConfig {
+    config.report_output_dir =
+        resolve_relative(expand_tilde(&config.report_output_dir), workspace_dir);
     for entity in &mut config.entities {
-        entity.db_path = expand_tilde(&entity.db_path);
+        entity.db_path = resolve_relative(expand_tilde(&entity.db_path), workspace_dir);
     }
     config
+}
+
+/// If `path` is relative, joins it with `base` to make it absolute.
+fn resolve_relative(path: PathBuf, base: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path
+    } else {
+        base.join(path)
+    }
 }
 
 /// Serializes `config` to TOML and writes it to `path`.

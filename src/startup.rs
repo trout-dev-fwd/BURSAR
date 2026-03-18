@@ -11,18 +11,11 @@
 //! Each check is presented in a simple TUI loop before `App::run()`.
 //! If the user presses Esc on a Y/N prompt the generation is skipped.
 
-use std::io;
-
 use anyhow::Result;
 use chrono::Local;
-use crossterm::{
-    event::{self, Event, KeyCode},
-    execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
-};
+use crossterm::event::{self, Event, KeyCode};
 use ratatui::{
     Terminal,
-    backend::CrosstermBackend,
     layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Style},
     widgets::{Block, Borders, Paragraph},
@@ -89,8 +82,13 @@ pub fn collect_findings(db: &EntityDb) -> Result<StartupFindings> {
 
 /// Runs all startup checks in the terminal, presenting prompts to the user.
 /// Returns `Ok(())` when all checks have been acknowledged or resolved.
-/// Call this after the entity is opened but before `App::run()`.
-pub fn run_startup_checks(
+/// Call this after the entity is opened but before the main event loop.
+///
+/// The caller must provide an already-initialized terminal. This function does
+/// **not** set up or tear down the terminal session — the wrapper in `main.rs`
+/// owns the terminal lifecycle.
+pub fn run_startup_checks<B: ratatui::backend::Backend>(
+    terminal: &mut Terminal<B>,
     db: &EntityDb,
     entity_name: &str,
     config: &WorkspaceConfig,
@@ -105,18 +103,7 @@ pub fn run_startup_checks(
         return Ok(());
     }
 
-    // Set up terminal for the startup check screens.
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-
-    let result = run_check_loop(&mut terminal, db, entity_name, config, &findings);
-
-    let _ = disable_raw_mode();
-    let _ = execute!(io::stdout(), LeaveAlternateScreen);
-    result
+    run_check_loop(terminal, db, entity_name, config, &findings)
 }
 
 fn run_check_loop<B: ratatui::backend::Backend>(
