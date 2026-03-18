@@ -42,6 +42,9 @@ impl EntityDb {
             .with_context(|| format!("Failed to open database: {}", path.display()))?;
         conn.execute_batch("PRAGMA journal_mode=WAL;")?;
         conn.execute_batch("PRAGMA foreign_keys=ON;")?;
+        // Initialize schema first (IF NOT EXISTS — safe on both new and existing DBs).
+        // Migrations run after so they only ADD missing columns to pre-existing tables.
+        initialize_schema(&conn)?;
         migrate_fixed_asset_details(&conn)?;
         migrate_journal_import_ref(&conn)?;
         Ok(Self { conn })
