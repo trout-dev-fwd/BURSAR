@@ -1125,7 +1125,7 @@ impl Tab for JournalEntriesTab {
                 ("e", "Edit draft entry"),
                 ("p", "Post selected entry"),
                 ("r", "Reverse posted entry"),
-                ("R", "Scheduled entries sub-view"),
+                ("s", "Scheduled entries sub-view"),
                 ("i", "New inter-entity entry"),
                 ("g", "Go to General Ledger"),
                 ("f", "Cycle fiscal period filter"),
@@ -1274,8 +1274,8 @@ impl Tab for JournalEntriesTab {
                     }
                 }
             }
-            // [R] uppercase: open recurring templates sub-view.
-            KeyCode::Char('R') => {
+            // [s] open scheduled entries sub-view.
+            KeyCode::Char('s') => {
                 self.open_recurring_view(db);
             }
             // [t] create recurring template from a posted JE.
@@ -1475,13 +1475,12 @@ mod tests {
     }
 
     #[test]
-    fn r_uppercase_opens_recurring_subview() {
+    fn s_opens_recurring_subview() {
         let db = make_db();
         let mut tab = JournalEntriesTab::new();
         tab.refresh(&db);
 
-        let open_key = KeyEvent::new(KeyCode::Char('R'), KeyModifiers::SHIFT);
-        tab.handle_key(open_key, &db);
+        tab.handle_key(key(KeyCode::Char('s')), &db);
 
         assert!(tab.recurring.is_some());
     }
@@ -1492,9 +1491,8 @@ mod tests {
         let mut tab = JournalEntriesTab::new();
         tab.refresh(&db);
 
-        // Open the sub-view with 'R'.
-        let open_key = KeyEvent::new(KeyCode::Char('R'), KeyModifiers::SHIFT);
-        tab.handle_key(open_key, &db);
+        // Open the sub-view with 's'.
+        tab.handle_key(key(KeyCode::Char('s')), &db);
         assert!(tab.recurring.is_some());
 
         // Esc should close it.

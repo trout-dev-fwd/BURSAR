@@ -198,7 +198,7 @@ In the entry detail view (press `Enter` on an entry):
 4. The app will prompt you to generate entries when they're due (at startup and on-demand)
 
 ### Viewing Scheduled Entries
-1. Press `R` (uppercase) to open the scheduled entries sub-view
+1. Press `s` to open the scheduled entries sub-view
 2. See all entries with their source JE number, memo, frequency, next due date, and status
 3. Color coding: **red** = overdue, **yellow** = due today, **gray** = inactive
 4. Press `Enter` to jump to the source journal entry in the main list
