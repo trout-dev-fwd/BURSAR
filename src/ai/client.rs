@@ -30,14 +30,9 @@ impl AiClient {
     /// Construct the system prompt from config and context.
     pub fn build_system_prompt(persona: &str, entity_name: &str, context_contents: &str) -> String {
         format!(
-            "{persona}\n\n\
-             You are the AI accountant for **{entity_name}**.\n\n\
-             ## Entity Context\n\n\
-             {context_contents}\n\n\
-             ## Response Instructions\n\n\
-             Respond concisely in no more than 3 paragraphs unless more detail is explicitly \
-             requested. End every response with exactly this line:\n\n\
-             SUMMARY: [one sentence summarising your response]"
+            "{persona}\nEntity: {entity_name}\n{context_contents}\n\
+             Max 3 paragraphs unless asked for more. End every response with:\n\
+             SUMMARY: [one sentence summary]"
         )
     }
 
@@ -66,21 +61,37 @@ impl AiClient {
     ///
     /// Exposed as a separate method so tests can inspect the payload without
     /// making a real HTTP call.
+    ///
+    /// When `use_cache` is true, the system prompt is wrapped in a content-block
+    /// array with `cache_control: {"type": "ephemeral"}` and the last tool
+    /// definition also receives that cache_control field.  Set `use_cache` to
+    /// false for one-off calls (/compact, bank detection, /match).
     pub fn build_request_payload(
         &self,
         system: &str,
         messages: &[ApiMessage],
         tools_opt: Option<&[ToolDefinition]>,
+        use_cache: bool,
     ) -> Result<String, AiError> {
+        let system_value = if use_cache {
+            json!([{
+                "type": "text",
+                "text": system,
+                "cache_control": {"type": "ephemeral"}
+            }])
+        } else {
+            json!(system)
+        };
+
         let mut payload = json!({
             "model": self.model,
             "max_tokens": 4096,
-            "system": system,
+            "system": system_value,
             "messages": serialize_messages(messages),
         });
 
         if let Some(tools) = tools_opt.filter(|t| !t.is_empty()) {
-            payload["tools"] = json!(serialize_tools(tools));
+            payload["tools"] = json!(serialize_tools(tools, use_cache));
         }
 
         serde_json::to_string(&payload)
@@ -149,8 +160,9 @@ impl AiClient {
         system: &str,
         messages: &[ApiMessage],
         tools_opt: Option<&[ToolDefinition]>,
+        use_cache: bool,
     ) -> Result<Value, AiError> {
-        let body = self.build_request_payload(system, messages, tools_opt)?;
+        let body = self.build_request_payload(system, messages, tools_opt, use_cache)?;
 
         let agent = ureq::AgentBuilder::new().timeout(self.timeout).build();
 
@@ -158,6 +170,7 @@ impl AiClient {
             .post("https://api.anthropic.com/v1/messages")
             .set("x-api-key", &self.api_key)
             .set("anthropic-version", "2023-06-01")
+            .set("anthropic-beta", "prompt-caching-2024-07-31")
             .set("content-type", "application/json")
             .send_string(&body);
 
@@ -185,8 +198,9 @@ impl AiClient {
 
     /// Send a single message without tool use.  Used for `/compact` and bank
     /// format detection.  Caller decides whether to parse the SUMMARY line.
+    /// Never uses prompt caching.
     pub fn send_simple(&self, system: &str, messages: &[ApiMessage]) -> Result<String, AiError> {
-        let response = self.send_request(system, messages, None)?;
+        let response = self.send_request(system, messages, None, false)?;
         let (text, _tools) = Self::parse_response(&response)?;
         text.ok_or_else(|| AiError::ParseError("Response contained no text content".to_string()))
     }
@@ -197,14 +211,18 @@ impl AiClient {
     /// or [`RoundResult::NeedsToolCall`] if tools must be fulfilled before
     /// continuing.  The caller drives the loop, logging and rendering between
     /// rounds.
+    ///
+    /// Set `use_cache` to true for chat panel and Pass 2 batch calls; false for
+    /// one-off calls like `/match`.
     pub fn send_single_round(
         &self,
         system: &str,
         messages: &[ApiMessage],
         tools: &[ToolDefinition],
         accumulated_text: Option<String>,
+        use_cache: bool,
     ) -> Result<RoundResult, AiError> {
-        let response = self.send_request(system, messages, Some(tools))?;
+        let response = self.send_request(system, messages, Some(tools), use_cache)?;
         classify_round(&response, messages, accumulated_text)
     }
 }
@@ -294,15 +312,26 @@ fn serialize_messages(messages: &[ApiMessage]) -> Vec<Value> {
         .collect()
 }
 
-fn serialize_tools(tools: &[ToolDefinition]) -> Vec<Value> {
+fn serialize_tools(tools: &[ToolDefinition], use_cache: bool) -> Vec<Value> {
+    let last_idx = tools.len().saturating_sub(1);
     tools
         .iter()
-        .map(|t| {
-            json!({
-                "name": t.name,
-                "description": t.description,
-                "input_schema": t.input_schema,
-            })
+        .enumerate()
+        .map(|(i, t)| {
+            if use_cache && i == last_idx {
+                json!({
+                    "name": t.name,
+                    "description": t.description,
+                    "input_schema": t.input_schema,
+                    "cache_control": {"type": "ephemeral"},
+                })
+            } else {
+                json!({
+                    "name": t.name,
+                    "description": t.description,
+                    "input_schema": t.input_schema,
+                })
+            }
         })
         .collect()
 }
@@ -431,7 +460,7 @@ mod tests {
         let client = make_client();
         let messages = vec![user_text("Hello")];
         let raw = client
-            .build_request_payload("System prompt", &messages, None)
+            .build_request_payload("System prompt", &messages, None, false)
             .unwrap();
         let json: Value = serde_json::from_str(&raw).unwrap();
 
@@ -446,7 +475,7 @@ mod tests {
         let client = make_client();
         let messages = vec![user_text("Hi there")];
         let raw = client
-            .build_request_payload("sys", &messages, None)
+            .build_request_payload("sys", &messages, None, false)
             .unwrap();
         let json: Value = serde_json::from_str(&raw).unwrap();
 
@@ -464,7 +493,7 @@ mod tests {
             input_schema: json!({"type": "object", "properties": {}}),
         }];
         let raw = client
-            .build_request_payload("sys", &[], Some(&tools))
+            .build_request_payload("sys", &[], Some(&tools), false)
             .unwrap();
         let json: Value = serde_json::from_str(&raw).unwrap();
 
@@ -476,7 +505,9 @@ mod tests {
     #[test]
     fn payload_omits_tools_key_when_empty() {
         let client = make_client();
-        let raw = client.build_request_payload("sys", &[], Some(&[])).unwrap();
+        let raw = client
+            .build_request_payload("sys", &[], Some(&[]), false)
+            .unwrap();
         let json: Value = serde_json::from_str(&raw).unwrap();
         // tools key should not be present for empty slice.
         assert!(json.get("tools").is_none());
@@ -485,9 +516,66 @@ mod tests {
     #[test]
     fn payload_omits_tools_key_when_none() {
         let client = make_client();
-        let raw = client.build_request_payload("sys", &[], None).unwrap();
+        let raw = client
+            .build_request_payload("sys", &[], None, false)
+            .unwrap();
         let json: Value = serde_json::from_str(&raw).unwrap();
         assert!(json.get("tools").is_none());
+    }
+
+    #[test]
+    fn payload_with_cache_wraps_system_in_content_block() {
+        let client = make_client();
+        let raw = client
+            .build_request_payload("The system prompt", &[], None, true)
+            .unwrap();
+        let json: Value = serde_json::from_str(&raw).unwrap();
+        // system should be an array with a single text block.
+        let sys = &json["system"];
+        assert!(sys.is_array(), "system should be array when use_cache=true");
+        assert_eq!(sys[0]["type"], "text");
+        assert_eq!(sys[0]["text"], "The system prompt");
+        assert_eq!(sys[0]["cache_control"]["type"], "ephemeral");
+    }
+
+    #[test]
+    fn payload_with_cache_marks_last_tool() {
+        let client = make_client();
+        let tools = vec![
+            ToolDefinition {
+                name: "first_tool".to_string(),
+                description: "First".to_string(),
+                input_schema: json!({"type": "object", "properties": {}}),
+            },
+            ToolDefinition {
+                name: "last_tool".to_string(),
+                description: "Last".to_string(),
+                input_schema: json!({"type": "object", "properties": {}}),
+            },
+        ];
+        let raw = client
+            .build_request_payload("sys", &[], Some(&tools), true)
+            .unwrap();
+        let json: Value = serde_json::from_str(&raw).unwrap();
+        // Only the last tool should have cache_control.
+        assert!(
+            json["tools"][0].get("cache_control").is_none(),
+            "first tool should not have cache_control"
+        );
+        assert_eq!(
+            json["tools"][1]["cache_control"]["type"], "ephemeral",
+            "last tool should have cache_control"
+        );
+    }
+
+    #[test]
+    fn payload_without_cache_system_is_string() {
+        let client = make_client();
+        let raw = client
+            .build_request_payload("plain system", &[], None, false)
+            .unwrap();
+        let json: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(json["system"], "plain system");
     }
 
     // ── parse_response ─────────────────────────────────────────────────────
