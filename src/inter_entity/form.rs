@@ -162,7 +162,13 @@ impl InterEntityForm {
         }
 
         // ── Global: Esc cancels (with unsaved-changes check) ─────────────────
-        if key.code == KeyCode::Esc {
+        // Skip if the active form's picker is open — let the picker consume Esc.
+        let picker_open = match self.section {
+            Section::EntityA => self.form_a.is_picker_active(),
+            Section::EntityB => self.form_b.is_picker_active(),
+            Section::Header => false,
+        };
+        if key.code == KeyCode::Esc && !picker_open {
             if self.has_content() {
                 self.exit_confirm = Some(Confirmation::new(
                     "Unsaved changes. Exit anyway?".to_owned(),
