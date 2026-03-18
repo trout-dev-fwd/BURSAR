@@ -458,18 +458,74 @@ modified or deleted.
 
 Access from any tab by pressing `f`.
 
-### Closing a Period
+### What Are Fiscal Years and Periods?
+
+A **fiscal year** spans January 1 – December 31 and is divided into 12 monthly **periods**
+named P01 through P12:
+
+| Period | Month     | Date range           |
+|--------|-----------|----------------------|
+| P01    | January   | Jan 1 – Jan 31       |
+| P02    | February  | Feb 1 – Feb 28/29    |
+| P03    | March     | Mar 1 – Mar 31       |
+| P04    | April     | Apr 1 – Apr 30       |
+| P05    | May       | May 1 – May 31       |
+| P06    | June      | Jun 1 – Jun 30       |
+| P07    | July      | Jul 1 – Jul 31       |
+| P08    | August    | Aug 1 – Aug 31       |
+| P09    | September | Sep 1 – Sep 30       |
+| P10    | October   | Oct 1 – Oct 31       |
+| P11    | November  | Nov 1 – Nov 30       |
+| P12    | December  | Dec 1 – Dec 31       |
+
+Each period has a status of **Open** or **Closed**. Journal entries can only be created in
+open periods. **You must create a fiscal year before entering or importing transactions for
+that year.**
+
+### Hotkeys
+
+| Key  | Action                                           |
+|------|--------------------------------------------------|
+| `f`  | Open fiscal period manager                       |
+| `a`  | Add a new fiscal year (creates all 12 periods)   |
+| `c`  | Close the selected period                        |
+| `o`  | Reopen a closed period                           |
+| `y`  | Year-end close (zeroes revenue/expense accounts) |
+| `Esc`| Close fiscal manager                             |
+
+### Typical Workflow
+
+1. Press `f` to open the fiscal period manager.
+2. Press `a` to add a new fiscal year — type the year (e.g. `2026`) and press `Enter`.
+3. All 12 periods (P01–P12) are created in **Open** status immediately.
+4. Enter or import transactions for that year normally.
+5. After reconciling a month, select it and press `c` to close it. Closing a period locks
+   all journal entries in that month — no new postings or reversals are allowed.
+6. At year-end, after all December entries are posted, press `y` to run the year-end close.
+   The app generates closing entries and resets Revenue and Expense balances to zero.
+
+### Adding a Fiscal Year
+
 1. Press `f` to open the fiscal period manager
-2. Select a period and press `c` to close it
+2. Press `a` — a prompt asks for the fiscal year number
+3. Type the four-digit year (e.g. `2026`) and press `Enter`
+4. Twelve periods (P01–P12) are created automatically, all in Open status
+
+### Closing a Period
+
+1. Press `f` to open the fiscal period manager
+2. Select a period using the arrow keys and press `c` to close it
 3. Confirm — all journal entries in that period become locked (cannot be posted, reversed,
    or modified)
 
 ### Reopening a Period
+
 1. Select a closed period and press `o`
 2. Confirm — entries in that period become editable again
 3. Use with caution — reopening a period you've already reported on can cause discrepancies
 
 ### Year-End Close
+
 1. Press `y` in the fiscal period manager
 2. The app generates closing entries:
    - All Revenue accounts are zeroed out

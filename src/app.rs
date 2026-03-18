@@ -3586,6 +3586,15 @@ fn render_help_overlay(
         ("?", "Show / hide this help"),
     ];
 
+    let fiscal_hotkeys: &[(&str, &str)] = &[
+        ("f", "Open fiscal period manager"),
+        ("a", "Add a new fiscal year (creates P01–P12)"),
+        ("c", "Close selected period"),
+        ("o", "Reopen a closed period"),
+        ("y", "Year-end close (zeroes revenue/expense)"),
+        ("Esc", "Close fiscal manager"),
+    ];
+
     let chat_hotkeys: &[(&str, &str)] = &[
         ("Ctrl+K / Esc", "Open / close panel"),
         ("Tab", "Switch focus (panel ↔ tab)"),
@@ -3602,7 +3611,11 @@ fn render_help_overlay(
     } else {
         0
     };
-    let row_count = global_hotkeys.len() + tab_hotkeys.len() + 3 + chat_section_rows; // +3: two headers + blank line
+    // +4: two section headers (Global, Tab-specific) + blank lines between them
+    // +3: fiscal section header + blank line before + note line after
+    let fiscal_section_rows = fiscal_hotkeys.len() + 3;
+    let row_count =
+        global_hotkeys.len() + tab_hotkeys.len() + 3 + chat_section_rows + fiscal_section_rows;
     let popup_height = (row_count + 2).min(area.height as usize) as u16;
     let popup_width = 66u16.min(area.width);
 
@@ -3626,6 +3639,25 @@ fn render_help_overlay(
             Span::raw(*desc),
         ]));
     }
+
+    lines.push(Line::from(""));
+
+    lines.push(Line::from(Span::styled(
+        " Fiscal Periods (f)",
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    )));
+    for (key, desc) in fiscal_hotkeys {
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {key:<16}"), Style::default().fg(Color::Cyan)),
+            Span::raw(*desc),
+        ]));
+    }
+    lines.push(Line::from(Span::styled(
+        "  P01=Jan … P12=Dec  |  Create a fiscal year before importing transactions",
+        Style::default().fg(Color::DarkGray),
+    )));
 
     lines.push(Line::from(""));
 
