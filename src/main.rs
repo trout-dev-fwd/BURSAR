@@ -13,6 +13,7 @@ use bursar::{
     db::EntityDb,
     startup::run_startup_checks,
     startup_screen::{StartupAction, StartupScreen, render_splash},
+    update::check_for_update,
 };
 
 fn default_config_path() -> PathBuf {
@@ -85,7 +86,7 @@ fn main() -> Result<()> {
     // Local transition type — avoids holding borrows across state changes.
     enum Transition {
         Continue,
-        ToStartup,
+        ToStartup(Option<String>),
         ToRunning(Box<App>),
         Quit,
     }
@@ -93,10 +94,32 @@ fn main() -> Result<()> {
     loop {
         let transition = match &mut state {
             AppState::Splash => {
-                terminal.draw(render_splash)?;
-                // Task 4 will perform an update check here; for now just pause briefly.
-                std::thread::sleep(Duration::from_secs(1));
-                Transition::ToStartup
+                let start = std::time::Instant::now();
+
+                // Render splash with logo + version.
+                terminal.draw(|f| render_splash(f, ""))?;
+
+                // Check for updates if configured.
+                let update_notice = if let Some(repo) = config.updates_github_repo() {
+                    let repo = repo.to_string();
+                    terminal.draw(|f| render_splash(f, "Checking for updates..."))?;
+                    match check_for_update(&repo, env!("CARGO_PKG_VERSION")) {
+                        Ok(Some(new_ver)) => Some(format!(
+                            "New version v{new_ver} available \u{2014} github.com/{repo}/releases"
+                        )),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+
+                // Ensure at least 1 second of splash.
+                let elapsed = start.elapsed();
+                if elapsed < Duration::from_secs(1) {
+                    std::thread::sleep(Duration::from_secs(1) - elapsed);
+                }
+
+                Transition::ToStartup(update_notice)
             }
 
             AppState::Startup(screen) => {
@@ -146,8 +169,12 @@ fn main() -> Result<()> {
 
         match transition {
             Transition::Continue => {}
-            Transition::ToStartup => {
-                state = AppState::Startup(StartupScreen::new(&config, config_path.clone()));
+            Transition::ToStartup(update_notice) => {
+                state = AppState::Startup(StartupScreen::new(
+                    &config,
+                    config_path.clone(),
+                    update_notice,
+                ));
             }
             Transition::ToRunning(app) => {
                 state = AppState::Running(app);

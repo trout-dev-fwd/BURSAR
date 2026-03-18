@@ -9,6 +9,7 @@ pub mod startup;
 pub mod startup_screen;
 pub mod tabs;
 pub mod types;
+pub mod update;
 pub mod widgets;
 
 #[cfg(test)]

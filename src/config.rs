@@ -17,12 +17,18 @@ fn default_debit_is_negative() -> bool {
     true
 }
 
+fn default_report_output_dir() -> PathBuf {
+    PathBuf::from("~/bursar/reports")
+}
+
 // ── Workspace configuration ───────────────────────────────────────────────────
 
 /// Parsed from `workspace.toml`. Shared across all entities.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceConfig {
+    #[serde(default = "default_report_output_dir")]
     pub report_output_dir: PathBuf,
+    #[serde(default)]
     pub entities: Vec<EntityConfig>,
     /// Optional AI configuration section `[ai]`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -33,6 +39,9 @@ pub struct WorkspaceConfig {
     /// Name of the entity that was most recently opened. Used to pre-select it on next launch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_opened_entity: Option<String>,
+    /// Optional update-check configuration.
+    #[serde(default)]
+    pub updates: UpdatesConfig,
 }
 
 /// The `[ai]` section of `workspace.toml`.
@@ -53,6 +62,14 @@ impl Default for WorkspaceAiConfig {
     }
 }
 
+/// The `[updates]` section of `workspace.toml`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct UpdatesConfig {
+    /// GitHub repository slug in `owner/repo` form, e.g. `"owner/bursar"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github_repo: Option<String>,
+}
+
 /// One entry per entity database in the workspace.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EntityConfig {
@@ -71,7 +88,15 @@ impl Default for WorkspaceConfig {
             ai: None,
             context_dir: None,
             last_opened_entity: None,
+            updates: UpdatesConfig::default(),
         }
+    }
+}
+
+impl WorkspaceConfig {
+    /// Returns the GitHub repo slug from `[updates]` if configured.
+    pub fn updates_github_repo(&self) -> Option<&str> {
+        self.updates.github_repo.as_deref()
     }
 }
 
@@ -301,6 +326,7 @@ mod tests {
             ai: None,
             context_dir: None,
             last_opened_entity: None,
+            updates: UpdatesConfig::default(),
         };
 
         save_config(&path, &config).expect("save_config failed");
@@ -366,6 +392,7 @@ mod tests {
             ai: None,
             context_dir: None,
             last_opened_entity: None,
+            updates: UpdatesConfig::default(),
         };
         save_config(&path, &config).expect("save");
         let loaded = load_config(&path).expect("load");
@@ -396,6 +423,7 @@ mod tests {
             ai: None,
             context_dir: None,
             last_opened_entity: None,
+            updates: UpdatesConfig::default(),
         };
         let toml_str = toml::to_string_pretty(&config).expect("serialization failed");
         assert!(toml_str.contains("report_output_dir"));
@@ -419,6 +447,7 @@ mod tests {
             }),
             context_dir: Some("~/context".to_string()),
             last_opened_entity: None,
+            updates: UpdatesConfig::default(),
         };
 
         save_config(&path, &config).expect("save");
@@ -629,6 +658,38 @@ db_path = "/tmp/acme.sqlite"
             date_format: "%m/%d/%Y".to_string(),
         };
         assert!(!config.is_valid());
+    }
+
+    #[test]
+    fn test_parse_minimal_config() {
+        let toml_str = r#"report_output_dir = "~/bursar/reports""#;
+        let config: WorkspaceConfig =
+            toml::from_str(toml_str).expect("should parse minimal config");
+        assert!(config.entities.is_empty());
+    }
+
+    #[test]
+    fn test_parse_empty_config() {
+        let toml_str = "";
+        let config: WorkspaceConfig = toml::from_str(toml_str).expect("should parse empty config");
+        assert!(config.entities.is_empty());
+    }
+
+    #[test]
+    fn test_updates_config_default_is_none() {
+        let config: WorkspaceConfig = toml::from_str("").expect("empty config");
+        assert!(config.updates.github_repo.is_none());
+        assert!(config.updates_github_repo().is_none());
+    }
+
+    #[test]
+    fn test_updates_config_parses() {
+        let toml_str = r#"
+[updates]
+github_repo = "owner/bursar"
+"#;
+        let config: WorkspaceConfig = toml::from_str(toml_str).expect("parse");
+        assert_eq!(config.updates_github_repo(), Some("owner/bursar"));
     }
 
     #[test]

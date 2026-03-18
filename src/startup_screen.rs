@@ -65,7 +65,12 @@ pub struct StartupScreen {
 impl StartupScreen {
     /// Creates a new `StartupScreen` from the workspace config.
     /// Pre-selects the last-opened entity if recorded in `config.last_opened_entity`.
-    pub fn new(config: &WorkspaceConfig, workspace_path: PathBuf) -> Self {
+    /// `update_notice` is shown in yellow above the entity list when `Some`.
+    pub fn new(
+        config: &WorkspaceConfig,
+        workspace_path: PathBuf,
+        update_notice: Option<String>,
+    ) -> Self {
         let entities = Self::entities_from_config(config);
 
         let selected_index = config
@@ -77,7 +82,7 @@ impl StartupScreen {
         Self {
             entities,
             selected_index,
-            update_notice: None,
+            update_notice,
             workspace_path,
             text_input: None,
             pending_action: None,
@@ -91,20 +96,30 @@ impl StartupScreen {
     /// Renders the complete startup screen.
     pub fn render(&self, frame: &mut Frame) {
         let area = frame.area();
+        let notice_height = if self.update_notice.is_some() { 1 } else { 0 };
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(5), // banner (4 lines) + version line
-                Constraint::Min(3),    // entity list
-                Constraint::Length(1), // status message
-                Constraint::Length(1), // hotkey bar
+                Constraint::Length(5),             // banner (4 lines) + version line
+                Constraint::Length(notice_height), // update notice (0 or 1 line)
+                Constraint::Min(3),                // entity list
+                Constraint::Length(1),             // status message
+                Constraint::Length(1),             // hotkey bar
             ])
             .split(area);
 
         render_banner_area(frame, chunks[0]);
-        self.render_entity_list(frame, chunks[1]);
-        self.render_status_bar(frame, chunks[2]);
-        self.render_hotkey_bar(frame, chunks[3]);
+        if let Some(notice) = &self.update_notice {
+            frame.render_widget(
+                Paragraph::new(notice.as_str())
+                    .alignment(Alignment::Center)
+                    .style(Style::default().fg(Color::Yellow)),
+                chunks[1],
+            );
+        }
+        self.render_entity_list(frame, chunks[2]);
+        self.render_status_bar(frame, chunks[3]);
+        self.render_hotkey_bar(frame, chunks[4]);
 
         // Overlay modals last so they appear on top.
         if let Some(modal) = &self.text_input {
@@ -284,6 +299,16 @@ impl StartupScreen {
 
     /// Adds a new entity to workspace.toml and creates its entity .toml file.
     fn add_entity(&mut self, name: String) -> Result<()> {
+        // Check for duplicate name (case-insensitive).
+        let name_lower = name.to_lowercase();
+        if let Some(existing) = self
+            .entities
+            .iter()
+            .find(|e| e.name.to_lowercase() == name_lower)
+        {
+            anyhow::bail!("An entity named '{}' already exists.", existing.name);
+        }
+
         let workspace_dir = self
             .workspace_path
             .parent()
@@ -291,9 +316,28 @@ impl StartupScreen {
             .to_path_buf();
 
         // Derive filenames from the name.
-        let stem = name.to_lowercase().replace(' ', "-");
+        let stem = slugify(&name);
+        if stem.is_empty() {
+            anyhow::bail!(
+                "Could not derive a valid filename from '{name}'. Use only letters, numbers, and spaces."
+            );
+        }
         let db_filename = format!("{stem}.sqlite");
         let config_filename = format!("{stem}.toml");
+
+        // Check for db_path collision.
+        if let Some(existing) = self.entities.iter().find(|e| {
+            let existing_file = std::path::Path::new(&e.db_path)
+                .file_name()
+                .and_then(|f| f.to_str())
+                .unwrap_or("");
+            existing_file == db_filename
+        }) {
+            anyhow::bail!(
+                "Database path '{db_filename}' is already in use by '{}'.",
+                existing.name
+            );
+        }
 
         // Resolve directory: sibling of first existing entity db, or workspace dir.
         let entity_dir = self
@@ -439,16 +483,101 @@ pub fn render_banner_area(frame: &mut Frame, area: Rect) {
     );
 }
 
-/// Renders the splash screen: banner centered vertically with no other controls.
-pub fn render_splash(frame: &mut Frame) {
+/// Converts a display name into a filesystem-safe slug.
+///
+/// Lowercases, replaces non-ASCII-alphanumeric characters with hyphens,
+/// collapses consecutive hyphens, and trims leading/trailing hyphens.
+fn slugify(name: &str) -> String {
+    let mut result = String::new();
+    let mut prev_hyphen = true; // treat start as hyphen to trim leading
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            result.push(c.to_ascii_lowercase());
+            prev_hyphen = false;
+        } else if !prev_hyphen {
+            result.push('-');
+            prev_hyphen = true;
+        }
+    }
+    // Trim trailing hyphen.
+    if result.ends_with('-') {
+        result.pop();
+    }
+    result
+}
+
+/// Renders the splash screen: banner centered vertically.
+/// `status` is an optional one-line message shown below the banner
+/// (e.g. "Checking for updates..."). Pass `""` to show nothing.
+pub fn render_splash(frame: &mut Frame, status: &str) {
     let area = frame.area();
+    let banner_height: u16 = if status.is_empty() { 5 } else { 6 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Fill(1),
-            Constraint::Length(5),
+            Constraint::Length(banner_height),
             Constraint::Fill(1),
         ])
         .split(area);
-    render_banner_area(frame, chunks[1]);
+
+    let banner_area = chunks[1];
+    let inner_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(5), // banner (4 lines) + version
+            Constraint::Length(if status.is_empty() { 0 } else { 1 }),
+        ])
+        .split(banner_area);
+
+    render_banner_area(frame, inner_chunks[0]);
+
+    if !status.is_empty() {
+        frame.render_widget(
+            Paragraph::new(status)
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(Color::DarkGray)),
+            inner_chunks[1],
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slugify_simple_name() {
+        assert_eq!(slugify("My Farm LLC"), "my-farm-llc");
+    }
+
+    #[test]
+    fn slugify_special_characters() {
+        assert_eq!(slugify("O'Brien & Sons"), "o-brien-sons");
+    }
+
+    #[test]
+    fn slugify_extra_whitespace() {
+        assert_eq!(slugify("  Weird  --  Name  "), "weird-name");
+    }
+
+    #[test]
+    fn slugify_already_simple() {
+        assert_eq!(slugify("simple"), "simple");
+    }
+
+    #[test]
+    fn slugify_accented_chars() {
+        assert_eq!(slugify("José's Café"), "jos-s-caf");
+    }
+
+    #[test]
+    fn slugify_empty() {
+        assert_eq!(slugify(""), "");
+    }
+
+    #[test]
+    fn slugify_only_special_chars() {
+        assert_eq!(slugify("!!!"), "");
+    }
 }
