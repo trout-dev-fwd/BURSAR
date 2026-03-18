@@ -13,7 +13,9 @@ use ratatui::{
 };
 
 use crate::config::WorkspaceConfig;
-use crate::widgets::{ConfirmAction, Confirmation, TextInputAction, TextInputModal};
+use crate::widgets::{
+    ConfirmAction, Confirmation, ExistingDbAction, ExistingDbModal, TextInputAction, TextInputModal,
+};
 
 const BANNER: &str = r" _____  __ __  _____  _____ _____  _____
  /  _  \/  |  \/  _  \/  ___>  _  \/  _  \
@@ -43,6 +45,14 @@ enum PendingEntityAction {
     Edit(usize),
 }
 
+/// State saved when an add-entity operation is deferred pending the existing-db modal.
+struct PendingAdd {
+    name: String,
+    db_filename: String,
+    config_filename: String,
+    entity_dir: PathBuf,
+}
+
 /// TUI screen displayed after the splash screen.
 /// Shows all configured entities and lets the user select one to open.
 pub struct StartupScreen {
@@ -58,6 +68,10 @@ pub struct StartupScreen {
     pending_action: Option<PendingEntityAction>,
     /// Active delete-confirmation modal.
     confirm_delete: Option<Confirmation>,
+    /// Active existing-database modal (shown during add when db file already exists).
+    existing_db_modal: Option<ExistingDbModal>,
+    /// Deferred add state waiting for the existing-db modal decision.
+    pending_add: Option<PendingAdd>,
     /// Status or error message shown below the entity list.
     status_message: Option<String>,
 }
@@ -87,6 +101,8 @@ impl StartupScreen {
             text_input: None,
             pending_action: None,
             confirm_delete: None,
+            existing_db_modal: None,
+            pending_add: None,
             status_message: None,
         }
     }
@@ -123,6 +139,8 @@ impl StartupScreen {
 
         // Overlay modals last so they appear on top.
         if let Some(modal) = &self.text_input {
+            modal.render(frame, area);
+        } else if let Some(modal) = &self.existing_db_modal {
             modal.render(frame, area);
         } else if let Some(confirm) = &self.confirm_delete {
             confirm.render(frame, area);
@@ -225,6 +243,33 @@ impl StartupScreen {
             return StartupAction::None;
         }
 
+        // ── Existing-database modal is active ─────────────────────────────
+        if let Some(mut modal) = self.existing_db_modal.take() {
+            match modal.handle_key(*key) {
+                ExistingDbAction::Restore => {
+                    if let Some(pending) = self.pending_add.take()
+                        && let Err(e) = self.finish_add_entity(&pending, false)
+                    {
+                        self.status_message = Some(format!("Error: {e}"));
+                    }
+                }
+                ExistingDbAction::Fresh => {
+                    if let Some(pending) = self.pending_add.take()
+                        && let Err(e) = self.finish_add_entity(&pending, true)
+                    {
+                        self.status_message = Some(format!("Error: {e}"));
+                    }
+                }
+                ExistingDbAction::Cancel => {
+                    self.pending_add = None;
+                }
+                ExistingDbAction::Pending => {
+                    self.existing_db_modal = Some(modal);
+                }
+            }
+            return StartupAction::None;
+        }
+
         // ── Delete confirmation modal is active ────────────────────────────
         if let Some(mut confirm) = self.confirm_delete.take() {
             match confirm.handle_key(*key) {
@@ -300,7 +345,8 @@ impl StartupScreen {
         }
     }
 
-    /// Adds a new entity to workspace.toml and creates its entity .toml file.
+    /// Validates and begins the add-entity flow. If the database file already exists
+    /// on disk, shows the existing-db modal instead of completing immediately.
     fn add_entity(&mut self, name: String) -> Result<()> {
         // Check for duplicate name (case-insensitive).
         let name_lower = name.to_lowercase();
@@ -328,7 +374,7 @@ impl StartupScreen {
         let db_filename = format!("{stem}.sqlite");
         let config_filename = format!("{stem}.toml");
 
-        // Check for db_path collision.
+        // Check for db_path collision with an active entity.
         if let Some(existing) = self.entities.iter().find(|e| {
             let existing_file = std::path::Path::new(&e.db_path)
                 .file_name()
@@ -356,14 +402,52 @@ impl StartupScreen {
             })
             .unwrap_or_else(|| workspace_dir.clone());
 
+        // Check if the database file already exists on disk.
+        let db_path = entity_dir.join(&db_filename);
+        if db_path.exists() {
+            self.pending_add = Some(PendingAdd {
+                name,
+                db_filename: db_filename.clone(),
+                config_filename,
+                entity_dir,
+            });
+            self.existing_db_modal = Some(ExistingDbModal::new(&db_filename));
+            return Ok(());
+        }
+
+        let pending = PendingAdd {
+            name,
+            db_filename,
+            config_filename,
+            entity_dir,
+        };
+        self.finish_add_entity(&pending, false)
+    }
+
+    /// Completes the add-entity flow: writes to workspace.toml, optionally deletes
+    /// old files (when `delete_existing` is true), and creates the entity config stub.
+    fn finish_add_entity(&mut self, pending: &PendingAdd, delete_existing: bool) -> Result<()> {
+        let db_path = pending.entity_dir.join(&pending.db_filename);
+        let config_path = pending.entity_dir.join(&pending.config_filename);
+
+        if delete_existing {
+            // Remove old database and config files.
+            if db_path.exists() {
+                std::fs::remove_file(&db_path)?;
+            }
+            if config_path.exists() {
+                std::fs::remove_file(&config_path)?;
+            }
+        }
+
         // Write to workspace.toml using toml_edit.
         let content = std::fs::read_to_string(&self.workspace_path)?;
         let mut doc = content.parse::<toml_edit::DocumentMut>()?;
 
         let mut entity = toml_edit::Table::new();
-        entity["name"] = toml_edit::value(&name);
-        entity["db_path"] = toml_edit::value(&db_filename);
-        entity["config_path"] = toml_edit::value(&config_filename);
+        entity["name"] = toml_edit::value(&pending.name);
+        entity["db_path"] = toml_edit::value(&pending.db_filename);
+        entity["config_path"] = toml_edit::value(&pending.config_filename);
 
         if doc.get("entities").is_none() {
             doc["entities"] = toml_edit::Item::ArrayOfTables(toml_edit::ArrayOfTables::new());
@@ -376,21 +460,27 @@ impl StartupScreen {
         std::fs::write(&self.workspace_path, doc.to_string())?;
 
         // Create a minimal entity .toml file (does not overwrite if it exists).
-        let config_path = entity_dir.join(&config_filename);
         if !config_path.exists() {
             if let Some(parent) = config_path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            std::fs::write(&config_path, format!("# Entity configuration for {name}\n"))?;
+            std::fs::write(
+                &config_path,
+                format!("# Entity configuration for {}\n", pending.name),
+            )?;
         }
 
         // Refresh.
         self.reload_entities()?;
-        // Select the newly added entity.
-        if let Some(idx) = self.entities.iter().position(|e| e.name == name) {
+        if let Some(idx) = self.entities.iter().position(|e| e.name == pending.name) {
             self.selected_index = idx;
         }
-        self.status_message = Some(format!("Added '{name}'."));
+        let action = if delete_existing {
+            "Added (fresh)"
+        } else {
+            "Added"
+        };
+        self.status_message = Some(format!("{action} '{}'.", pending.name));
         Ok(())
     }
 

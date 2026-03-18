@@ -1,6 +1,7 @@
 pub mod account_picker;
 pub mod chat_panel;
 pub mod confirmation;
+pub mod existing_db_modal;
 pub mod file_picker;
 pub mod fiscal_modal;
 pub mod je_form;
@@ -10,6 +11,7 @@ pub mod user_guide;
 
 pub use account_picker::AccountPicker;
 pub use confirmation::{ConfirmAction, Confirmation};
+pub use existing_db_modal::{ExistingDbAction, ExistingDbModal};
 pub use file_picker::{FilePicker, FilePickerAction};
 pub use fiscal_modal::{FiscalModal, FiscalModalAction};
 pub use je_form::JeForm;

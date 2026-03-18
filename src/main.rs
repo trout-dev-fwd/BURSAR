@@ -40,7 +40,7 @@ impl Drop for TerminalGuard {
 
 enum AppState {
     Splash,
-    Startup(StartupScreen),
+    Startup(Box<StartupScreen>),
     Running(Box<App>),
 }
 
@@ -167,11 +167,11 @@ fn main() -> Result<()> {
         match transition {
             Transition::Continue => {}
             Transition::ToStartup(update_notice) => {
-                state = AppState::Startup(StartupScreen::new(
+                state = AppState::Startup(Box::new(StartupScreen::new(
                     &config,
                     config_path.clone(),
                     update_notice,
-                ));
+                )));
             }
             Transition::ToRunning(app) => {
                 state = AppState::Running(app);
