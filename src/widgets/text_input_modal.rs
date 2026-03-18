@@ -36,7 +36,7 @@ impl TextInputModal {
     /// Creates a new modal with the given title and pre-filled text.
     pub fn new(title: impl Into<String>, prefill: impl Into<String>) -> Self {
         let buffer = prefill.into();
-        let cursor_pos = buffer.len();
+        let cursor_pos = buffer.chars().count();
         Self {
             title: title.into(),
             buffer,
@@ -57,7 +57,7 @@ impl TextInputModal {
                 TextInputAction::None
             }
             KeyCode::Right => {
-                if self.cursor_pos < self.buffer.len() {
+                if self.cursor_pos < self.buffer.chars().count() {
                     self.cursor_pos += 1;
                 }
                 TextInputAction::None
@@ -67,7 +67,7 @@ impl TextInputModal {
                 TextInputAction::None
             }
             KeyCode::End => {
-                self.cursor_pos = self.buffer.len();
+                self.cursor_pos = self.buffer.chars().count();
                 TextInputAction::None
             }
 
@@ -174,6 +174,12 @@ impl TextInputModal {
         );
     }
 
+    /// Returns the current buffer contents (for testing).
+    #[cfg(test)]
+    pub(crate) fn buffer(&self) -> &str {
+        &self.buffer
+    }
+
     /// Returns the byte position in `self.buffer` for the given char index.
     fn char_byte_pos(&self, char_idx: usize) -> usize {
         self.buffer
@@ -276,5 +282,56 @@ mod tests {
             m.handle_key(key(KeyCode::Enter)),
             TextInputAction::Confirm("hell".to_string())
         );
+    }
+
+    #[test]
+    fn unicode_backspace_removes_last_char() {
+        let mut m = TextInputModal::new("Test", "José");
+        // Cursor at char pos 4. Backspace should remove 'é', not 'J'.
+        m.handle_key(key(KeyCode::Backspace));
+        assert_eq!(m.buffer(), "Jos");
+    }
+
+    #[test]
+    fn unicode_insert_mid_string() {
+        let mut m = TextInputModal::new("Test", "café");
+        // Move left twice: cursor at pos 2 (between 'a' and 'f').
+        m.handle_key(key(KeyCode::Left));
+        m.handle_key(key(KeyCode::Left));
+        m.handle_key(key(KeyCode::Char('X')));
+        assert_eq!(m.buffer(), "caXfé");
+    }
+
+    #[test]
+    fn unicode_navigation_end_and_right() {
+        let mut m = TextInputModal::new("Test", "aé");
+        // Home, then Right twice should land at end (2 chars).
+        m.handle_key(key(KeyCode::Home));
+        m.handle_key(key(KeyCode::Right));
+        m.handle_key(key(KeyCode::Right));
+        // Right again should be a no-op (already at end).
+        m.handle_key(key(KeyCode::Right));
+        // Backspace should remove 'é', not 'a'.
+        m.handle_key(key(KeyCode::Backspace));
+        assert_eq!(m.buffer(), "a");
+    }
+
+    #[test]
+    fn unicode_delete_at_cursor() {
+        let mut m = TextInputModal::new("Test", "café");
+        m.handle_key(key(KeyCode::Home));
+        // Delete 'c'.
+        m.handle_key(key(KeyCode::Delete));
+        assert_eq!(m.buffer(), "afé");
+    }
+
+    #[test]
+    fn unicode_end_key() {
+        let mut m = TextInputModal::new("Test", "José");
+        m.handle_key(key(KeyCode::Home));
+        m.handle_key(key(KeyCode::End));
+        // Now at end; insert should append.
+        m.handle_key(key(KeyCode::Char('!')));
+        assert_eq!(m.buffer(), "José!");
     }
 }
