@@ -1,12 +1,77 @@
-# Task 4: Update Check via GitHub API
+# Task 4: Update Check via GitHub API + Config Parsing Bug Fix
 
-Read `specs/handoff.md` for full codebase orientation, then read `specs/v2.1-build-spec.md` for the complete V2.1 plan. This prompt covers Task 4 only. Tasks 1-3 have been completed — the crate is "bursar", the startup screen exists with entity management, and the splash phase currently just sleeps for 1 second.
+Read `specs/handoff.md` for full codebase orientation, then read `specs/v2.1-build-spec.md` for the complete V2.1 plan. This prompt covers Task 4 only. Tasks 1-3 (plus fixes 2b and 3b) have been completed — the crate is "bursar", the startup screen exists with entity management, and the splash phase currently just sleeps for 1 second.
 
-## What to Do
+## PRIORITY BUG FIX: Config Parsing with Missing Sections
 
-Replace the 1-second sleep in the splash phase with a GitHub release check that fetches the latest version, then passes the result to the startup screen for display.
+### The Problem
 
-## Part A: `check_for_update` Function
+When all entities are deleted from the startup screen, workspace.toml ends up with no `[[entities]]` block and no `[ai]` section. The `reload_entities` call then fails with "Failed to parse config file" because `WorkspaceConfig` in `src/config.rs` has required fields that aren't present in the file.
+
+Example of a valid-but-minimal workspace.toml that currently fails to parse:
+
+```toml
+report_output_dir = "~/bursar/reports"
+last_opened_entity = "trout-home"
+```
+
+### The Fix
+
+In `src/config.rs`, ensure ALL fields on `WorkspaceConfig` (and any nested config structs like the AI config) have `#[serde(default)]` so that missing sections deserialize to sensible defaults:
+
+- `entities` → defaults to empty `Vec`
+- `ai` section → defaults to whatever makes sense (empty persona, default model, etc.)
+- `context_dir` → defaults to `None` or `"context"`
+- Any other field that could be absent
+
+After fixing, verify that this minimal workspace.toml parses without error:
+
+```toml
+report_output_dir = "~/bursar/reports"
+```
+
+And this completely empty file also parses:
+
+```toml
+```
+
+The startup screen already handles an empty entity list gracefully (shows "Press 'a' to add one") — the bug is that the config parser rejects the file before the startup screen ever sees it.
+
+### Test to Add
+
+```rust
+#[test]
+fn test_parse_minimal_config() {
+    // A workspace.toml with no entities and no ai section should parse successfully
+    let toml_str = r#"report_output_dir = "~/bursar/reports""#;
+    let config: WorkspaceConfig = toml::from_str(toml_str).expect("should parse minimal config");
+    assert!(config.entities.is_empty());
+}
+
+#[test]
+fn test_parse_empty_config() {
+    let toml_str = "";
+    let config: WorkspaceConfig = toml::from_str(toml_str).expect("should parse empty config");
+    assert!(config.entities.is_empty());
+}
+```
+
+---
+
+## FEATURE: Update Check via GitHub API
+
+### workspace.toml addition
+
+Support an optional `[updates]` section:
+
+```toml
+[updates]
+github_repo = "owner/bursar"
+```
+
+If `[updates]` or `github_repo` is absent, skip the update check entirely — no error, no log. This section must also be optional in the config parser (same `#[serde(default)]` treatment as the bug fix above).
+
+### `check_for_update` function
 
 Create this in a sensible location — either a new `src/update.rs` or inside the startup screen module.
 
@@ -40,11 +105,9 @@ pub fn check_for_update(github_repo: &str, current_version: &str) -> Result<Opti
 }
 ```
 
-## Part B: Version Comparison
+### Version comparison: `is_newer(remote, local) -> bool`
 
 ```rust
-/// Returns true if `remote` is a newer semver than `local`.
-/// Returns false if either string fails to parse.
 fn is_newer(remote: &str, local: &str) -> bool {
     let parse = |s: &str| -> Option<Vec<u32>> {
         s.split('.').map(|part| part.parse::<u32>().ok()).collect()
@@ -59,15 +122,11 @@ fn is_newer(remote: &str, local: &str) -> bool {
             std::cmp::Ordering::Equal => continue,
         }
     }
-    // If all compared segments are equal, remote is newer only if it has more segments
-    // e.g. "1.0.0.1" > "1.0.0" — though this is unusual
     r.len() > l.len()
 }
 ```
 
-### Unit Tests for `is_newer`
-
-Write these as `#[cfg(test)]` tests:
+### Unit tests for `is_newer`
 
 ```rust
 #[test]
@@ -86,20 +145,7 @@ fn test_is_newer() {
 }
 ```
 
-## Part C: workspace.toml Config
-
-Support an optional `[updates]` section:
-
-```toml
-[updates]
-github_repo = "owner/bursar"
-```
-
-Read this from the workspace config. If the `[updates]` section is missing or `github_repo` is absent, skip the update check entirely — no error, no log.
-
-This likely requires adding an `updates` field to the workspace config struct in `src/config.rs`. Check how the existing config parsing works and extend it.
-
-## Part D: Modify the Splash Phase
+### Modify the splash phase
 
 In the wrapper loop in `main.rs`, replace the current `sleep(1s)` with:
 
@@ -137,16 +183,42 @@ Splash =>
 
 The `render_splash` function renders the ASCII banner centered, version right-aligned below it, and an optional status message ("Checking for updates...") below that.
 
-## Part E: Display Update Notice on Startup Screen
+### Display update notice on startup screen
 
-The `StartupScreen` already accepts `update_notice: Option<String>` (from Task 2). Now render it:
+The `StartupScreen` already has an `update_notice: Option<String>` field. If it's currently hardcoded to `None`, change the constructor to accept it as a parameter. Then render it:
 
 - Position: below the version number, above the entity list
 - Style: `Color::Yellow` foreground to stand out
-- Content: the formatted string from Part D, e.g. "New version v1.2.0 available — github.com/owner/bursar/releases"
-- If `update_notice` is `None`, this area is blank (no vertical space consumed)
+- Content: the formatted string from above, e.g. "New version v1.2.0 available — github.com/owner/bursar/releases"
+- If `None`, this area is blank (no vertical space consumed)
 
-## Verification Checklist
+### Config integration
+
+Add an `[updates]` section to the workspace config struct in `src/config.rs`:
+
+```rust
+#[serde(default)]
+pub updates: UpdatesConfig,
+
+// ...
+
+#[derive(Debug, Deserialize, Default)]
+pub struct UpdatesConfig {
+    pub github_repo: Option<String>,
+}
+```
+
+Add a convenience method:
+
+```rust
+impl WorkspaceConfig {
+    pub fn updates_github_repo(&self) -> Option<&str> {
+        self.updates.github_repo.as_deref()
+    }
+}
+```
+
+## Verification
 
 ```bash
 cargo fmt
@@ -154,16 +226,22 @@ cargo clippy -D warnings
 cargo test
 ```
 
-Then manually verify these scenarios:
+Then manually verify all scenarios:
 
-1. **With valid `[updates]` config + internet**: Splash shows "Checking for updates...", then startup screen shows yellow notice if a newer version exists
-2. **With valid config + no internet / timeout**: Splash shows "Checking for updates..." for ~3 seconds, then transitions to startup screen with no notice and no error
-3. **With no `[updates]` section**: Splash shows for 1 second, no check attempted, no "Checking for updates..." text
-4. **Version comparison**: Unit tests all pass
-5. **Splash always shows for at least 1 second** regardless of how fast the check completes
+**Config parsing bug fix:**
+- Delete all entities from the startup screen — no parse error, shows empty list with "Press 'a' to add"
+- Manually create a workspace.toml with only `report_output_dir` — app starts, shows empty entity list
+- Empty workspace.toml — app starts with defaults
+
+**Update check:**
+- With valid `[updates]` config and internet: splash shows "Checking for updates...", startup screen shows yellow notice if remote version is newer
+- With valid config but no internet / timeout: splash shows "Checking for updates..." for ~3 seconds (timeout), transitions to startup screen normally with no error
+- With no `[updates]` section: splash shows for 1 second, no check attempted, no "Checking for updates..." text
+- Version comparison unit tests pass
+- The splash screen renders the logo and "Checking for updates..." before the blocking call
 
 ## Commit
 
 ```
-V2.1, Task 4: Add GitHub update check on startup
+V2.1, Task 4: Fix config parsing for empty entities, add GitHub update check
 ```
