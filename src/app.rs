@@ -594,24 +594,10 @@ impl App {
         // Parse the full CSV.
         match parse_csv(&file_path, &bank_config) {
             Err(e) => {
-                tracing::warn!("CSV parse error: {e}");
                 flow.step = ImportFlowStep::Failed(format!("CSV parse error: {e}"));
             }
-            Ok(transactions) => {
-                tracing::debug!(
-                    "CSV parsed: {} transactions from {:?}",
-                    transactions.len(),
-                    file_path.file_name().unwrap_or_default()
-                );
-                if transactions.is_empty() {
-                    tracing::warn!(
-                        "parse_csv returned 0 transactions — check date_column='{}', \
-                         date_format='{}', description_column='{}'",
-                        bank_config.date_column,
-                        bank_config.date_format,
-                        bank_config.description_column
-                    );
-                }
+            Ok((transactions, parse_warnings)) => {
+                flow.warnings = parse_warnings;
                 // Get recent import refs for duplicate detection.
                 let existing_refs = db.journals().get_recent_import_refs(90).unwrap_or_default();
                 let (unique, duplicates) = check_duplicates(&transactions, &existing_refs);
@@ -619,18 +605,9 @@ impl App {
                 if !duplicates.is_empty() {
                     // Store all transactions and show warning.
                     flow.transactions = transactions;
-                    tracing::debug!(
-                        "Duplicate check: {} total, {} duplicate(s) — going to DuplicateWarning",
-                        flow.transactions.len(),
-                        flow.duplicates.len()
-                    );
                     flow.step = ImportFlowStep::DuplicateWarning;
                 } else {
                     // No duplicates: skip directly to matching.
-                    tracing::debug!(
-                        "Duplicate check: {} unique transaction(s) — going to Pass1Matching",
-                        unique.len()
-                    );
                     flow.transactions = unique;
                     flow.step = ImportFlowStep::Pass1Matching;
                 }
@@ -783,25 +760,10 @@ impl App {
             (bank_name, flow.transactions.clone())
         };
 
-        tracing::debug!(
-            "Pass1: starting with {} transaction(s) for bank '{}'",
-            transactions.len(),
-            bank_name
-        );
-
         // Force render so user sees progress indicator before matching begins.
         let _ = terminal.draw(|frame| self.render_frame(frame));
 
         let matches = crate::ai::csv_import::run_pass1(&transactions, &bank_name, &self.entity.db);
-
-        tracing::debug!(
-            "Pass1: produced {} match(es) ({} unmatched)",
-            matches.len(),
-            matches
-                .iter()
-                .filter(|m| m.matched_account_id.is_none() && !m.rejected)
-                .count()
-        );
 
         let has_unmatched = matches
             .iter()
@@ -815,19 +777,12 @@ impl App {
         };
 
         if let Some(ref mut f) = self.import_flow {
-            tracing::debug!(
-                "Pass1: storing {} match(es), advancing to {:?}",
-                matches.len(),
-                next_step
-            );
             f.matches = matches;
             f.step = next_step.clone();
             if next_step == ImportFlowStep::ReviewScreen {
                 f.selected_index = 0;
                 f.scroll_offset = 0;
             }
-        } else {
-            tracing::warn!("Pass1: import_flow was None when trying to store matches — data lost!");
         }
         if next_step == ImportFlowStep::Pass2AiMatching {
             self.pending_pass2 = true;
@@ -2245,6 +2200,19 @@ impl App {
                                 flow.delete_confirm = Some(flow.selected_index);
                             }
                         }
+                        KeyCode::Char('e') => {
+                            let new_idx = flow.available_banks.len();
+                            if flow.selected_index < new_idx {
+                                let cfg = flow.available_banks[flow.selected_index].clone();
+                                flow.detected_config = Some(cfg);
+                                flow.is_editing_bank = true;
+                                flow.editing_bank_index = Some(flow.selected_index);
+                                flow.confirmation_cursor = 0;
+                                flow.confirmation_editing = false;
+                                flow.confirmation_edit_buffer.clear();
+                                flow.step = ImportFlowStep::NewBankConfirmation;
+                            }
+                        }
                         KeyCode::Enter => {
                             let new_idx = flow.available_banks.len();
                             if flow.selected_index == new_idx {
@@ -2360,7 +2328,17 @@ impl App {
                         .as_ref()
                         .is_none_or(|c| c.amount_column.is_some());
                     match key.code {
-                        KeyCode::Esc => return,
+                        KeyCode::Esc => {
+                            if flow.is_editing_bank {
+                                // Return to bank selection without cancelling the import.
+                                flow.is_editing_bank = false;
+                                flow.editing_bank_index = None;
+                                flow.detected_config = None;
+                                flow.step = ImportFlowStep::BankSelection;
+                            } else {
+                                return;
+                            }
+                        }
                         KeyCode::Up => {
                             flow.confirmation_cursor = flow.confirmation_cursor.saturating_sub(1);
                         }
@@ -2372,13 +2350,47 @@ impl App {
                         KeyCode::Enter | KeyCode::Char(' ') => {
                             let cur = flow.confirmation_cursor;
                             if cur == 5 {
-                                // Confirm — advance to account picker.
-                                let accounts =
-                                    self.entity.db.accounts().list_all().unwrap_or_default();
-                                flow.picker_accounts = accounts;
-                                flow.account_picker.reset();
-                                flow.account_picker.refresh(&flow.picker_accounts);
-                                flow.step = ImportFlowStep::NewBankAccountPicker;
+                                if flow.is_editing_bank {
+                                    // Save edited config back to TOML and return to BankSelection.
+                                    if let (Some(updated_cfg), Some(edit_idx)) =
+                                        (flow.detected_config.clone(), flow.editing_bank_index)
+                                    {
+                                        let (toml_path, workspace_dir) = self.entity_toml_path();
+                                        let mut entity_cfg = crate::config::load_entity_toml(
+                                            &toml_path,
+                                            &workspace_dir,
+                                        )
+                                        .unwrap_or_default();
+                                        if edit_idx < entity_cfg.bank_accounts.len() {
+                                            entity_cfg.bank_accounts[edit_idx] =
+                                                updated_cfg.clone();
+                                            if let Err(e) = crate::config::save_entity_toml(
+                                                &toml_path,
+                                                &workspace_dir,
+                                                &entity_cfg,
+                                            ) {
+                                                self.status_bar.set_error(format!(
+                                                    "Failed to save bank config: {e}"
+                                                ));
+                                            } else {
+                                                flow.available_banks =
+                                                    entity_cfg.bank_accounts.clone();
+                                            }
+                                        }
+                                        flow.is_editing_bank = false;
+                                        flow.editing_bank_index = None;
+                                        flow.detected_config = None;
+                                        flow.step = ImportFlowStep::BankSelection;
+                                    }
+                                } else {
+                                    // New bank: advance to account picker.
+                                    let accounts =
+                                        self.entity.db.accounts().list_all().unwrap_or_default();
+                                    flow.picker_accounts = accounts;
+                                    flow.account_picker.reset();
+                                    flow.account_picker.refresh(&flow.picker_accounts);
+                                    flow.step = ImportFlowStep::NewBankAccountPicker;
+                                }
                             } else if cur == 4 && is_single {
                                 // Toggle sign convention.
                                 if let Some(ref mut cfg) = flow.detected_config {
@@ -2844,13 +2856,53 @@ fn render_review_screen(
         .unwrap_or("Import");
     let total = flow.matches.len();
 
-    // Split area: list on top, detail pane on bottom.
-    let chunks = Layout::default()
+    // Optionally reserve space at the top for parse warnings.
+    let warning_height = if flow.warnings.is_empty() {
+        0u16
+    } else {
+        flow.warnings.len() as u16 + 2 // borders
+    };
+
+    // Split area: [warnings?] list on top, detail pane on bottom.
+    let outer_chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(5), Constraint::Length(8)])
+        .constraints(if warning_height > 0 {
+            vec![
+                Constraint::Length(warning_height),
+                Constraint::Min(5),
+                Constraint::Length(8),
+            ]
+        } else {
+            vec![Constraint::Min(5), Constraint::Length(8)]
+        })
         .split(area);
-    let list_area = chunks[0];
-    let detail_area = chunks[1];
+
+    let (list_area, detail_area) = if warning_height > 0 {
+        // Render warnings panel.
+        let warn_area = outer_chunks[0];
+        let warning_lines: Vec<Line> = flow
+            .warnings
+            .iter()
+            .map(|w| {
+                Line::from(Span::styled(
+                    format!("  \u{26a0} {w}"),
+                    Style::default().fg(Color::Yellow),
+                ))
+            })
+            .collect();
+        frame.render_widget(
+            Paragraph::new(warning_lines).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Parse Warnings ")
+                    .style(Style::default().fg(Color::Yellow)),
+            ),
+            warn_area,
+        );
+        (outer_chunks[1], outer_chunks[2])
+    } else {
+        (outer_chunks[0], outer_chunks[1])
+    };
 
     // Build rows.
     let rows = build_review_rows(flow);
@@ -3148,7 +3200,7 @@ fn render_bank_selection_modal(
         )));
     } else {
         lines.push(Line::from(Span::styled(
-            "  \u{2191}/\u{2193}: navigate   Enter: select   d: delete   Esc: cancel",
+            "  \u{2191}/\u{2193}: navigate  Enter: select  e: edit  d: delete  Esc: cancel",
             Style::default().fg(Color::DarkGray),
         )));
     }
@@ -3271,6 +3323,7 @@ fn render_new_bank_confirmation_modal(
     let cursor = flow.confirmation_cursor;
     let is_editing = flow.confirmation_editing;
     let edit_buf = &flow.confirmation_edit_buffer;
+    let is_editing_bank = flow.is_editing_bank;
     let is_single = flow
         .detected_config
         .as_ref()
@@ -3313,9 +3366,14 @@ fn render_new_bank_confirmation_modal(
         }
     };
 
+    let section_label = if is_editing_bank {
+        "  Edit Bank Format:"
+    } else {
+        "  Detected Format:"
+    };
     let mut lines: Vec<Line> = vec![
         Line::from(Span::raw("")),
-        Line::from(Span::styled("  Detected Format:", label_s)),
+        Line::from(Span::styled(section_label, label_s)),
         Line::from(Span::raw("")),
     ];
 
@@ -3395,11 +3453,16 @@ fn render_new_bank_confirmation_modal(
     };
     lines.push(Line::from(Span::styled(hint, dim_s)));
 
+    let modal_title = if is_editing_bank {
+        " Edit Bank Format "
+    } else {
+        " Confirm Column Mapping "
+    };
     frame.render_widget(
         Paragraph::new(lines).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" Confirm Column Mapping ")
+                .title(modal_title)
                 .style(Style::default().fg(Color::Cyan)),
         ),
         modal,

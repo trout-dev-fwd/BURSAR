@@ -68,6 +68,12 @@ pub struct ImportFlowState {
     pub confirmation_edit_buffer: String,
     /// When Some(idx), shows delete confirmation prompt for that bank index.
     pub delete_confirm: Option<usize>,
+    /// Parse warnings collected during CSV parsing (e.g. skipped rows).
+    pub warnings: Vec<String>,
+    /// True when NewBankConfirmation is being used to edit an existing bank config.
+    pub is_editing_bank: bool,
+    /// Index into `available_banks` of the bank being edited (only valid when `is_editing_bank`).
+    pub editing_bank_index: Option<usize>,
 }
 
 impl Default for ImportFlowState {
@@ -105,6 +111,9 @@ impl ImportFlowState {
             confirmation_editing: false,
             confirmation_edit_buffer: String::new(),
             delete_confirm: None,
+            warnings: Vec::new(),
+            is_editing_bank: false,
+            editing_bank_index: None,
         }
     }
 }
@@ -190,12 +199,14 @@ pub fn run_pass1(
 /// Parses a CSV bank statement into normalized transactions using the bank config
 /// to identify columns and date format.
 ///
-/// Malformed rows are skipped with a `tracing::warn!` — they do not cause an error.
+/// Malformed rows are skipped and a summary warning is collected instead of causing an error.
 /// Returns an empty vec for an empty CSV (no error).
+///
+/// Returns `(transactions, warnings)` where `warnings` describes any skipped rows.
 pub fn parse_csv(
     file_path: &Path,
     bank_config: &BankAccountConfig,
-) -> Result<Vec<NormalizedTransaction>> {
+) -> Result<(Vec<NormalizedTransaction>, Vec<String>)> {
     let mut reader = csv::Reader::from_path(file_path)
         .with_context(|| format!("Failed to open CSV: {}", file_path.display()))?;
 
@@ -217,11 +228,15 @@ pub fn parse_csv(
     let amount_mode = AmountMode::from_config(bank_config, &headers)?;
 
     let mut results = Vec::new();
+    let mut malformed_count = 0usize;
+    let mut date_skip_count = 0usize;
+    let mut amount_skip_count = 0usize;
+
     for record in reader.records() {
         let record = match record {
             Ok(r) => r,
-            Err(e) => {
-                tracing::warn!("Skipping malformed CSV row: {e}");
+            Err(_) => {
+                malformed_count += 1;
                 continue;
             }
         };
@@ -231,8 +246,8 @@ pub fn parse_csv(
         let date_str = field(&record, date_idx);
         let date = match NaiveDate::parse_from_str(date_str, &bank_config.date_format) {
             Ok(d) => d,
-            Err(e) => {
-                tracing::warn!("Skipping row with unparseable date '{date_str}': {e}");
+            Err(_) => {
+                date_skip_count += 1;
                 continue;
             }
         };
@@ -241,8 +256,8 @@ pub fn parse_csv(
 
         let amount = match amount_mode.parse_amount(&record) {
             Ok(m) => m,
-            Err(e) => {
-                tracing::warn!("Skipping row with unparseable amount: {e}");
+            Err(_) => {
+                amount_skip_count += 1;
                 continue;
             }
         };
@@ -258,7 +273,26 @@ pub fn parse_csv(
         });
     }
 
-    Ok(results)
+    let mut warnings = Vec::new();
+    if date_skip_count > 0 {
+        warnings.push(format!(
+            "{date_skip_count} row(s) skipped: date could not be parsed \
+             (format: '{}', column: '{}')",
+            bank_config.date_format, bank_config.date_column
+        ));
+    }
+    if amount_skip_count > 0 {
+        warnings.push(format!(
+            "{amount_skip_count} row(s) skipped: amount could not be parsed"
+        ));
+    }
+    if malformed_count > 0 {
+        warnings.push(format!(
+            "{malformed_count} row(s) skipped: malformed CSV record"
+        ));
+    }
+
+    Ok((results, warnings))
 }
 
 /// Separates transactions into unique (not seen before) and duplicates (already imported).
@@ -543,7 +577,7 @@ mod tests {
         let path = write_csv("single_amount", csv);
         let config = single_amount_config("%m/%d/%Y");
 
-        let txns = parse_csv(&path, &config).expect("parse");
+        let (txns, _warnings) = parse_csv(&path, &config).expect("parse");
         assert_eq!(txns.len(), 2);
 
         // Withdrawal: negative amount
@@ -561,7 +595,7 @@ mod tests {
         let path = write_csv("iso_date", csv);
         let config = single_amount_config("%Y-%m-%d");
 
-        let txns = parse_csv(&path, &config).expect("parse");
+        let (txns, _warnings) = parse_csv(&path, &config).expect("parse");
         assert_eq!(txns.len(), 1);
         assert_eq!(txns[0].date, NaiveDate::from_ymd_opt(2026, 1, 15).unwrap());
     }
@@ -572,7 +606,7 @@ mod tests {
         let path = write_csv("split_col", csv);
         let config = split_column_config();
 
-        let txns = parse_csv(&path, &config).expect("parse");
+        let (txns, _warnings) = parse_csv(&path, &config).expect("parse");
         assert_eq!(txns.len(), 2);
 
         // Debit (withdrawal) → negative
@@ -590,7 +624,7 @@ mod tests {
         let path = write_csv("empty", csv);
         let config = single_amount_config("%m/%d/%Y");
 
-        let txns = parse_csv(&path, &config).expect("parse");
+        let (txns, _warnings) = parse_csv(&path, &config).expect("parse");
         assert!(txns.is_empty());
     }
 
@@ -600,9 +634,10 @@ mod tests {
         let path = write_csv("malformed", csv);
         let config = single_amount_config("%m/%d/%Y");
 
-        let txns = parse_csv(&path, &config).expect("parse");
+        let (txns, warnings) = parse_csv(&path, &config).expect("parse");
         // Bad date row skipped; valid rows returned
         assert_eq!(txns.len(), 2);
+        assert_eq!(warnings.len(), 1, "one date-skip warning expected");
         assert_eq!(txns[0].description, "VALID ROW");
         assert_eq!(txns[1].description, "ALSO VALID");
     }
@@ -613,7 +648,7 @@ mod tests {
         let path = write_csv("import_ref", csv);
         let config = single_amount_config("%m/%d/%Y");
 
-        let txns = parse_csv(&path, &config).expect("parse");
+        let (txns, _warnings) = parse_csv(&path, &config).expect("parse");
         assert_eq!(txns.len(), 1);
 
         // import_ref format: "{bank_name}|{date}|{description}|{amount_raw}"
