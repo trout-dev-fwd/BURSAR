@@ -250,9 +250,11 @@ impl InterEntityForm {
             &mut self.form_b
         };
 
-        // Detect header-position BEFORE forwarding Tab, so we know if the form is
-        // about to wrap out of its last field back to Date (which we intercept).
+        // Snapshot state BEFORE forwarding the key.
         let was_at_header = form.is_at_header();
+        let was_at_last_row = form.is_at_last_line_row();
+        let was_at_first_row = form.is_at_first_line_row();
+
         let action = form.handle_key(key, accounts);
         let now_at_header = form.is_at_header();
 
@@ -294,6 +296,16 @@ impl InterEntityForm {
                         self.section = Section::EntityA;
                         self.form_a.skip_to_last_line_field();
                     }
+                }
+                // ↓ at Entity A's last row → move to Entity B's first line.
+                if key.code == KeyCode::Down && is_primary && was_at_last_row {
+                    self.section = Section::EntityB;
+                    self.form_b.skip_to_lines();
+                }
+                // ↑ at Entity B's first row → move to Entity A's last line.
+                if key.code == KeyCode::Up && !is_primary && was_at_first_row {
+                    self.section = Section::EntityA;
+                    self.form_a.skip_to_last_line_field();
                 }
             }
         }

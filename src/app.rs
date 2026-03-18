@@ -115,6 +115,8 @@ pub struct App {
     status_bar: StatusBar,
     fiscal_modal: Option<FiscalModal>,
     show_help: bool,
+    /// When true, the help overlay shows inter-entity hotkeys instead of tab hotkeys.
+    inter_entity_help: bool,
     user_guide: Option<UserGuide>,
     should_quit: bool,
     chat_panel: ChatPanel,
@@ -158,6 +160,7 @@ impl App {
             status_bar,
             fiscal_modal: None,
             show_help: false,
+            inter_entity_help: false,
             user_guide: None,
             should_quit: false,
             chat_panel,
@@ -345,12 +348,22 @@ impl App {
             modal.render(frame, tab_area);
         }
         if self.show_help {
-            render_help_overlay(
-                frame,
-                tab_area,
-                self.entity.tabs[self.active_tab].hotkey_help(),
-                self.chat_panel.is_visible(),
-            );
+            let hotkeys = if self.inter_entity_help {
+                vec![
+                    ("Tab / Shift+Tab", "Next / previous field"),
+                    ("↑ / ↓", "Move between rows and entities"),
+                    ("← / →", "Move between columns"),
+                    ("Enter", "Open account picker"),
+                    ("F2", "Add line row"),
+                    ("F3 / Del", "Remove line row"),
+                    ("Ctrl+S", "Submit inter-entity JE"),
+                    ("Esc", "Cancel / close"),
+                    ("?", "Show / hide this help"),
+                ]
+            } else {
+                self.entity.tabs[self.active_tab].hotkey_help()
+            };
+            render_help_overlay(frame, tab_area, hotkeys, self.chat_panel.is_visible());
         }
         if let Some(guide) = &self.user_guide {
             guide.render(frame, tab_area);
@@ -1648,7 +1661,10 @@ impl App {
         // Help overlay: Esc or ? dismisses it; all other keys are consumed.
         if self.show_help {
             match key.code {
-                KeyCode::Esc | KeyCode::Char('?') => self.show_help = false,
+                KeyCode::Esc | KeyCode::Char('?') => {
+                    self.show_help = false;
+                    self.inter_entity_help = false;
+                }
                 _ => {}
             }
             return;
@@ -1706,8 +1722,13 @@ impl App {
             }
         }
 
-        // Inter-entity mode: all input goes to the form.
+        // Inter-entity mode: all input goes to the form (except ? for help).
         if matches!(self.mode, AppMode::InterEntity(_)) {
+            if key.code == KeyCode::Char('?') {
+                self.show_help = true;
+                self.inter_entity_help = true;
+                return;
+            }
             self.handle_inter_entity_key(key);
             return;
         }

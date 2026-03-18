@@ -615,6 +615,24 @@ impl JeForm {
         matches!(self.focus, Focus::Date | Focus::Memo)
     }
 
+    /// Returns `true` if focus is on the last line row (any column).
+    pub fn is_at_last_line_row(&self) -> bool {
+        let last = self.lines.len().saturating_sub(1);
+        matches!(
+            self.focus,
+            Focus::LineAccount(i) | Focus::LineDebit(i) | Focus::LineCredit(i) | Focus::LineNote(i)
+            if i == last
+        )
+    }
+
+    /// Returns `true` if focus is on the first line row (any column).
+    pub fn is_at_first_line_row(&self) -> bool {
+        matches!(
+            self.focus,
+            Focus::LineAccount(0) | Focus::LineDebit(0) | Focus::LineCredit(0) | Focus::LineNote(0)
+        )
+    }
+
     /// Advances focus to the first line-item field, bypassing Date and Memo.
     /// Called by `InterEntityForm` when switching into this form from another section,
     /// so the user lands directly on the line rows rather than the header.
