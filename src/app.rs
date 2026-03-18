@@ -1722,11 +1722,20 @@ impl App {
             }
         }
 
-        // Inter-entity mode: all input goes to the form (except ? for help).
+        // Inter-entity mode: all input goes to the form (except ? and Ctrl+K).
         if matches!(self.mode, AppMode::InterEntity(_)) {
             if key.code == KeyCode::Char('?') {
                 self.show_help = true;
                 self.inter_entity_help = true;
+                return;
+            }
+            if key.code == KeyCode::Char('k') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                self.chat_panel.toggle_visible();
+                if self.chat_panel.is_visible() {
+                    self.focus = FocusTarget::ChatPanel;
+                } else {
+                    self.focus = FocusTarget::MainTab;
+                }
                 return;
             }
             self.handle_inter_entity_key(key);
