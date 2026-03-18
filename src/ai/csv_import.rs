@@ -369,8 +369,9 @@ fn field(record: &csv::StringRecord, idx: usize) -> &str {
 ///
 /// Handles:
 /// - Standard: `"1247.32"`, `"-1247.32"`
+/// - Dollar sign: `"$1,247.32"`, `"-$1,247.32"`
 /// - Commas: `"1,247.32"`
-/// - Parentheses: `"(1247.32)"` → negative
+/// - Parentheses (negative): `"(1247.32)"`, `"($1,234.56)"`, `"( 500.00 )"`
 /// - Empty string → `Money(0)`
 fn parse_money_str(s: &str) -> Result<Money> {
     let s = s.trim();
@@ -378,8 +379,8 @@ fn parse_money_str(s: &str) -> Result<Money> {
         return Ok(Money(0));
     }
 
-    // Strip commas and spaces
-    let s = s.replace([',', ' '], "");
+    // Strip commas, spaces, and dollar signs
+    let s = s.replace([',', ' ', '$'], "");
 
     let (negative, s): (bool, &str) = if s.starts_with('(') && s.ends_with(')') {
         (true, &s[1..s.len() - 1])
@@ -731,5 +732,41 @@ mod tests {
     fn parse_money_no_decimal() {
         let m = parse_money_str("100").expect("parse");
         assert_eq!(m, Money(10_000_000_000));
+    }
+
+    #[test]
+    fn parse_money_parentheses_simple() {
+        let m = parse_money_str("(100.00)").expect("parse");
+        assert_eq!(m, Money(-10_000_000_000));
+    }
+
+    #[test]
+    fn parse_money_parentheses_with_dollar_sign() {
+        let m = parse_money_str("($100.00)").expect("parse");
+        assert_eq!(m, Money(-10_000_000_000));
+    }
+
+    #[test]
+    fn parse_money_parentheses_with_dollar_sign_and_commas() {
+        let m = parse_money_str("($1,234.56)").expect("parse");
+        assert_eq!(m, Money(-123_456_000_000));
+    }
+
+    #[test]
+    fn parse_money_parentheses_with_inner_spaces() {
+        let m = parse_money_str("( 500.00 )").expect("parse");
+        assert_eq!(m, Money(-50_000_000_000));
+    }
+
+    #[test]
+    fn parse_money_dollar_sign_prefix() {
+        let m = parse_money_str("$1,234.56").expect("parse");
+        assert_eq!(m, Money(123_456_000_000));
+    }
+
+    #[test]
+    fn parse_money_negative_dollar_sign() {
+        let m = parse_money_str("-$1,234.56").expect("parse");
+        assert_eq!(m, Money(-123_456_000_000));
     }
 }

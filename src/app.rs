@@ -3207,7 +3207,7 @@ fn render_new_bank_confirmation_modal(
             ));
             // Row 4: sign convention (toggle, not an editable text field)
             let sign_val = if cfg.debit_is_negative {
-                "negative = withdrawal"
+                "negative (- or parens) = withdrawal"
             } else {
                 "positive = withdrawal"
             };
