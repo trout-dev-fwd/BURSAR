@@ -128,6 +128,12 @@ fn main() -> Result<()> {
                     let evt = event::read()?;
                     match screen.handle_event(&evt) {
                         StartupAction::OpenEntity { name, db_path } => {
+                            // Re-read config to pick up any entities added/edited/deleted
+                            // during the startup screen session.
+                            let config = load_config(&config_path).with_context(|| {
+                                format!("Failed to reload config from {}", config_path.display())
+                            })?;
+
                             let report_dir = config.report_output_dir.clone();
 
                             // Persist the selection so it is pre-selected on next launch.
@@ -137,7 +143,7 @@ fn main() -> Result<()> {
                             run_startup_checks(&mut terminal, &db, &name, &config)?;
 
                             let entity_ctx = EntityContext::new(db, name, report_dir);
-                            let app = Box::new(App::new(entity_ctx, config.clone()));
+                            let app = Box::new(App::new(entity_ctx, config));
                             Transition::ToRunning(app)
                         }
                         StartupAction::Quit => Transition::Quit,
