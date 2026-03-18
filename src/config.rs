@@ -30,6 +30,9 @@ pub struct WorkspaceConfig {
     /// Directory where entity context `.md` files are stored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_dir: Option<String>,
+    /// Name of the entity that was most recently opened. Used to pre-select it on next launch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_opened_entity: Option<String>,
 }
 
 /// The `[ai]` section of `workspace.toml`.
@@ -67,6 +70,7 @@ impl Default for WorkspaceConfig {
             entities: Vec::new(),
             ai: None,
             context_dir: None,
+            last_opened_entity: None,
         }
     }
 }
@@ -283,6 +287,7 @@ mod tests {
             ],
             ai: None,
             context_dir: None,
+            last_opened_entity: None,
         };
 
         save_config(&path, &config).expect("save_config failed");
@@ -347,6 +352,7 @@ mod tests {
             }],
             ai: None,
             context_dir: None,
+            last_opened_entity: None,
         };
         save_config(&path, &config).expect("save");
         let loaded = load_config(&path).expect("load");
@@ -376,6 +382,7 @@ mod tests {
             }],
             ai: None,
             context_dir: None,
+            last_opened_entity: None,
         };
         let toml_str = toml::to_string_pretty(&config).expect("serialization failed");
         assert!(toml_str.contains("report_output_dir"));
@@ -398,6 +405,7 @@ mod tests {
                 model: "claude-sonnet-4-20250514".to_string(),
             }),
             context_dir: Some("~/context".to_string()),
+            last_opened_entity: None,
         };
 
         save_config(&path, &config).expect("save");

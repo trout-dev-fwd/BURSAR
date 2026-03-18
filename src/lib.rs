@@ -6,6 +6,7 @@ pub mod inter_entity;
 pub mod reports;
 pub mod services;
 pub mod startup;
+pub mod startup_screen;
 pub mod tabs;
 pub mod types;
 pub mod widgets;

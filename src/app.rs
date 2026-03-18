@@ -175,6 +175,64 @@ impl App {
         }
     }
 
+    // ── Public methods for external event-loop drivers ───────────────────────
+
+    /// Draws one frame to the terminal.
+    pub fn render<B: ratatui::backend::Backend>(
+        &mut self,
+        terminal: &mut Terminal<B>,
+    ) -> Result<()> {
+        terminal.draw(|frame| self.render_frame(frame))?;
+        Ok(())
+    }
+
+    /// Processes one input event (currently handles Key events only).
+    pub fn handle_event(&mut self, event: &Event) {
+        if let Event::Key(key) = event {
+            self.handle_key(*key);
+        }
+    }
+
+    /// Periodic work: advance typewriter, expire status bar messages, update unsaved indicator.
+    pub fn tick(&mut self) {
+        self.chat_panel.tick();
+        self.status_bar.tick();
+        let unsaved = self.entity.tabs[self.active_tab].has_unsaved_changes();
+        self.status_bar.set_unsaved(unsaved);
+    }
+
+    /// Returns `true` when the application should exit.
+    pub fn should_quit(&self) -> bool {
+        self.should_quit
+    }
+
+    /// Dispatches any pending AI requests, slash commands, or import pipeline steps.
+    /// Must be called once per tick after `handle_event`.
+    pub fn process_pending<B: ratatui::backend::Backend>(&mut self, terminal: &mut Terminal<B>) {
+        if let Some(messages) = self.pending_ai_messages.take() {
+            self.handle_ai_request(terminal, messages);
+        }
+        if let Some(cmd) = self.pending_slash_command.take() {
+            self.execute_slash_command(terminal, cmd);
+        }
+        if self.pending_bank_detection {
+            self.pending_bank_detection = false;
+            self.run_bank_detection(terminal);
+        }
+        if self.pending_pass1 {
+            self.pending_pass1 = false;
+            self.run_pass1_step(terminal);
+        }
+        if self.pending_pass2 {
+            self.pending_pass2 = false;
+            self.run_pass2_step(terminal);
+        }
+        if self.pending_draft_creation {
+            self.pending_draft_creation = false;
+            self.run_draft_creation_step(terminal);
+        }
+    }
+
     /// Runs the synchronous event loop. Initializes the terminal, runs until quit,
     /// then restores the terminal — including on panic via a drop guard.
     pub fn run(&mut self) -> Result<()> {
@@ -201,57 +259,17 @@ impl App {
         terminal: &mut Terminal<B>,
     ) -> Result<()> {
         loop {
-            // 1. Render.
-            terminal.draw(|frame| self.render_frame(frame))?;
+            self.render(terminal)?;
 
-            // 2. Poll for input (500ms timeout).
-            if event::poll(std::time::Duration::from_millis(500))?
-                && let Event::Key(key) = event::read()?
-            {
-                self.handle_key(key);
+            if event::poll(std::time::Duration::from_millis(500))? {
+                let evt = event::read()?;
+                self.handle_event(&evt);
             }
 
-            // 2b. If a SendMessage action was queued, fire the AI request now.
-            if let Some(messages) = self.pending_ai_messages.take() {
-                self.handle_ai_request(terminal, messages);
-            }
+            self.process_pending(terminal);
+            self.tick();
 
-            // 2c. If a SlashCommand was queued, execute it now.
-            if let Some(cmd) = self.pending_slash_command.take() {
-                self.execute_slash_command(terminal, cmd);
-            }
-
-            // 2d. If bank format detection is pending, run it now (blocking API call).
-            if self.pending_bank_detection {
-                self.pending_bank_detection = false;
-                self.run_bank_detection(terminal);
-            }
-
-            // 2e. If Pass 1 local matching is pending, run it now.
-            if self.pending_pass1 {
-                self.pending_pass1 = false;
-                self.run_pass1_step(terminal);
-            }
-
-            // 2f. If Pass 2 AI matching is pending, run it now.
-            if self.pending_pass2 {
-                self.pending_pass2 = false;
-                self.run_pass2_step(terminal);
-            }
-
-            // 2g. If batch draft creation is pending, run it now.
-            if self.pending_draft_creation {
-                self.pending_draft_creation = false;
-                self.run_draft_creation_step(terminal);
-            }
-
-            // 3. Tick: advance typewriter, update status bar timeout + unsaved indicator.
-            self.chat_panel.tick();
-            self.status_bar.tick();
-            let unsaved = self.entity.tabs[self.active_tab].has_unsaved_changes();
-            self.status_bar.set_unsaved(unsaved);
-
-            if self.should_quit {
+            if self.should_quit() {
                 break;
             }
         }
