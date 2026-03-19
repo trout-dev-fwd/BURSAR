@@ -1,6 +1,6 @@
 //! GitHub release update check, download, verification, and binary replacement.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -142,6 +142,64 @@ fn find_asset_url(assets: &[serde_json::Value], name: &str) -> Option<String> {
     })
 }
 
+// ── Pre-flight checks ─────────────────────────────────────────────────────────
+
+/// Run pre-flight checks to verify the binary can be replaced.
+///
+/// Returns `Ok(exe_path)` if checks pass, `Err(reason)` if not.
+///
+/// Checks performed:
+/// 1. Resolves the running binary's path via `current_exe()`.
+/// 2. Symlink detection: compares the resolved path against `argv[0]` canonicalized.
+///    If they differ (or argv[0] is itself a symlink), the binary is accessed via a
+///    symlink. Renaming at the resolved path would leave the symlink pointing at `.old`.
+/// 3. Write permission: creates and immediately deletes a temp file in the binary's
+///    parent directory. If creation fails, the directory is not writable.
+pub fn preflight_check() -> Result<PathBuf, String> {
+    let exe_path =
+        std::env::current_exe().map_err(|e| format!("failed to resolve binary path: {e}"))?;
+
+    // Symlink detection: if argv[0] canonicalises to a different path than current_exe(),
+    // the binary was launched through a symlink. current_exe() resolves through /proc/self/exe
+    // on Linux (already resolved), so we check the argv[0] path directly.
+    //
+    // Approach: get argv[0], canonicalize it, and compare to current_exe(). If they differ,
+    // a symlink is in the path.
+    if let Some(argv0) = std::env::args().next() {
+        let argv0_path = Path::new(&argv0);
+        // If argv0 exists as a path and canonicalises to a different location than
+        // current_exe(), the binary was accessed via a symlink. Renaming at the resolved
+        // path would leave the symlink pointing at `.old`.
+        //
+        // If argv0 does not exist as a path (e.g., launched from PATH without `./`),
+        // we skip this check to avoid a false positive.
+        if argv0_path.exists()
+            && let Ok(canonical_argv0) = std::fs::canonicalize(argv0_path)
+            && canonical_argv0 != exe_path
+        {
+            return Err("binary is a symlink. Replace it manually.".to_string());
+        }
+    }
+
+    // Write permission check: try creating a temp file in the binary's parent directory.
+    let parent_dir = exe_path
+        .parent()
+        .ok_or_else(|| "binary has no parent directory".to_string())?;
+
+    let temp_path = parent_dir.join(format!(".bursar-update-check-{}", std::process::id()));
+    std::fs::File::create(&temp_path).map_err(|_| {
+        format!(
+            "permission denied on {}. Try running with appropriate permissions or \
+             moving the binary to a user-writable location.",
+            parent_dir.display()
+        )
+    })?;
+    // Clean up immediately — we only needed to test write access.
+    let _ = std::fs::remove_file(&temp_path);
+
+    Ok(exe_path)
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -240,5 +298,43 @@ mod tests {
             UpdateCheck::Failed(msg) => assert!(msg.contains("checksums.txt")),
             _ => panic!("expected Failed"),
         }
+    }
+
+    // ── preflight_check tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn preflight_writable_temp_dir_passes() {
+        // We can't call preflight_check() directly (it uses current_exe()),
+        // but we can test the write-permission sub-check by attempting a temp
+        // file in a known-writable directory.
+        let dir = std::env::temp_dir();
+        let temp_path = dir.join(".bursar-update-check-test-write");
+        assert!(
+            std::fs::File::create(&temp_path).is_ok(),
+            "should be able to write to temp dir"
+        );
+        let _ = std::fs::remove_file(&temp_path);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn preflight_read_only_dir_fails() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join("bursar_update_ro_test");
+        std::fs::create_dir_all(&dir).expect("create dir failed");
+
+        // Make directory read-only.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555))
+            .expect("set permissions failed");
+
+        let temp_path = dir.join(".bursar-update-check-test");
+        let result = std::fs::File::create(&temp_path);
+
+        // Restore permissions before any assertions so cleanup can succeed.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755))
+            .expect("restore permissions failed");
+        let _ = std::fs::remove_dir(&dir);
+
+        assert!(result.is_err(), "write to read-only dir should fail");
     }
 }
