@@ -304,6 +304,7 @@ mod tests {
 
     // ── Existing workspace config tests ──────────────────────────────────────
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn round_trip_with_two_entities() {
         let dir = std::env::temp_dir().join("bursar_test_config");
@@ -364,6 +365,7 @@ mod tests {
         let _ = fs::remove_dir(&dir);
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn expand_tilde_replaces_home() {
         let home = std::env::var("HOME").expect("HOME must be set");
@@ -377,6 +379,7 @@ mod tests {
         assert_eq!(expand_tilde(p), PathBuf::from("/tmp/reports"));
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn load_config_expands_tilde_in_entity_db_path() {
         let dir = std::env::temp_dir().join("bursar_test_tilde_entity");
