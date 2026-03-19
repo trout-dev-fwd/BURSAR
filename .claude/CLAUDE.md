@@ -57,6 +57,16 @@ Detailed specifications live in `specs/`. Read the relevant files for your curre
 | `specs/v2/v2-SPEC.md` | Master entry point: success criteria, architecture summary, kickoff prompts. |
 | `specs/v2/v2-progress.md` | V2 task tracking, decisions log, known issues. |
 
+### V2.2 Specs
+
+| File | Contents |
+|------|----------|
+| `specs/v2.2/v2.2-SPEC.md` | Master entry point: success criteria, feature specs, architecture impact, constraints. |
+| `specs/v2.2/v2.2-progress.md` | V2.2 task tracking, decisions log, known issues. |
+| `specs/v2.2/v2.2-phase-1.md` | Foundation: repo rename, splash polish, CI pipeline. |
+| `specs/v2.2/v2.2-phase-2.md` | Auto-update: download, verify, replace, restart. |
+| `specs/v2.2/v2.2-phase-3.md` | In-app feedback: bug reports, feature requests, help overlay. |
+
 **Do not duplicate spec content here.** This file stays lean. Specs are the source of truth.
 
 ## Key Decisions
@@ -79,6 +89,16 @@ Detailed specifications live in `specs/`. Read the relevant files for your curre
 - **Envelopes view toggle:** `v` key (replaced Tab).
 - **Audit logging:** All AI interactions logged as AiPrompt/AiResponse/AiToolUse. Responses logged as single-line summaries only.
 - **CSV import:** Three-pass pipeline (local → AI → clarification). Learned mappings in SQLite (import_mappings table).
+
+### V2.2
+- **Versioning:** semver `0.x.y` (pre-1.0). `Cargo.toml` is source of truth. Git tags match exactly (`vX.Y.Z`).
+- **Auto-update:** Forced on launch. Downloads from GitHub Releases API, verifies SHA256, replaces binary, restarts. Falls through gracefully on any failure.
+- **GitHub API:** All requests require `User-Agent: bursar/{version}` header (403 without it).
+- **Binary replacement:** Rename current → `.old`, new → current. Old binary cleaned up on next launch. Never deleted during update.
+- **Platform restart:** Linux uses `exec()` (in-place process replacement). Windows restores terminal first, then `spawn()` + `process::exit(0)`.
+- **Feedback:** `b`/`f` keys in `?` overlay only (not global). Pre-filled GitHub issue URLs via `xdg-open`/`cmd /c start`. No GitHub PAT required.
+- **CI/CD:** GitHub Actions triggered by `v*` tags. Builds Linux + Windows x86_64. Runs fmt/clippy/test before release build. `checksums.txt` with SHA256 hashes.
+- **New dependencies:** `semver` (version comparison), `sha2` (checksum verification), `urlencoding` (percent-encoding for issue URLs).
 
 ## User Guide Maintenance
 
@@ -104,13 +124,39 @@ V2 introduces several user-visible features that require guide updates:
 - **Slash commands:** /clear, /context, /compact, /persona, /match — document in AI panel section
 - **`?` help overlay:** New Chat Panel section — update help section
 
+### V2.2 Guide Updates
+
+V2.2 introduces user-visible features that require guide updates:
+
+- **`?` help overlay:** New "Feedback" section with `b` (report bug) and `f` (request feature)
+- **Splash screen:** Centered version number, update progress bar during auto-update
+- **Auto-update behavior:** Document that updates are forced on launch with graceful fallthrough
+
 ## Commit Messages
 
 ```
-V2 Phase N, Task M: [short description]
+V2.2 Phase N, Task M: [short description]
 ```
 
 One commit per task. See `specs/v1/implementation-protocols.md` for full protocol.
+
+## Release Protocol
+
+When the developer requests a release (e.g., "ship it", "cut a release", "bump and tag"):
+
+1. Determine the version bump type:
+   - **Patch** (0.2.0 → 0.2.1): bug fixes, minor polish, no new features
+   - **Minor** (0.2.0 → 0.3.0): new user-visible features
+   - **Major**: reserved for post-1.0 breaking changes
+2. Update the version in `Cargo.toml`
+3. Run: `cargo fmt && cargo clippy --all-targets --all-features -- -D warnings && cargo test`
+4. Commit: `chore: bump version to vX.Y.Z`
+5. Push to master: `git push origin master`
+6. Tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z`
+7. Update the current version's progress file with a release entry
+
+**Never bump the version or push a tag without an explicit request from the developer.**
+The tag push triggers GitHub Actions to build and publish release binaries automatically.
 
 ## File Size Limit
 
@@ -171,3 +217,11 @@ _(Discoveries from implementation — update as the project evolves)_
 - **Entity toml location:** Same directory as workspace.toml, referenced via `config_path` on each entity entry.
 - **API key loaded lazily:** Not at startup. First Ctrl+K or U import triggers the load. Missing key shows a specific error directing the user to the secrets file path.
 - **Tool use loop:** `handle_ai_request` in `app.rs` drives the tool use loop round by round. Between rounds it logs `AiToolUse` to audit, updates `ai_state` to `FulfillingTools`, and calls `terminal.draw()` to show "Checking the books". Each round is a separate blocking `ureq` call.
+
+### V2.2 — Update & Feedback
+- **Symlinks break binary replacement.** `std::env::current_exe()` resolves through symlinks. Renaming at the resolved path leaves the symlink pointing at `.old`. Detect and fall through with warning.
+- **Write permissions on binary directory.** If installed to `/usr/local/bin/` or similar, rename fails. Pre-flight check tests write access before downloading.
+- **Windows terminal cleanup before restart.** `std::process::exit(0)` may bypass drop guards. Explicitly restore terminal (disable raw mode, leave alternate screen) before spawning new process and exiting.
+- **Windows tests with `HOME` env var.** Windows uses `USERPROFILE` not `HOME`. Tests that depend on tilde expansion are gated with `#[cfg(not(target_os = "windows"))]`.
+- **Progress bar during download.** Same forced-render pattern as AI calls: `terminal.draw()` between chunk reads. Blocks event loop, acceptable on splash screen.
+- **`b`/`f` feedback keys scoped to `?` overlay.** Not global hotkeys. No conflicts with per-tab bindings. Feedback only available in Running state, not startup screen.
