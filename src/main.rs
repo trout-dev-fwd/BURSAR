@@ -105,14 +105,13 @@ fn main() -> Result<()> {
                 // Render initial splash with logo + version.
                 terminal.draw(|f| render_splash(f, &SplashState::default()))?;
 
-                // Attempt full update pipeline if a GitHub repo is configured.
-                let update_notice = if let Some(repo) = config.updates_github_repo() {
-                    let repo = repo.to_string();
-                    let mut splash = SplashState::default();
-                    attempt_update(&repo, &mut splash, &mut terminal).err()
-                } else {
-                    None
-                };
+                // Attempt full update pipeline, using the configured repo or the default.
+                let github_repo = config
+                    .updates_github_repo()
+                    .unwrap_or("trout-dev-fwd/bursar")
+                    .to_string();
+                let mut splash = SplashState::default();
+                let update_notice = attempt_update(&github_repo, &mut splash, &mut terminal).err();
 
                 // Enforce 1-second minimum splash display time. If an update was
                 // downloading, elapsed time will already exceed 1 second naturally.
