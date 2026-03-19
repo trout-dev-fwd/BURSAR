@@ -546,13 +546,21 @@ pub(super) fn render_help_overlay(
         ("/match", "Re-match selected draft"),
     ];
 
+    let feedback_hotkeys: &[(&str, &str)] = &[("b", "Report bug"), ("f", "Request feature")];
+
     // Calculate popup size: width = 60, height = rows + borders + section headers.
     let chat_section_rows = if panel_visible {
         chat_hotkeys.len() + 2 // header + blank line before
     } else {
         0
     };
-    let row_count = global_hotkeys.len() + tab_hotkeys.len() + 3 + chat_section_rows; // +3: two headers + blank line
+    // +3: two headers (Global, Tab-specific) + blank line between; +3 for Feedback section
+    let row_count = global_hotkeys.len()
+        + tab_hotkeys.len()
+        + 3
+        + chat_section_rows
+        + feedback_hotkeys.len()
+        + 2; // Feedback header + blank line before
     let popup_height = (row_count + 2).min(area.height as usize) as u16;
     let popup_width = 66u16.min(area.width);
 
@@ -613,6 +621,20 @@ pub(super) fn render_help_overlay(
                 Span::raw(*desc),
             ]));
         }
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        " Feedback",
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    )));
+    for (key, desc) in feedback_hotkeys {
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {key:<16}"), Style::default().fg(Color::Cyan)),
+            Span::raw(*desc),
+        ]));
     }
 
     let block = Block::default()
