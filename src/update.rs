@@ -408,6 +408,12 @@ fn do_restart(
     std::fs::set_permissions(current_exe, std::fs::Permissions::from_mode(0o755))
         .map_err(|e| format!("failed to set executable permissions: {e}"))?;
 
+    // Restore terminal before exec() so the new process starts with a clean state.
+    // Without this the old process's raw mode + alternate screen layers accumulate,
+    // causing the terminal to stay broken after the new process exits.
+    let _ = crossterm::terminal::disable_raw_mode();
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen);
+
     // exec() replaces the current process image. On success it never returns.
     // We pass the same args that were used to start the current process.
     let err = std::process::Command::new(current_exe)
