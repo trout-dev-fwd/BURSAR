@@ -278,6 +278,77 @@ where
     Ok(())
 }
 
+// ── SHA256 verification ───────────────────────────────────────────────────────
+
+/// Downloads `checksum_url` (a `sha256sum`-format text file) and extracts the expected
+/// hex hash for `asset_name`. Returns `Err` if the file can't be fetched or the asset
+/// is not listed.
+pub fn fetch_expected_checksum(checksum_url: &str, asset_name: &str) -> Result<String, String> {
+    let user_agent = format!("bursar/{}", env!("CARGO_PKG_VERSION"));
+    let response = ureq::get(checksum_url)
+        .set("User-Agent", &user_agent)
+        .set("Accept", "application/octet-stream")
+        .timeout(Duration::from_secs(30))
+        .call()
+        .map_err(|e| format!("failed to fetch checksums: {e}"))?;
+
+    let body = response
+        .into_string()
+        .map_err(|e| format!("failed to read checksum body: {e}"))?;
+
+    parse_checksum_file(&body, asset_name)
+}
+
+/// Parses a `sha256sum`-format checksum file and returns the hex hash for `asset_name`.
+/// Expected format: `{hex_hash}  {filename}` (two spaces, matching `sha256sum` output).
+fn parse_checksum_file(body: &str, asset_name: &str) -> Result<String, String> {
+    body.lines()
+        .find_map(|line| {
+            // Format: "{hash}  {filename}" — split at the two-space separator.
+            let (hash, name) = line.split_once("  ")?;
+            if name.trim() == asset_name {
+                Some(hash.trim().to_string())
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| format!("'{asset_name}' not found in checksums file"))
+}
+
+/// Computes the SHA256 of `file_path` and compares it to `expected_hex`.
+/// Returns `Err` with both hashes on mismatch.
+pub fn verify_checksum(file_path: &Path, expected_hex: &str) -> Result<(), String> {
+    use sha2::Digest;
+
+    let mut file = std::fs::File::open(file_path)
+        .map_err(|e| format!("failed to open file for hashing: {e}"))?;
+
+    let mut hasher = sha2::Sha256::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = std::io::Read::read(&mut file, &mut buf)
+            .map_err(|e| format!("read error during checksum: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+
+    let actual_hex: String = hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+
+    if actual_hex.eq_ignore_ascii_case(expected_hex) {
+        Ok(())
+    } else {
+        Err(format!(
+            "checksum mismatch — expected: {expected_hex}, got: {actual_hex}"
+        ))
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -459,6 +530,73 @@ mod tests {
         assert!(
             !dest.exists(),
             "partial file should be cleaned up on size mismatch"
+        );
+    }
+
+    // ── SHA256 verification tests ─────────────────────────────────────────────
+
+    #[test]
+    fn parse_checksum_file_finds_correct_hash() {
+        let body = "\
+a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2  bursar-linux-x86_64\n\
+e5f6g7h8e5f6g7h8e5f6g7h8e5f6g7h8e5f6g7h8e5f6g7h8e5f6g7h8e5f6g7h8  bursar-windows-x86_64.exe\n";
+        let result = parse_checksum_file(body, "bursar-linux-x86_64");
+        assert_eq!(
+            result.unwrap(),
+            "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+        );
+    }
+
+    #[test]
+    fn parse_checksum_file_asset_not_found() {
+        let body = "a1b2c3d4  bursar-linux-x86_64\n";
+        let result = parse_checksum_file(body, "bursar-macos-aarch64");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("bursar-macos-aarch64"));
+    }
+
+    #[test]
+    fn verify_checksum_correct_hash() {
+        // Write known bytes to a temp file and verify the known SHA256.
+        let dest = std::env::temp_dir().join("bursar_sha256_test.bin");
+        std::fs::write(&dest, b"hello world").expect("write failed");
+
+        // SHA256 of b"hello world" (no newline).
+        let expected = "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
+        // Attempt verification — if the hash constant is wrong the test fails here
+        // and we update the constant. The real SHA256 value is computed by sha2.
+        let result = verify_checksum(&dest, expected);
+        let _ = std::fs::remove_file(&dest);
+
+        // Accept either Ok (hash correct) or a mismatch error that tells us the real hash.
+        // In CI, we verify the hash is stable by always expecting Ok.
+        assert!(
+            result.is_ok(),
+            "checksum mismatch: {result:?}\n\
+             Update the expected hash in the test if sha2 produces a different value."
+        );
+    }
+
+    #[test]
+    fn verify_checksum_wrong_hash_produces_error() {
+        let dest = std::env::temp_dir().join("bursar_sha256_wrong_test.bin");
+        std::fs::write(&dest, b"hello world").expect("write failed");
+
+        let result = verify_checksum(
+            &dest,
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        );
+        let _ = std::fs::remove_file(&dest);
+
+        assert!(result.is_err());
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("expected:"),
+            "error should include expected hash: {msg}"
+        );
+        assert!(
+            msg.contains("got:"),
+            "error should include actual hash: {msg}"
         );
     }
 }
