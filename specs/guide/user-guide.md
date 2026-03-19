@@ -41,7 +41,7 @@ These work from any tab:
 | `Ctrl+←` / `Ctrl+→` | Cycle to the previous / next tab (wraps around) |
 | `Ctrl+K` | Open / close the AI Accountant panel |
 | `f` | Open fiscal period management (close/reopen periods, year-end close) |
-| `?` | Show hotkey quick-reference for the current tab (also shown as `? help` in the status bar) |
+| `?` | Show hotkey quick-reference for the current tab; also shows Feedback section (`b` / `f`) |
 | `Ctrl+H` | Open this user guide |
 | `q` | Quit the application |
 
@@ -580,6 +580,36 @@ Type a slash command in the input area and press `Enter`:
 - Post, edit, or delete journal entries (read-only access)
 - Modify accounts, envelopes, or any other data
 - Access data outside the currently open entity
+
+---
+
+## Feedback
+
+You can report bugs or request features without leaving Bursar. Feedback is only available
+after opening an entity (not from the startup screen).
+
+### Reporting a Bug or Requesting a Feature
+
+1. Press `?` to open the help overlay
+2. Press `b` to report a bug, or `f` to request a feature
+3. The help overlay closes and a text input modal appears
+4. Type your description (multi-line; use Enter for new lines)
+5. Press `Ctrl+S` to submit, or `Esc` to cancel
+6. Bursar opens your browser with a pre-filled GitHub issue containing your description,
+   system information, and (for bugs) your recent audit log entries
+7. Review and submit the issue on GitHub
+
+### Keys in the Feedback Modal
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+S` | Submit and open issue in browser |
+| `Esc` | Cancel without submitting |
+| `Enter` | New line |
+| `←` / `→` | Move cursor (wraps across lines) |
+| `↑` / `↓` | Move cursor up/down (column clamped to line length) |
+| `Home` / `End` | Start / end of current line |
+| `Backspace` | Delete character before cursor (merges lines at line start) |
 
 ---
 
