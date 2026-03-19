@@ -12,7 +12,7 @@ use bursar::{
     config::load_config,
     db::EntityDb,
     startup::run_startup_checks,
-    startup_screen::{StartupAction, StartupScreen, render_splash},
+    startup_screen::{SplashState, StartupAction, StartupScreen, render_splash},
     update::check_for_update,
 };
 
@@ -97,12 +97,20 @@ fn main() -> Result<()> {
                 let start = std::time::Instant::now();
 
                 // Render splash with logo + version.
-                terminal.draw(|f| render_splash(f, ""))?;
+                terminal.draw(|f| render_splash(f, &SplashState::default()))?;
 
                 // Check for updates if configured.
                 let update_notice = if let Some(repo) = config.updates_github_repo() {
                     let repo = repo.to_string();
-                    terminal.draw(|f| render_splash(f, "Checking for updates..."))?;
+                    terminal.draw(|f| {
+                        render_splash(
+                            f,
+                            &SplashState {
+                                update_status: Some("Checking for updates...".to_string()),
+                                progress: None,
+                            },
+                        )
+                    })?;
                     match check_for_update(&repo, env!("CARGO_PKG_VERSION")) {
                         Ok(Some(new_ver)) => Some(format!(
                             "New version v{new_ver} available \u{2014} github.com/{repo}/releases"

@@ -599,12 +599,66 @@ fn slugify(name: &str) -> String {
     result
 }
 
-/// Renders the splash screen: banner centered vertically.
-/// `status` is an optional one-line message shown below the banner
-/// (e.g. "Checking for updates..."). Pass `""` to show nothing.
-pub fn render_splash(frame: &mut Frame, status: &str) {
+/// Progress state for a binary download on the splash screen.
+#[derive(Debug, Clone, PartialEq)]
+pub enum UpdateProgress {
+    /// Known total size; shows `▰▰▰▱▱▱▱▱▱▱ [30%]`.
+    Determinate { percent: u8 },
+    /// Unknown total size (no Content-Length header); shows `▰▱▰▱▰▱▰▱▰▱`.
+    Indeterminate,
+    /// Download complete; shows `▰▰▰▰▰▰▰▰▰▰ [100%]`.
+    Complete,
+}
+
+/// State passed to [`render_splash`] to control what is shown below the banner.
+#[derive(Default)]
+pub struct SplashState {
+    /// Status line text (e.g. `"Updating to v0.2.2. . ."`). `None` = show nothing.
+    pub update_status: Option<String>,
+    /// Progress bar state. `None` = no bar rendered.
+    pub progress: Option<UpdateProgress>,
+}
+
+/// Renders the progress bar string for the given `UpdateProgress`.
+///
+/// Returns a string like `"▰▰▰▰▱▱▱▱▱▱ [40%]"` (determinate),
+/// `"▰▱▰▱▰▱▰▱▰▱"` (indeterminate), or `"▰▰▰▰▰▰▰▰▰▰ [100%]"` (complete).
+pub fn render_progress_bar(progress: &UpdateProgress) -> String {
+    const FILLED: char = '▰';
+    const EMPTY: char = '▱';
+    const WIDTH: usize = 10;
+
+    match progress {
+        UpdateProgress::Indeterminate => (0..WIDTH)
+            .map(|i| if i % 2 == 0 { FILLED } else { EMPTY })
+            .collect(),
+        UpdateProgress::Complete => {
+            format!(
+                "{} [100%]",
+                std::iter::repeat_n(FILLED, WIDTH).collect::<String>()
+            )
+        }
+        UpdateProgress::Determinate { percent } => {
+            let filled = ((*percent as usize) / WIDTH).min(WIDTH);
+            let bar: String = (0..WIDTH)
+                .map(|i| if i < filled { FILLED } else { EMPTY })
+                .collect();
+            format!("{bar} [{}%]", percent)
+        }
+    }
+}
+
+/// Renders the splash screen: banner centered vertically with optional update status.
+pub fn render_splash(frame: &mut Frame, state: &SplashState) {
     let area = frame.area();
-    let banner_height: u16 = if status.is_empty() { 5 } else { 6 };
+
+    let extra_lines: u16 = match (&state.update_status, &state.progress) {
+        (None, None) => 0,
+        (Some(_), None) | (None, Some(_)) => 1,
+        (Some(_), Some(_)) => 2,
+    };
+    let banner_height: u16 = 5 + extra_lines;
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -619,19 +673,58 @@ pub fn render_splash(frame: &mut Frame, status: &str) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(5), // banner (4 lines) + version
-            Constraint::Length(if status.is_empty() { 0 } else { 1 }),
+            Constraint::Length(if state.update_status.is_some() { 1 } else { 0 }),
+            Constraint::Length(if state.progress.is_some() { 1 } else { 0 }),
         ])
         .split(banner_area);
 
     render_banner_area(frame, inner_chunks[0]);
 
-    if !status.is_empty() {
+    if let Some(status) = &state.update_status {
         frame.render_widget(
-            Paragraph::new(status)
+            Paragraph::new(status.as_str())
                 .alignment(Alignment::Center)
                 .style(Style::default().fg(Color::DarkGray)),
             inner_chunks[1],
         );
+    }
+
+    if let Some(progress) = &state.progress {
+        frame.render_widget(
+            Paragraph::new(render_progress_bar(progress))
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(Color::Cyan)),
+            inner_chunks[2],
+        );
+    }
+}
+
+#[cfg(test)]
+mod progress_bar_tests {
+    use super::*;
+
+    #[test]
+    fn progress_bar_zero_percent() {
+        let bar = render_progress_bar(&UpdateProgress::Determinate { percent: 0 });
+        assert_eq!(bar, "▱▱▱▱▱▱▱▱▱▱ [0%]");
+    }
+
+    #[test]
+    fn progress_bar_fifty_percent() {
+        let bar = render_progress_bar(&UpdateProgress::Determinate { percent: 50 });
+        assert_eq!(bar, "▰▰▰▰▰▱▱▱▱▱ [50%]");
+    }
+
+    #[test]
+    fn progress_bar_one_hundred_percent() {
+        let bar = render_progress_bar(&UpdateProgress::Complete);
+        assert_eq!(bar, "▰▰▰▰▰▰▰▰▰▰ [100%]");
+    }
+
+    #[test]
+    fn progress_bar_indeterminate() {
+        let bar = render_progress_bar(&UpdateProgress::Indeterminate);
+        assert_eq!(bar, "▰▱▰▱▰▱▰▱▰▱");
     }
 }
 
