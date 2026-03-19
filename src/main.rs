@@ -13,7 +13,7 @@ use bursar::{
     db::EntityDb,
     startup::run_startup_checks,
     startup_screen::{SplashState, StartupAction, StartupScreen, render_splash},
-    update::check_for_update,
+    update::{UpdateCheck, check_for_update},
 };
 
 fn default_config_path() -> PathBuf {
@@ -111,9 +111,9 @@ fn main() -> Result<()> {
                             },
                         )
                     })?;
-                    match check_for_update(&repo, env!("CARGO_PKG_VERSION")) {
-                        Ok(Some(new_ver)) => Some(format!(
-                            "New version v{new_ver} available \u{2014} github.com/{repo}/releases"
+                    match check_for_update(&repo) {
+                        UpdateCheck::Available { version, .. } => Some(format!(
+                            "New version v{version} available \u{2014} github.com/{repo}/releases"
                         )),
                         _ => None,
                     }
