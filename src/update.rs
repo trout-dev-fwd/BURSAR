@@ -349,6 +349,109 @@ pub fn verify_checksum(file_path: &Path, expected_hex: &str) -> Result<(), Strin
     }
 }
 
+// ── Binary replacement and restart ────────────────────────────────────────────
+
+/// Replaces the running binary with `new_binary` and restarts the process.
+///
+/// **Does not return on success.** On failure, attempts rollback (restoring the old
+/// binary) and returns an error string.
+///
+/// Rename sequence:
+/// 1. `current_exe` → `current_exe.old`  (rollback point)
+/// 2. `new_binary`  → `current_exe`      (atomic swap)
+/// 3. Linux: `exec()` replaces the current process with the new binary.
+///    Windows: restores terminal, spawns new binary, then exits.
+pub fn replace_and_restart(
+    current_exe: &Path,
+    new_binary: &Path,
+    terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+) -> Result<(), String> {
+    let old_path = make_old_path(current_exe);
+
+    // Step 1: rename current → .old (rollback point; nothing changes if this fails).
+    std::fs::rename(current_exe, &old_path)
+        .map_err(|e| format!("failed to rename current binary to .old: {e}"))?;
+
+    // Step 2: rename new → current.
+    if let Err(e) = std::fs::rename(new_binary, current_exe) {
+        // Attempt rollback: restore old binary.
+        let _ = std::fs::rename(&old_path, current_exe);
+        return Err(format!("failed to rename new binary into place: {e}"));
+    }
+
+    // Step 3: platform-specific restart.
+    do_restart(current_exe, terminal)
+}
+
+/// Constructs the `.old` path: same directory, filename with `.old` appended.
+fn make_old_path(exe: &Path) -> PathBuf {
+    let filename = exe
+        .file_name()
+        .map(|n| {
+            let mut s = n.to_os_string();
+            s.push(".old");
+            s
+        })
+        .unwrap_or_else(|| std::ffi::OsString::from("bursar.old"));
+    exe.parent().unwrap_or(Path::new(".")).join(filename)
+}
+
+#[cfg(target_os = "linux")]
+fn do_restart(
+    current_exe: &Path,
+    _terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::process::CommandExt;
+
+    // Set executable permission on the new binary.
+    std::fs::set_permissions(current_exe, std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| format!("failed to set executable permissions: {e}"))?;
+
+    // exec() replaces the current process image. On success it never returns.
+    // We pass the same args that were used to start the current process.
+    let err = std::process::Command::new(current_exe)
+        .args(std::env::args_os().skip(1))
+        .exec();
+
+    // exec() only returns if it failed.
+    Err(format!("exec failed: {err}"))
+}
+
+#[cfg(target_os = "windows")]
+fn do_restart(
+    current_exe: &Path,
+    terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+) -> Result<(), String> {
+    // On Windows, restore the terminal before spawning so we don't leave it in raw mode.
+    drop(terminal);
+    let _ = crossterm::terminal::disable_raw_mode();
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen);
+
+    std::process::Command::new(current_exe)
+        .args(std::env::args().skip(1))
+        .spawn()
+        .map_err(|e| format!("failed to spawn new binary: {e}"))?;
+
+    std::process::exit(0);
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+fn do_restart(
+    _current_exe: &Path,
+    _terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+) -> Result<(), String> {
+    Err("restart not supported on this platform".to_string())
+}
+
+/// Cleans up the `.old` binary left by a previous update. Silent on all failures.
+pub fn cleanup_old_binary() {
+    if let Ok(exe) = std::env::current_exe() {
+        let old_path = make_old_path(&exe);
+        let _ = std::fs::remove_file(old_path);
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -598,5 +701,76 @@ e5f6g7h8e5f6g7h8e5f6g7h8e5f6g7h8e5f6g7h8e5f6g7h8e5f6g7h8e5f6g7h8  bursar-windows
             msg.contains("got:"),
             "error should include actual hash: {msg}"
         );
+    }
+
+    // ── binary replacement tests ──────────────────────────────────────────────
+
+    #[test]
+    fn cleanup_old_binary_no_panic_when_file_absent() {
+        // Should silently succeed even when there is no .old file to delete.
+        cleanup_old_binary(); // Must not panic.
+    }
+
+    #[test]
+    fn make_old_path_appends_old_suffix() {
+        let exe = Path::new("/home/user/bin/bursar");
+        let old = make_old_path(exe);
+        assert_eq!(old, Path::new("/home/user/bin/bursar.old"));
+    }
+
+    #[test]
+    fn rename_sequence_moves_files_correctly() {
+        let dir = std::env::temp_dir().join("bursar_rename_test");
+        std::fs::create_dir_all(&dir).expect("create dir");
+
+        let current = dir.join("bursar");
+        let new_bin = dir.join("bursar.new");
+        std::fs::write(&current, b"old binary").expect("write current");
+        std::fs::write(&new_bin, b"new binary").expect("write new");
+
+        let old_path = make_old_path(&current);
+
+        // Simulate the rename steps from replace_and_restart (without exec).
+        std::fs::rename(&current, &old_path).expect("rename current -> old");
+        std::fs::rename(&new_bin, &current).expect("rename new -> current");
+
+        assert_eq!(std::fs::read(&current).unwrap(), b"new binary");
+        assert_eq!(std::fs::read(&old_path).unwrap(), b"old binary");
+        assert!(!new_bin.exists());
+
+        // Cleanup.
+        let _ = std::fs::remove_file(&current);
+        let _ = std::fs::remove_file(&old_path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn rename_sequence_rolls_back_on_step2_failure() {
+        let dir = std::env::temp_dir().join("bursar_rollback_test");
+        std::fs::create_dir_all(&dir).expect("create dir");
+
+        let current = dir.join("bursar");
+        std::fs::write(&current, b"old binary").expect("write current");
+
+        let old_path = make_old_path(&current);
+
+        // Step 1: rename current -> old.
+        std::fs::rename(&current, &old_path).expect("rename current -> old");
+
+        // Step 2 fails: new binary does not exist.
+        let new_bin = dir.join("bursar.new.nonexistent");
+        let rename_result = std::fs::rename(&new_bin, &current);
+
+        // Simulate rollback on failure.
+        if rename_result.is_err() {
+            let _ = std::fs::rename(&old_path, &current);
+        }
+
+        // After rollback, the original binary is restored.
+        assert!(current.exists(), "original binary should be restored");
+        assert!(!old_path.exists(), "old file should be gone after rollback");
+
+        let _ = std::fs::remove_file(&current);
+        let _ = std::fs::remove_dir(&dir);
     }
 }
