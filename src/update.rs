@@ -424,7 +424,7 @@ fn do_restart(
     terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
 ) -> Result<(), String> {
     // On Windows, restore the terminal before spawning so we don't leave it in raw mode.
-    drop(terminal);
+    let _ = terminal;
     let _ = crossterm::terminal::disable_raw_mode();
     let _ = crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen);
 
