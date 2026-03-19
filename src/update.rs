@@ -200,6 +200,84 @@ pub fn preflight_check() -> Result<PathBuf, String> {
     Ok(exe_path)
 }
 
+// ── Download with progress ─────────────────────────────────────────────────────
+
+/// Downloads a binary from `url` to `dest`, calling `on_progress(bytes_received, total)`
+/// after each chunk. `total` is `None` when `Content-Length` is absent.
+///
+/// Deletes any partial file on error. Uses a 300-second timeout.
+pub fn download_with_progress<F>(url: &str, dest: &Path, on_progress: F) -> Result<(), String>
+where
+    F: FnMut(u64, Option<u64>),
+{
+    let user_agent = format!("bursar/{}", env!("CARGO_PKG_VERSION"));
+    let response = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(300))
+        .build()
+        .get(url)
+        .set("User-Agent", &user_agent)
+        .set("Accept", "application/octet-stream")
+        .call()
+        .map_err(|e| format!("download request failed: {e}"))?;
+
+    let content_length: Option<u64> = response
+        .header("Content-Length")
+        .and_then(|v| v.parse().ok());
+
+    read_chunks_to_file(response.into_reader(), dest, content_length, on_progress)
+}
+
+/// Reads `reader` in 8 KB chunks, writing to `dest` and calling `on_progress` after each.
+/// Deletes `dest` on any I/O error. Verifies size against `content_length` if provided.
+///
+/// Separated from `download_with_progress` so the chunking + progress logic is testable
+/// without a live HTTP connection.
+fn read_chunks_to_file<R, F>(
+    mut reader: R,
+    dest: &Path,
+    content_length: Option<u64>,
+    mut on_progress: F,
+) -> Result<(), String>
+where
+    R: std::io::Read,
+    F: FnMut(u64, Option<u64>),
+{
+    let mut file = std::fs::File::create(dest)
+        .map_err(|e| format!("failed to create destination file: {e}"))?;
+
+    let mut buf = [0u8; 8192];
+    let mut bytes_received: u64 = 0;
+
+    loop {
+        let n = reader.read(&mut buf).map_err(|e| {
+            // Partial file cleanup on read error.
+            let _ = std::fs::remove_file(dest);
+            format!("download read error: {e}")
+        })?;
+        if n == 0 {
+            break;
+        }
+        std::io::Write::write_all(&mut file, &buf[..n]).map_err(|e| {
+            let _ = std::fs::remove_file(dest);
+            format!("download write error: {e}")
+        })?;
+        bytes_received += n as u64;
+        on_progress(bytes_received, content_length);
+    }
+
+    // Verify final size matches Content-Length if provided.
+    if let Some(expected) = content_length
+        && bytes_received != expected
+    {
+        let _ = std::fs::remove_file(dest);
+        return Err(format!(
+            "download size mismatch: expected {expected} bytes, got {bytes_received}"
+        ));
+    }
+
+    Ok(())
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -336,5 +414,51 @@ mod tests {
         let _ = std::fs::remove_dir(&dir);
 
         assert!(result.is_err(), "write to read-only dir should fail");
+    }
+
+    // ── download progress tests ───────────────────────────────────────────────
+
+    #[test]
+    fn progress_callback_receives_incrementing_counts() {
+        let data = b"hello world this is test data for progress tracking";
+        let reader = std::io::Cursor::new(data);
+        let dest = std::env::temp_dir().join("bursar_dl_progress_test.bin");
+
+        let mut calls: Vec<(u64, Option<u64>)> = Vec::new();
+        read_chunks_to_file(reader, &dest, Some(data.len() as u64), |recv, total| {
+            calls.push((recv, total));
+        })
+        .expect("should succeed");
+
+        let _ = std::fs::remove_file(&dest);
+
+        // Data fits in one 8 KB chunk, so one progress call.
+        assert!(!calls.is_empty(), "expected at least one progress call");
+        let (final_recv, final_total) = calls.last().copied().unwrap();
+        assert_eq!(final_recv, data.len() as u64);
+        assert_eq!(final_total, Some(data.len() as u64));
+
+        // Each call should have non-decreasing byte count.
+        let mut prev = 0u64;
+        for (recv, _) in &calls {
+            assert!(*recv >= prev, "byte count must be non-decreasing");
+            prev = *recv;
+        }
+    }
+
+    #[test]
+    fn partial_file_cleaned_up_on_size_mismatch() {
+        let data = b"short";
+        let reader = std::io::Cursor::new(data);
+        let dest = std::env::temp_dir().join("bursar_dl_mismatch_test.bin");
+
+        // Claim content-length is 100 bytes but only 5 bytes are provided.
+        let result = read_chunks_to_file(reader, &dest, Some(100), |_, _| {});
+
+        assert!(result.is_err(), "expected size mismatch error");
+        assert!(
+            !dest.exists(),
+            "partial file should be cleaned up on size mismatch"
+        );
     }
 }
