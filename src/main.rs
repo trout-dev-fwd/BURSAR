@@ -12,8 +12,11 @@ use bursar::{
     config::load_config,
     db::EntityDb,
     startup::run_startup_checks,
-    startup_screen::{SplashState, StartupAction, StartupScreen, render_splash},
-    update::{UpdateCheck, check_for_update},
+    startup_screen::{SplashState, StartupAction, StartupScreen, UpdateProgress, render_splash},
+    update::{
+        UpdateCheck, check_for_update, cleanup_old_binary, download_with_progress,
+        fetch_expected_checksum, preflight_check, replace_and_restart, verify_checksum,
+    },
 };
 
 fn default_config_path() -> PathBuf {
@@ -65,6 +68,9 @@ fn main() -> Result<()> {
         .with_ansi(false)
         .init();
 
+    // Clean up any .old binary left by a previous update before doing anything else.
+    cleanup_old_binary();
+
     let config_path = std::env::args()
         .nth(1)
         .map(PathBuf::from)
@@ -96,32 +102,20 @@ fn main() -> Result<()> {
             AppState::Splash => {
                 let start = std::time::Instant::now();
 
-                // Render splash with logo + version.
+                // Render initial splash with logo + version.
                 terminal.draw(|f| render_splash(f, &SplashState::default()))?;
 
-                // Check for updates if configured.
+                // Attempt full update pipeline if a GitHub repo is configured.
                 let update_notice = if let Some(repo) = config.updates_github_repo() {
                     let repo = repo.to_string();
-                    terminal.draw(|f| {
-                        render_splash(
-                            f,
-                            &SplashState {
-                                update_status: Some("Checking for updates...".to_string()),
-                                progress: None,
-                            },
-                        )
-                    })?;
-                    match check_for_update(&repo) {
-                        UpdateCheck::Available { version, .. } => Some(format!(
-                            "New version v{version} available \u{2014} github.com/{repo}/releases"
-                        )),
-                        _ => None,
-                    }
+                    let mut splash = SplashState::default();
+                    attempt_update(&repo, &mut splash, &mut terminal).err()
                 } else {
                     None
                 };
 
-                // Ensure at least 1 second of splash.
+                // Enforce 1-second minimum splash display time. If an update was
+                // downloading, elapsed time will already exceed 1 second naturally.
                 let elapsed = start.elapsed();
                 if elapsed < Duration::from_secs(1) {
                     std::thread::sleep(Duration::from_secs(1) - elapsed);
@@ -196,6 +190,102 @@ fn main() -> Result<()> {
 
     restore_terminal();
     Ok(())
+}
+
+/// Attempts the full update flow: check → pre-flight → download → verify → replace → restart.
+///
+/// Returns `Ok(())` if no update is available or the update is not needed.
+/// Returns `Err(warning)` if the update was available but failed at any step.
+///
+/// On success with an available update, `replace_and_restart` never returns (the process
+/// is replaced by exec/spawn+exit). So `Ok(())` here means "no update needed".
+fn attempt_update(
+    github_repo: &str,
+    splash: &mut SplashState,
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+) -> Result<(), String> {
+    // Show "Checking for updates..." and render before the blocking HTTP call.
+    splash.update_status = Some("Checking for updates...".to_string());
+    let _ = terminal.draw(|f| render_splash(f, splash));
+
+    let (version, asset_url, checksum_url, asset_name) = match check_for_update(github_repo) {
+        UpdateCheck::UpToDate => return Ok(()),
+        // Network/API errors are silent: fall through and launch normally.
+        UpdateCheck::Failed(_) => return Ok(()),
+        UpdateCheck::Available {
+            version,
+            asset_url,
+            checksum_url,
+            asset_name,
+        } => (version, asset_url, checksum_url, asset_name),
+    };
+
+    // Pre-flight: verify binary is replaceable before wasting bandwidth.
+    let exe_path = preflight_check().map_err(|reason| {
+        format!(
+            "Update to v{version} failed: {reason}. Running v{}.",
+            env!("CARGO_PKG_VERSION")
+        )
+    })?;
+
+    // Construct the temp download path alongside the current binary.
+    let parent_dir = exe_path.parent().unwrap_or(std::path::Path::new("."));
+    let new_binary = parent_dir.join(format!("{asset_name}.new"));
+
+    // Show download status.
+    splash.update_status = Some(format!("Updating to v{version}. . ."));
+    splash.progress = Some(UpdateProgress::Indeterminate);
+    let _ = terminal.draw(|f| render_splash(f, splash));
+
+    // Download with progress bar updates between chunk reads.
+    let download_result = download_with_progress(&asset_url, &new_binary, |bytes, total| {
+        splash.progress = Some(match total {
+            Some(t) if t > 0 => UpdateProgress::Determinate {
+                percent: ((bytes * 100) / t).min(100) as u8,
+            },
+            _ => UpdateProgress::Indeterminate,
+        });
+        let _ = terminal.draw(|f| render_splash(f, splash));
+    });
+
+    if let Err(e) = download_result {
+        let _ = std::fs::remove_file(&new_binary);
+        return Err(format!(
+            "Update to v{version} failed: {e}. Running v{}.",
+            env!("CARGO_PKG_VERSION")
+        ));
+    }
+
+    // Fetch and verify checksum.
+    let expected_hash = fetch_expected_checksum(&checksum_url, &asset_name).map_err(|e| {
+        let _ = std::fs::remove_file(&new_binary);
+        format!(
+            "Update to v{version} failed: {e}. Running v{}.",
+            env!("CARGO_PKG_VERSION")
+        )
+    })?;
+
+    if let Err(e) = verify_checksum(&new_binary, &expected_hash) {
+        let _ = std::fs::remove_file(&new_binary);
+        return Err(format!(
+            "Update to v{version} failed: {e}. Running v{}.",
+            env!("CARGO_PKG_VERSION")
+        ));
+    }
+
+    // Show completion bar briefly before restart.
+    splash.progress = Some(UpdateProgress::Complete);
+    let _ = terminal.draw(|f| render_splash(f, splash));
+
+    // Replace binary and restart. On Linux this never returns on success.
+    // On Windows this spawns a new process and exits.
+    replace_and_restart(&exe_path, &new_binary, terminal).map_err(|e| {
+        let _ = std::fs::remove_file(&new_binary);
+        format!(
+            "Update to v{version} failed: {e}. Running v{}.",
+            env!("CARGO_PKG_VERSION")
+        )
+    })
 }
 
 /// Writes `last_opened_entity = "<name>"` into `workspace.toml` using `toml_edit` so
