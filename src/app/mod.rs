@@ -38,7 +38,7 @@ use crate::{
     },
     types::{AiRequestState, FocusTarget},
     widgets::{
-        FilePicker, FiscalModal, StatusBar, UserGuide,
+        FeedbackModal, FilePicker, FiscalModal, StatusBar, UserGuide,
         chat_panel::{ChatPanel, SlashCommand},
     },
 };
@@ -140,6 +140,8 @@ pub struct App {
     pending_pass2: bool,
     /// Set when Creating step begins; consumed by event_loop to run batch draft creation.
     pending_draft_creation: bool,
+    /// Multi-line feedback modal (bug report or feature request), shown over the main UI.
+    feedback_modal: Option<FeedbackModal>,
 }
 
 impl App {
@@ -174,6 +176,7 @@ impl App {
             pending_pass1: false,
             pending_pass2: false,
             pending_draft_creation: false,
+            feedback_modal: None,
         }
     }
 
@@ -387,6 +390,9 @@ impl App {
                 })
                 .unwrap_or(crate::types::AccountType::Asset);
             render_import_modal(frame, tab_area, flow, bank_account_type);
+        }
+        if let Some(ref mut modal) = self.feedback_modal {
+            modal.render(frame, tab_area);
         }
         if let Some(area) = panel_area {
             let is_focused = matches!(self.focus, FocusTarget::ChatPanel);

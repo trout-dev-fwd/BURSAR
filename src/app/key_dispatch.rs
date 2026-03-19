@@ -13,7 +13,12 @@ use crate::{
     inter_entity::{InterEntityMode, form::InterEntityFormAction, write_protocol},
     tabs::{TabAction, TabId},
     types::{FocusTarget, MatchSource},
-    widgets::{FiscalModal, FiscalModalAction, UserGuide, UserGuideAction, chat_panel::ChatAction},
+    widgets::{
+        FeedbackAction, FeedbackModal, FeedbackType, FiscalModal, FiscalModalAction, UserGuide,
+        UserGuideAction,
+        chat_panel::ChatAction,
+        feedback_modal::{build_issue_url, open_in_browser},
+    },
 };
 
 use super::{App, AppMode};
@@ -39,14 +44,69 @@ impl App {
             return;
         }
 
-        // Help overlay: Esc or ? dismisses it; all other keys are consumed.
+        // Help overlay: Esc or ? dismisses it; b/f open feedback modal; all other keys consumed.
         if self.show_help {
             match key.code {
                 KeyCode::Esc | KeyCode::Char('?') => {
                     self.show_help = false;
                     self.inter_entity_help = false;
                 }
+                KeyCode::Char('b') => {
+                    self.show_help = false;
+                    self.inter_entity_help = false;
+                    self.feedback_modal = Some(FeedbackModal::new(FeedbackType::Bug));
+                }
+                KeyCode::Char('f') => {
+                    self.show_help = false;
+                    self.inter_entity_help = false;
+                    self.feedback_modal = Some(FeedbackModal::new(FeedbackType::Feature));
+                }
                 _ => {}
+            }
+            return;
+        }
+
+        // Feedback modal: handles all keys when open.
+        if let Some(ref mut modal) = self.feedback_modal {
+            match modal.handle_key(key) {
+                FeedbackAction::Submit(feedback_type, description) => {
+                    let audit_entries: Vec<String> = self
+                        .entity
+                        .db
+                        .audit()
+                        .list_recent(5)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|e| {
+                            format!("{} | {} | {}", e.created_at, e.action_type, e.description)
+                        })
+                        .collect();
+                    let url = build_issue_url(
+                        &feedback_type,
+                        &description,
+                        Some(&self.entity.name),
+                        &audit_entries,
+                    );
+                    match open_in_browser(&url) {
+                        Ok(()) => {
+                            let msg = match feedback_type {
+                                FeedbackType::Bug => "Bug report opened in browser",
+                                FeedbackType::Feature => "Feature request opened in browser",
+                            };
+                            self.status_bar.set_message(msg.to_string());
+                        }
+                        Err(e) => {
+                            self.status_bar.set_error(format!(
+                                "{e}. File manually at https://github.com/trout-dev-fwd/bursar/issues"
+                            ));
+                        }
+                    }
+                    self.feedback_modal = None;
+                }
+                FeedbackAction::Cancel => {
+                    self.feedback_modal = None;
+                }
+                FeedbackAction::None => {}
             }
             return;
         }
@@ -706,4 +766,87 @@ fn tab_id_to_index(tab_id: TabId) -> usize {
         .iter()
         .position(|t| *t == tab_id)
         .expect("tab_id_to_index: TabId::all() must contain every variant")
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use crossterm::event::KeyModifiers;
+
+    use super::*;
+    use crate::{
+        app::{App, EntityContext},
+        config::WorkspaceConfig,
+        db::EntityDb,
+        widgets::FeedbackType,
+    };
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn test_app() -> App {
+        let db = EntityDb::open_in_memory().expect("in-memory db");
+        let ctx = EntityContext::new(
+            db,
+            "Test Entity".to_string(),
+            std::path::PathBuf::from("/tmp"),
+        );
+        App::new(ctx, WorkspaceConfig::default())
+    }
+
+    #[test]
+    fn b_key_in_help_overlay_opens_bug_feedback_modal() {
+        let mut app = test_app();
+        app.show_help = true;
+        app.handle_key(key(KeyCode::Char('b')));
+        assert!(!app.show_help, "help overlay should be closed");
+        assert!(
+            app.feedback_modal.is_some(),
+            "feedback modal should be open"
+        );
+        if let Some(ref modal) = app.feedback_modal {
+            assert_eq!(modal.feedback_type, FeedbackType::Bug);
+        }
+    }
+
+    #[test]
+    fn f_key_in_help_overlay_opens_feature_feedback_modal() {
+        let mut app = test_app();
+        app.show_help = true;
+        app.handle_key(key(KeyCode::Char('f')));
+        assert!(!app.show_help, "help overlay should be closed");
+        assert!(
+            app.feedback_modal.is_some(),
+            "feedback modal should be open"
+        );
+        if let Some(ref modal) = app.feedback_modal {
+            assert_eq!(modal.feedback_type, FeedbackType::Feature);
+        }
+    }
+
+    #[test]
+    fn b_key_when_help_not_open_does_not_open_feedback_modal() {
+        let mut app = test_app();
+        // show_help is false by default
+        app.handle_key(key(KeyCode::Char('b')));
+        assert!(
+            app.feedback_modal.is_none(),
+            "feedback modal should NOT open when help overlay is closed"
+        );
+    }
+
+    #[test]
+    fn esc_in_feedback_modal_closes_it() {
+        let mut app = test_app();
+        app.show_help = true;
+        app.handle_key(key(KeyCode::Char('b')));
+        assert!(app.feedback_modal.is_some());
+        app.handle_key(key(KeyCode::Esc));
+        assert!(
+            app.feedback_modal.is_none(),
+            "Esc should close the feedback modal"
+        );
+    }
 }

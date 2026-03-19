@@ -176,6 +176,19 @@ impl<'conn> AuditRepo<'conn> {
             .collect()
     }
 
+    /// Returns the `limit` most recent audit entries, ordered newest-first.
+    pub fn list_recent(&self, limit: usize) -> Result<Vec<AuditEntry>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, action_type, entity_name, record_type, record_id, description, created_at
+             FROM audit_log
+             ORDER BY created_at DESC
+             LIMIT ?1",
+        )?;
+        stmt.query_map(params![limit as i64], row_to_entry)?
+            .map(|r| r.map_err(anyhow::Error::from))
+            .collect()
+    }
+
     /// Returns audit log entries matching `filter`, ordered by `created_at` ascending.
     /// With an empty `AuditFilter` (all None) all entries are returned.
     ///
