@@ -570,7 +570,7 @@ pub fn render_banner_area(frame: &mut Frame, area: Rect) {
 
     frame.render_widget(
         Paragraph::new(format!("v{}", env!("CARGO_PKG_VERSION")))
-            .alignment(Alignment::Right)
+            .alignment(Alignment::Center)
             .style(Style::default().fg(Color::DarkGray)),
         chunks[1],
     );
