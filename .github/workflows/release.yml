@@ -1,0 +1,63 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo test
+      - run: cargo build --release
+      - run: mv target/release/bursar bursar-linux-x86_64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bursar-linux-x86_64
+          path: bursar-linux-x86_64
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo test
+      - run: cargo build --release
+      - run: Move-Item -Path target\release\bursar.exe -Destination bursar-windows-x86_64.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bursar-windows-x86_64
+          path: bursar-windows-x86_64.exe
+
+  release:
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: bursar-linux-x86_64
+      - uses: actions/download-artifact@v4
+        with:
+          name: bursar-windows-x86_64
+      - name: Generate checksums
+        run: sha256sum bursar-linux-x86_64 bursar-windows-x86_64.exe > checksums.txt
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            bursar-linux-x86_64
+            bursar-windows-x86_64.exe
+            checksums.txt
+          generate_release_notes: true
