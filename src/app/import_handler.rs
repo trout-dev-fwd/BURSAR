@@ -503,6 +503,8 @@ impl App {
                 .set_error(format!("Failed to begin transaction: {e}"));
             if let Some(ref mut f) = self.import_flow {
                 f.step = ImportFlowStep::ReviewScreen;
+                f.selected_index = 0;
+                f.scroll_offset = 0;
             }
             return;
         }
@@ -735,6 +737,8 @@ impl App {
             self.status_bar.set_error(format!("Import failed: {err}"));
             if let Some(ref mut f) = self.import_flow {
                 f.step = ImportFlowStep::ReviewScreen;
+                f.selected_index = 0;
+                f.scroll_offset = 0;
             }
             return;
         }
@@ -1231,6 +1235,8 @@ impl App {
                 if !flow.clarification_prompted {
                     if flow.clarification_queue.is_empty() {
                         flow.step = ImportFlowStep::ReviewScreen;
+                        flow.selected_index = 0;
+                        flow.scroll_offset = 0;
                         self.focus = FocusTarget::MainTab;
                         self.import_flow = Some(flow);
                         return;

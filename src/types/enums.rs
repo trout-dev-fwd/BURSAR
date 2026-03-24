@@ -546,6 +546,7 @@ mod tests {
             JournalEntryCreated,
             JournalEntryPosted,
             JournalEntryReversed,
+            JournalEntryDeleted,
             AccountCreated,
             AccountModified,
             AccountDeactivated,
