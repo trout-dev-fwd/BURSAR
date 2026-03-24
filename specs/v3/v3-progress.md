@@ -1,13 +1,13 @@
 # V3 Progress Tracker
 
 ## Current State
-- **Active Phase**: Phase 2 — Transfer Detection Logic (complete)
-- **Last Completed Task**: Phase 2, Task 2
-- **Next Task**: Phase 3, Task 1
+- **Active Phase**: Phase 3 — Review Screen UI (complete)
+- **Last Completed Task**: Phase 3, Task 3
+- **Next Task**: Phase 4, Task 1
 - **Blockers**: None
 
 ## Completed Phases
-_(Phase 1 tasks done, Phase 2 tasks done — awaiting developer sign-off)_
+_(Phase 1 tasks done, Phase 2 tasks done, Phase 3 tasks done — awaiting developer sign-off)_
 
 ## Phase 1 Progress
 - [x] Task 1: Create junction table and migration
@@ -17,6 +17,11 @@ _(Phase 1 tasks done, Phase 2 tasks done — awaiting developer sign-off)_
 ## Phase 2 Progress
 - [x] Task 1: Add transfer match query to JournalRepo
 - [x] Task 2: Integrate transfer detection into Pass 1
+
+## Phase 3 Progress
+- [x] Task 1: Add transfer match state to import flow
+- [x] Task 2: Render transfer matches section in review screen
+- [x] Task 3: Handle key events for transfer matches
 
 ## Decisions & Discoveries
 
@@ -82,6 +87,20 @@ _(Phase 1 tasks done, Phase 2 tasks done — awaiting developer sign-off)_
   TransferMatch so they don't trigger Pass 2; (2) `unmatched_indices` in `run_pass2_step` also
   excludes them; (3) the Creating loop skips TransferMatch items (no new draft created — wiring
   is Phase 4).
+
+- **[Phase 3, Task 1]**: `TransferMatchRow` struct placed in `csv_import.rs` alongside `ImportFlowState`
+  so the state type stays in one file. No separate `transfer_selected` field added — unified
+  `selected_index` drives navigation for both transfer and normal rows via the integrated
+  `build_review_rows` list. This simplifies navigation without needing a section-tracking bool.
+
+- **[Phase 3, Task 2]**: Transfer matches rendered as `TransferHeader` + `TransferItem` rows at the
+  top of `build_review_rows`, before `ApproveAction`. Header is magenta/bold; items show ✓ (green)
+  or ✗ (red) indicator. Detail pane shows the action that will be taken (skip or send to Pass 2).
+
+- **[Phase 3, Task 3]**: Enter/Space toggled for `TransferItem` in the unified `match row` arm.
+  `ApproveAction` restricted to Enter only (Space excluded) to avoid accidental approval while
+  toggling transfer matches. Navigation between sections works automatically since transfer items
+  occupy the first N indices in the row list. 7 new tests added (711 total).
 
 ## Known Issues
 - None currently.
