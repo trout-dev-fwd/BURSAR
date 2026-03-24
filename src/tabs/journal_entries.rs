@@ -1159,7 +1159,7 @@ impl Tab for JournalEntriesTab {
         } else {
             vec![
                 ("↑/↓ or k/j", "Navigate"),
-                ("n", "New journal entry"),
+                ("a", "Add journal entry"),
                 ("e", "Edit draft entry"),
                 ("p", "Post selected entry"),
                 ("r", "Reverse posted entry"),
@@ -1246,7 +1246,7 @@ impl Tab for JournalEntriesTab {
             }
 
             // ── Actions ───────────────────────────────────────────────────────
-            KeyCode::Char('n') | KeyCode::Char('N') => {
+            KeyCode::Char('a') | KeyCode::Char('A') => {
                 self.modal = Some(Modal::NewEntry(JeForm::new()));
             }
             KeyCode::Char('e') | KeyCode::Char('E') => {
@@ -1650,7 +1650,7 @@ mod tests {
         let mut tab = JournalEntriesTab::new();
         tab.refresh(&db);
 
-        tab.handle_key(key(KeyCode::Char('n')), &db);
+        tab.handle_key(key(KeyCode::Char('a')), &db);
         assert!(matches!(tab.modal, Some(Modal::NewEntry(_))));
     }
 
@@ -1848,7 +1848,7 @@ mod tests {
         tab.refresh(&db);
 
         // Open new entry modal.
-        tab.handle_key(key(KeyCode::Char('n')), &db);
+        tab.handle_key(key(KeyCode::Char('a')), &db);
         assert!(matches!(tab.modal, Some(Modal::NewEntry(_))));
 
         // Fill in a date that has no fiscal period (2024 — no fiscal year created).
@@ -1890,7 +1890,7 @@ mod tests {
         assert!(!tab.has_unsaved_changes());
 
         // Open new-entry modal.
-        tab.handle_key(key(KeyCode::Char('n')), &db);
+        tab.handle_key(key(KeyCode::Char('a')), &db);
         assert!(matches!(tab.modal, Some(Modal::NewEntry(_))));
         // Form is fresh (only auto-filled date) → no unsaved changes yet.
         assert!(!tab.has_unsaved_changes());

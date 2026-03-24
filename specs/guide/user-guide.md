@@ -140,7 +140,7 @@ is recorded here.
 - In the detail view, press `g` on a line to jump to that account's General Ledger
 
 ### Creating a New Entry
-1. Press `n` to open the entry form
+1. Press `a` to open the entry form
 2. Fill in the date (YYYY-MM-DD format) and memo
 3. For each line:
    - Press `Enter` on the Account field to open the account picker
