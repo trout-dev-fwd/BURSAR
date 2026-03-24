@@ -5,6 +5,7 @@ use chrono::NaiveDate;
 use rusqlite::{Connection, params};
 
 use super::now_str;
+use crate::db::import_ref_repo::ImportRefRepo;
 use crate::types::{
     AccountId, FiscalPeriodId, JournalEntryId, JournalEntryLineId, JournalEntryStatus, Money,
     ReconcileState,
@@ -156,13 +157,7 @@ impl<'conn> JournalRepo<'conn> {
     ) -> Result<JournalEntryId> {
         let je_id = self.create_draft_inner(entry)?;
         if let Some(r) = import_ref {
-            self.conn
-                .execute(
-                    "INSERT INTO journal_entry_import_refs (journal_entry_id, import_ref)
-                     VALUES (?1, ?2)",
-                    params![i64::from(je_id), r],
-                )
-                .context("Failed to insert import_ref into junction table")?;
+            ImportRefRepo::new(self.conn).insert(je_id, r)?;
         }
         Ok(je_id)
     }
