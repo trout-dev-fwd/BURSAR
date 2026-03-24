@@ -1,9 +1,9 @@
 # V4 Progress Tracker
 
 ## Current State
-- **Active Phase**: Phase 1 complete
-- **Last Completed Task**: Phase 1, Task 5
-- **Next Task**: Phase 2, Task 1
+- **Active Phase**: Phase 2 complete
+- **Last Completed Task**: Phase 2, Task 3
+- **Next Task**: Phase 3, Task 1
 - **Blockers**: None
 
 ## Completed Phases
@@ -19,8 +19,19 @@ All 5 tasks committed. Verification: `cargo fmt && cargo clippy -D warnings && c
 | 4 | d25babd | Form configuration screen and entity TOML |
 | 5 | 9894484 | Memo editing on JE tab and hide per-line memo |
 
+## Completed Phases (continued)
+
+### Phase 2 — Tax Reference Library (2026-03-24)
+All 3 tasks committed. Verification: `cargo fmt && cargo clippy -D warnings && cargo test` all pass (760 tests).
+
+| Task | Commit | Description |
+|------|--------|-------------|
+| 1 | (see git log) | tax_reference schema, scraper dependency, TaxRefRepo |
+| 2 | (see git log) | HTML fetcher and parser for IRS publications |
+| 3 | (see git log) | Wire tax reference ingestion to `u` hotkey |
+
 ## Current Phase Progress
-_(Phase 1 complete — Phase 2 not started)_
+_(Phase 2 complete — Phase 3 not started)_
 
 ## Decisions & Discoveries
 
@@ -85,6 +96,22 @@ _(Phase 1 complete — Phase 2 not started)_
   Account → Debit → Credit (wraps to next row). Note column hidden from both JE form and detail
   view. `note_input`/`line_memo` data preserved in storage and roundtripped via `from_existing`.
   `m` key opens `TextInputModal` pre-filled with current memo; works on any selected entry.
+
+## Decisions & Discoveries (Phase 2)
+
+- **[Phase 2, Task 2]**: `split_by_heading_level` uses a `while let` loop (not `loop/break`) per
+  clippy's `while_let_loop` lint. Uses lowercase comparison for HTML tag matching to handle
+  mixed-case tags from real IRS pages.
+
+- **[Phase 2, Task 2]**: `scraper::Html::parse_fragment` used for tag stripping — returns clean
+  normalized text. Called per-section, not per-document, so performance is acceptable.
+
+- **[Phase 2, Task 3]**: Transaction isolation: network fetching (Phase 1) and DB writes (Phase 2)
+  are separated so `terminal.draw()` can be called between fetches without borrow conflicts.
+  The closure-based transaction block lets `conn` borrow end before final `set_message` call.
+
+- **[Phase 2, Task 3]**: `chrono::Local::now().year()` returns `i32` directly (no cast needed).
+  The `tax_year` column in `tax_reference` is INTEGER, stored as `i32`.
 
 ## Known Issues
 - None currently.
