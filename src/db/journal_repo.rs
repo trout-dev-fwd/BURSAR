@@ -292,6 +292,10 @@ impl<'conn> JournalRepo<'conn> {
             params![i64::from(id)],
         )?;
         self.conn.execute(
+            "DELETE FROM journal_entry_import_refs WHERE journal_entry_id = ?1",
+            params![i64::from(id)],
+        )?;
+        self.conn.execute(
             "DELETE FROM journal_entries WHERE id = ?1",
             params![i64::from(id)],
         )?;
@@ -968,6 +972,145 @@ mod tests {
         let repo = JournalRepo::new(&conn);
         let result = repo.get_with_lines(JournalEntryId::from(9999));
         assert!(result.is_err(), "Should error on nonexistent JE");
+    }
+
+    // ── delete_draft ──────────────────────────────────────────────────────────
+
+    /// Helper: creates a minimal draft JE with two lines for delete tests.
+    fn make_draft(
+        conn: &Connection,
+        period_id: FiscalPeriodId,
+        acct1: AccountId,
+        acct2: AccountId,
+    ) -> JournalEntryId {
+        let repo = JournalRepo::new(conn);
+        let entry_date = NaiveDate::from_ymd_opt(2026, 1, 10).unwrap();
+        repo.create_draft(&NewJournalEntry {
+            entry_date,
+            memo: Some("Delete test".to_string()),
+            fiscal_period_id: period_id,
+            reversal_of_je_id: None,
+            lines: vec![
+                NewJournalEntryLine {
+                    account_id: acct1,
+                    debit_amount: Money(10_000_000_000),
+                    credit_amount: Money(0),
+                    line_memo: None,
+                    sort_order: 0,
+                },
+                NewJournalEntryLine {
+                    account_id: acct2,
+                    debit_amount: Money(0),
+                    credit_amount: Money(10_000_000_000),
+                    line_memo: None,
+                    sort_order: 1,
+                },
+            ],
+        })
+        .expect("create draft for delete test")
+    }
+
+    #[test]
+    fn delete_draft_removes_je_and_lines() {
+        let (conn, period_id, acct1, acct2) = db_with_fiscal_year();
+        let je_id = make_draft(&conn, period_id, acct1, acct2);
+        let repo = JournalRepo::new(&conn);
+
+        repo.delete_draft(je_id)
+            .expect("delete_draft should succeed");
+
+        // JE gone.
+        assert!(
+            repo.get_with_lines(je_id).is_err(),
+            "JE should not exist after delete"
+        );
+
+        // Lines gone.
+        let line_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM journal_entry_lines WHERE journal_entry_id = ?1",
+                params![i64::from(je_id)],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(line_count, 0, "Lines should be removed");
+    }
+
+    #[test]
+    fn delete_draft_also_removes_import_refs() {
+        let (conn, period_id, acct1, acct2) = db_with_fiscal_year();
+        let je_id = make_draft(&conn, period_id, acct1, acct2);
+
+        // Attach an import_ref.
+        conn.execute(
+            "INSERT INTO journal_entry_import_refs (journal_entry_id, import_ref) VALUES (?1, ?2)",
+            params![i64::from(je_id), "TestBank|2026-01-10|Payroll|-500.00"],
+        )
+        .expect("insert import_ref");
+
+        let repo = JournalRepo::new(&conn);
+        repo.delete_draft(je_id)
+            .expect("delete_draft should succeed");
+
+        let ref_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM journal_entry_import_refs WHERE journal_entry_id = ?1",
+                params![i64::from(je_id)],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(ref_count, 0, "import_refs should be removed");
+    }
+
+    #[test]
+    fn delete_draft_errors_on_posted_entry() {
+        let (conn, period_id, acct1, acct2) = db_with_fiscal_year();
+        let je_id = make_draft(&conn, period_id, acct1, acct2);
+
+        // Post the entry.
+        conn.execute(
+            "UPDATE journal_entries SET status = 'Posted' WHERE id = ?1",
+            params![i64::from(je_id)],
+        )
+        .expect("update to Posted");
+
+        let repo = JournalRepo::new(&conn);
+        let result = repo.delete_draft(je_id);
+        assert!(
+            result.is_err(),
+            "Should error when trying to delete a Posted entry"
+        );
+    }
+
+    #[test]
+    fn delete_draft_then_import_ref_no_longer_seen_as_duplicate() {
+        let (conn, period_id, acct1, acct2) = db_with_fiscal_year();
+        let je_id = make_draft(&conn, period_id, acct1, acct2);
+        let import_ref = "TestBank|2026-01-10|Payroll|-500.00";
+
+        conn.execute(
+            "INSERT INTO journal_entry_import_refs (journal_entry_id, import_ref) VALUES (?1, ?2)",
+            params![i64::from(je_id), import_ref],
+        )
+        .expect("insert import_ref");
+
+        // Before delete: import_ref is present.
+        let repo = JournalRepo::new(&conn);
+        let refs_before = repo.get_recent_import_refs(365).expect("get refs");
+        assert!(
+            refs_before.contains(import_ref),
+            "import_ref should be present before delete"
+        );
+
+        // Delete the draft.
+        repo.delete_draft(je_id).expect("delete_draft");
+
+        // After delete: import_ref is gone.
+        let refs_after = repo.get_recent_import_refs(365).expect("get refs after");
+        assert!(
+            !refs_after.contains(import_ref),
+            "import_ref should be gone after delete"
+        );
     }
 
     // ── JE number sequencing ──────────────────────────────────────────────────

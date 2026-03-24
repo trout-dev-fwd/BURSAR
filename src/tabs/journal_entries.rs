@@ -137,6 +137,11 @@ enum Modal {
         focused_field: usize,
         error: Option<String>,
     },
+    /// Confirmation to delete a Draft entry.
+    ConfirmDelete {
+        confirm: Confirmation,
+        je_id: JournalEntryId,
+    },
 }
 
 // ── Tab ───────────────────────────────────────────────────────────────────────
@@ -448,6 +453,35 @@ impl JournalEntriesTab {
             ConfirmAction::Cancelled => TabAction::None,
             ConfirmAction::Pending => {
                 self.modal = Some(Modal::ConfirmPost { confirm, je_id });
+                TabAction::None
+            }
+        }
+    }
+
+    fn handle_confirm_delete_key(&mut self, key: KeyEvent, db: &EntityDb) -> TabAction {
+        let Some(Modal::ConfirmDelete { mut confirm, je_id }) = self.modal.take() else {
+            return TabAction::None;
+        };
+        match confirm.handle_key(key) {
+            ConfirmAction::Confirmed => match db.journals().delete_draft(je_id) {
+                Err(e) => TabAction::ShowMessage(format!("Delete failed: {e}")),
+                Ok(()) => {
+                    let je_id_i64 = i64::from(je_id);
+                    if let Err(e) = db.audit().append(
+                        crate::types::AuditAction::JournalEntryDeleted,
+                        &self.entity_name,
+                        Some("JournalEntry"),
+                        Some(je_id_i64),
+                        &format!("Deleted draft journal entry id={je_id_i64}"),
+                    ) {
+                        tracing::warn!("Failed to log JournalEntryDeleted audit: {e}");
+                    }
+                    TabAction::RefreshData
+                }
+            },
+            ConfirmAction::Cancelled => TabAction::None,
+            ConfirmAction::Pending => {
+                self.modal = Some(Modal::ConfirmDelete { confirm, je_id });
                 TabAction::None
             }
         }
@@ -1071,6 +1105,9 @@ impl JournalEntriesTab {
             Modal::ConfirmReverse { confirm, .. } => {
                 confirm.render(frame, area);
             }
+            Modal::ConfirmDelete { confirm, .. } => {
+                confirm.render(frame, area);
+            }
             Modal::RecurringSetup {
                 je_number,
                 start_date_str,
@@ -1133,6 +1170,7 @@ impl Tab for JournalEntriesTab {
                 ("t", "Create scheduled entry"),
                 ("u", "Import CSV statement"),
                 ("U", "Re-match incomplete imports"),
+                ("x", "Delete draft"),
             ]
         }
     }
@@ -1158,6 +1196,7 @@ impl Tab for JournalEntriesTab {
                 Some(Modal::ReverseDate { .. }) => self.handle_reverse_date_key(key),
                 Some(Modal::ConfirmReverse { .. }) => self.handle_confirm_reverse_key(key, db),
                 Some(Modal::RecurringSetup { .. }) => self.handle_recurring_setup_key(key, db),
+                Some(Modal::ConfirmDelete { .. }) => self.handle_confirm_delete_key(key, db),
                 None => TabAction::None,
             };
         }
@@ -1310,6 +1349,25 @@ impl Tab for JournalEntriesTab {
             // [Shift+U] re-match incomplete import drafts.
             KeyCode::Char('U') => {
                 return TabAction::StartRematch;
+            }
+            // [x] delete a draft entry.
+            KeyCode::Char('x') | KeyCode::Char('X') => {
+                if let Some(entry) = self.selected_entry() {
+                    if entry.status == JournalEntryStatus::Draft {
+                        let je_id = entry.id;
+                        let je_number = entry.je_number.clone();
+                        self.modal = Some(Modal::ConfirmDelete {
+                            confirm: Confirmation::new(format!(
+                                "Delete draft {je_number}? This cannot be undone."
+                            )),
+                            je_id,
+                        });
+                    } else {
+                        return TabAction::ShowMessage(
+                            "Cannot delete posted entries. Use reverse instead.".to_string(),
+                        );
+                    }
+                }
             }
             _ => {}
         }
