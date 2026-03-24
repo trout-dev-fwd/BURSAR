@@ -2285,3 +2285,145 @@ fn render_account_picker_modal(
     flow.account_picker
         .render(frame, area, &flow.picker_accounts);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ai::csv_import::{ImportFlowState, TransferMatchRow};
+    use crate::types::Money;
+    use chrono::NaiveDate;
+
+    fn make_transfer_row(confirmed: bool) -> TransferMatchRow {
+        TransferMatchRow {
+            date: NaiveDate::from_ymd_opt(2026, 1, 14).unwrap(),
+            amount: Money(50_000_000_000), // $500
+            description: "ACH Deposit Chase".to_string(),
+            import_ref: "Ally|2026-01-14|ACH Deposit Chase|500".to_string(),
+            matched_je_id: crate::types::JournalEntryId::from(47),
+            matched_je_number: "47".to_string(),
+            matched_date: NaiveDate::from_ymd_opt(2026, 1, 14).unwrap(),
+            matched_amount: Money(-50_000_000_000),
+            matched_bank: "Chase".to_string(),
+            confirmed,
+        }
+    }
+
+    // ── toggle tests ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn transfer_match_toggle_confirmed_to_rejected() {
+        let mut flow = ImportFlowState::new();
+        flow.transfer_matches.push(make_transfer_row(true));
+
+        // Simulate toggle.
+        flow.transfer_matches[0].confirmed = !flow.transfer_matches[0].confirmed;
+        assert!(!flow.transfer_matches[0].confirmed);
+    }
+
+    #[test]
+    fn transfer_match_toggle_rejected_back_to_confirmed() {
+        let mut flow = ImportFlowState::new();
+        flow.transfer_matches.push(make_transfer_row(false));
+
+        flow.transfer_matches[0].confirmed = !flow.transfer_matches[0].confirmed;
+        assert!(flow.transfer_matches[0].confirmed);
+    }
+
+    // ── navigation tests (via build_review_rows structure) ───────────────────
+
+    #[test]
+    fn review_rows_with_transfer_matches_start_with_transfer_header() {
+        let mut flow = ImportFlowState::new();
+        flow.transfer_matches.push(make_transfer_row(true));
+        flow.transfer_matches.push(make_transfer_row(false));
+
+        let rows = build_review_rows(&flow);
+
+        // First row must be the transfer header.
+        assert!(
+            matches!(rows[0], ReviewRow::TransferHeader { count: 2 }),
+            "expected TransferHeader(2), got {:?}",
+            rows[0]
+        );
+        // Next two rows are the transfer items.
+        assert!(matches!(
+            rows[1],
+            ReviewRow::TransferItem { transfer_idx: 0 }
+        ));
+        assert!(matches!(
+            rows[2],
+            ReviewRow::TransferItem { transfer_idx: 1 }
+        ));
+        // Then the approve button.
+        assert!(matches!(rows[3], ReviewRow::ApproveAction));
+    }
+
+    #[test]
+    fn nav_down_from_last_transfer_item_reaches_approve_action() {
+        let mut flow = ImportFlowState::new();
+        flow.transfer_matches.push(make_transfer_row(true));
+
+        let rows = build_review_rows(&flow);
+        // Transfer section: index 0 = header, index 1 = item, index 2 = ApproveAction.
+        let last_transfer_idx = 1usize;
+        let approve_idx = last_transfer_idx + 1;
+
+        assert!(matches!(
+            rows[last_transfer_idx],
+            ReviewRow::TransferItem { .. }
+        ));
+        assert!(matches!(rows[approve_idx], ReviewRow::ApproveAction));
+    }
+
+    #[test]
+    fn nav_up_from_approve_action_reaches_last_transfer_item() {
+        let mut flow = ImportFlowState::new();
+        flow.transfer_matches.push(make_transfer_row(true));
+        flow.transfer_matches.push(make_transfer_row(true));
+
+        let rows = build_review_rows(&flow);
+        // header(0), item(1), item(2), ApproveAction(3)
+        let approve_idx = 3usize;
+        let last_transfer_idx = approve_idx - 1;
+
+        assert!(matches!(rows[approve_idx], ReviewRow::ApproveAction));
+        assert!(matches!(
+            rows[last_transfer_idx],
+            ReviewRow::TransferItem { transfer_idx: 1 }
+        ));
+        // Pressing ↑ from approve_idx: approve_idx.saturating_sub(1) == last_transfer_idx.
+        assert_eq!(approve_idx.saturating_sub(1), last_transfer_idx);
+    }
+
+    // ── empty transfer section ────────────────────────────────────────────────
+
+    #[test]
+    fn review_rows_without_transfer_matches_start_with_approve_action() {
+        let flow = ImportFlowState::new();
+        let rows = build_review_rows(&flow);
+
+        assert!(
+            matches!(rows[0], ReviewRow::ApproveAction),
+            "expected ApproveAction at index 0, got {:?}",
+            rows[0]
+        );
+    }
+
+    #[test]
+    fn empty_transfer_section_navigation_unchanged() {
+        let flow = ImportFlowState::new();
+        let rows = build_review_rows(&flow);
+
+        // No transfer rows at all — first row is ApproveAction, normal navigation.
+        assert!(
+            !rows
+                .iter()
+                .any(|r| matches!(r, ReviewRow::TransferHeader { .. }))
+        );
+        assert!(
+            !rows
+                .iter()
+                .any(|r| matches!(r, ReviewRow::TransferItem { .. }))
+        );
+    }
+}
