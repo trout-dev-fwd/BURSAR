@@ -1284,18 +1284,25 @@ impl App {
                             flow.selected_index += 1;
                         }
                     }
-                    KeyCode::Enter => {
+                    KeyCode::Enter | KeyCode::Char(' ') => {
                         if let Some(row) = rows.get(flow.selected_index) {
                             match row {
+                                ReviewRow::TransferItem { transfer_idx } => {
+                                    let idx = *transfer_idx;
+                                    flow.transfer_matches[idx].confirmed =
+                                        !flow.transfer_matches[idx].confirmed;
+                                }
                                 ReviewRow::ApproveAction => {
-                                    flow.step = ImportFlowStep::Creating;
-                                    self.pending_draft_creation = true;
+                                    if key.code == KeyCode::Enter {
+                                        flow.step = ImportFlowStep::Creating;
+                                        self.pending_draft_creation = true;
+                                    }
                                 }
                                 ReviewRow::SectionHeader { section_idx, .. } => {
                                     flow.review_section_expanded[*section_idx] =
                                         !flow.review_section_expanded[*section_idx];
                                 }
-                                ReviewRow::MatchItem { .. } => {}
+                                ReviewRow::TransferHeader { .. } | ReviewRow::MatchItem { .. } => {}
                             }
                         }
                     }
@@ -1373,6 +1380,14 @@ fn extract_json_block(s: &str) -> String {
 #[derive(Debug, Clone)]
 enum ReviewRow {
     ApproveAction,
+    /// Header row for the transfer matches section.
+    TransferHeader {
+        count: usize,
+    },
+    /// A single transfer match item.
+    TransferItem {
+        transfer_idx: usize,
+    },
     SectionHeader {
         label: String,
         section_idx: usize,
@@ -1396,7 +1411,19 @@ fn build_review_rows(flow: &crate::ai::csv_import::ImportFlowState) -> Vec<Revie
         (MatchSource::Unmatched, "Unmatched", 3),
     ];
 
-    let mut rows = vec![ReviewRow::ApproveAction];
+    let mut rows = Vec::new();
+
+    // Transfer matches section appears first, before the approve button.
+    if !flow.transfer_matches.is_empty() {
+        rows.push(ReviewRow::TransferHeader {
+            count: flow.transfer_matches.len(),
+        });
+        for (i, _) in flow.transfer_matches.iter().enumerate() {
+            rows.push(ReviewRow::TransferItem { transfer_idx: i });
+        }
+    }
+
+    rows.push(ReviewRow::ApproveAction);
 
     for (source, label, section_idx) in &sections {
         let indices: Vec<usize> = flow
@@ -1535,6 +1562,66 @@ pub(super) fn render_review_screen(
                 Style::default().fg(Color::White)
             };
             let text = match row {
+                ReviewRow::TransferHeader { count } => {
+                    let s = if is_selected {
+                        base_style
+                    } else {
+                        Style::default()
+                            .fg(Color::Magenta)
+                            .add_modifier(Modifier::BOLD)
+                    };
+                    Line::from(Span::styled(
+                        format!(
+                            " \u{2500}\u{2500}\u{2500} Transfer Matches ({count}) \
+                             \u{2500}\u{2500}\u{2500}"
+                        ),
+                        s,
+                    ))
+                }
+                ReviewRow::TransferItem { transfer_idx } => {
+                    let tm = &flow.transfer_matches[*transfer_idx];
+                    let (indicator, indicator_style) = if tm.confirmed {
+                        (
+                            "\u{2713}",
+                            if is_selected {
+                                base_style
+                            } else {
+                                Style::default().fg(Color::Green)
+                            },
+                        )
+                    } else {
+                        (
+                            "\u{2717}",
+                            if is_selected {
+                                base_style
+                            } else {
+                                Style::default().fg(Color::Red)
+                            },
+                        )
+                    };
+                    let desc = tm.description.chars().take(24).collect::<String>();
+                    let amt_sign = if tm.amount >= crate::types::Money(0) {
+                        "+"
+                    } else {
+                        ""
+                    };
+                    let matched_amt_sign = if tm.matched_amount >= crate::types::Money(0) {
+                        "+"
+                    } else {
+                        ""
+                    };
+                    let label = format!(
+                        "  {indicator}  {}  {amt_sign}{}  \"{desc}\"  \u{2192}  \
+                         JE #{} ({}, {matched_amt_sign}{}, {})",
+                        tm.date.format("%b %d"),
+                        tm.amount,
+                        tm.matched_je_number,
+                        tm.matched_bank,
+                        tm.matched_amount,
+                        tm.matched_date.format("%b %d"),
+                    );
+                    Line::from(Span::styled(label, indicator_style))
+                }
                 ReviewRow::ApproveAction => {
                     let s = if is_selected {
                         base_style
@@ -1615,9 +1702,45 @@ pub(super) fn render_review_screen(
         list_area,
     );
 
-    // Detail pane: show the proposed JE for the selected match item.
+    // Detail pane: show transfer match info or the proposed JE.
     frame.render_widget(Clear, detail_area);
-    let detail_lines = if let Some(ReviewRow::MatchItem { match_idx, .. }) = rows.get(selected) {
+    let detail_lines = if let Some(ReviewRow::TransferItem { transfer_idx }) = rows.get(selected) {
+        let tm = &flow.transfer_matches[*transfer_idx];
+        let action = if tm.confirmed {
+            "Skip import — link import_ref to existing draft JE (no new draft created)"
+        } else {
+            "Reject — send to Pass 2 for AI matching instead"
+        };
+        vec![
+            Line::from(Span::styled(
+                format!(
+                    " Transfer: {} | {} | {}",
+                    tm.date.format("%b %d"),
+                    tm.description,
+                    tm.amount
+                ),
+                Style::default().fg(Color::Gray),
+            )),
+            Line::from(Span::styled(
+                format!(
+                    " Matched: JE #{} | {} | {} | {}",
+                    tm.matched_je_number,
+                    tm.matched_bank,
+                    tm.matched_amount,
+                    tm.matched_date.format("%b %d")
+                ),
+                Style::default().fg(Color::Gray),
+            )),
+            Line::from(Span::styled(
+                format!(" Action: {action}"),
+                Style::default().fg(Color::White),
+            )),
+            Line::from(Span::styled(
+                "  Enter/Space: toggle confirm/reject   \u{2191}/\u{2193}: navigate   Esc: cancel",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ]
+    } else if let Some(ReviewRow::MatchItem { match_idx, .. }) = rows.get(selected) {
         let m = &flow.matches[*match_idx];
         let txn = &m.transaction;
         let bank_acct = flow
