@@ -1,13 +1,13 @@
 # V3 Progress Tracker
 
 ## Current State
-- **Active Phase**: Phase 4 — Wiring and Integration (complete)
+- **Active Phase**: Complete — released as v0.4.0
 - **Last Completed Task**: Phase 4, Task 3
-- **Next Task**: Developer review, then release v0.4.0
+- **Release**: v0.4.0 (2026-03-24)
 - **Blockers**: None
 
 ## Completed Phases
-_(All V3 phases complete — awaiting developer sign-off for v0.4.0 release)_
+_(All V3 phases complete — released as v0.4.0)_
 
 ## Phase 1 Progress
 - [x] Task 1: Create junction table and migration
