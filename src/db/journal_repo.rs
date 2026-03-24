@@ -86,6 +86,22 @@ pub struct DateRange {
     pub to: Option<NaiveDate>,
 }
 
+/// A potential cross-bank transfer match returned by `find_transfer_matches`.
+/// Represents an existing draft JE whose bank-account line is the mirror image
+/// of a newly-imported transaction.
+#[derive(Debug, Clone)]
+pub struct TransferMatch {
+    pub je_id: JournalEntryId,
+    pub je_number: String,
+    pub entry_date: NaiveDate,
+    /// Signed amount of the matched line: `debit_amount − credit_amount`.
+    pub amount: Money,
+    /// JE-level memo, or empty string if absent.
+    pub memo: String,
+    /// Bank name extracted from the first import_ref stored for this JE.
+    pub bank_name: String,
+}
+
 /// A single row in a per-account General Ledger view.
 /// Combines data from `journal_entries` and `journal_entry_lines`.
 #[derive(Debug, Clone)]
@@ -700,6 +716,92 @@ impl<'conn> JournalRepo<'conn> {
         stmt.query_map([], row_to_entry)?
             .map(|r| r.map_err(anyhow::Error::from))
             .collect()
+    }
+
+    /// Finds draft JEs that could be the other side of a cross-bank transfer.
+    ///
+    /// Negates `amount` and queries for draft JEs that:
+    /// 1. Have at least one row in `journal_entry_import_refs` (came from a bank import).
+    /// 2. Have a line whose signed amount (`debit − credit`) falls within `±tolerance`
+    ///    of the negated input.
+    /// 3. Have an `entry_date` within `±day_range` calendar days of `date`.
+    ///
+    /// Returns one `TransferMatch` per matching JE (deduplicated by `je_id`).
+    pub fn find_transfer_matches(
+        &self,
+        amount: Money,
+        date: NaiveDate,
+        tolerance: Money,
+        day_range: i64,
+    ) -> Result<Vec<TransferMatch>> {
+        let negated = -amount;
+        let lower = (negated - tolerance).0;
+        let upper = (negated + tolerance).0;
+        let date_lower = (date - chrono::Duration::days(day_range)).to_string();
+        let date_upper = (date + chrono::Duration::days(day_range)).to_string();
+
+        let mut stmt = self.conn.prepare(
+            "SELECT je.id, je.je_number, je.entry_date, je.memo,
+                    jel.debit_amount - jel.credit_amount AS signed_amount,
+                    (SELECT r.import_ref FROM journal_entry_import_refs r
+                     WHERE r.journal_entry_id = je.id ORDER BY r.id LIMIT 1) AS first_ref
+             FROM journal_entries je
+             JOIN journal_entry_lines jel ON jel.journal_entry_id = je.id
+             WHERE je.status = 'Draft'
+               AND EXISTS (
+                   SELECT 1 FROM journal_entry_import_refs
+                   WHERE journal_entry_id = je.id
+               )
+               AND (jel.debit_amount - jel.credit_amount) BETWEEN ?1 AND ?2
+               AND je.entry_date BETWEEN ?3 AND ?4
+             ORDER BY je.entry_date, je.id",
+        )?;
+
+        let rows = stmt
+            .query_map(params![lower, upper, date_lower, date_upper], |row| {
+                Ok((
+                    JournalEntryId::from(row.get::<_, i64>(0)?),
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                ))
+            })?
+            .map(|r| r.map_err(anyhow::Error::from))
+            .collect::<Result<Vec<_>>>()?;
+
+        // Deduplicate by je_id: multiple lines of the same JE may satisfy the
+        // amount filter, but we return one TransferMatch per JE.
+        let mut seen = HashSet::new();
+        let mut results = Vec::new();
+        for (je_id, je_number, date_str, memo, signed_amount, first_ref) in rows {
+            if !seen.insert(je_id) {
+                continue;
+            }
+            let entry_date =
+                NaiveDate::parse_from_str(&date_str, "%Y-%m-%d").with_context(|| {
+                    format!(
+                        "Invalid entry_date '{}' for JE {}",
+                        date_str,
+                        i64::from(je_id)
+                    )
+                })?;
+            let bank_name = first_ref
+                .as_deref()
+                .and_then(|r| r.split('|').next())
+                .unwrap_or("")
+                .to_string();
+            results.push(TransferMatch {
+                je_id,
+                je_number,
+                entry_date,
+                amount: Money(signed_amount),
+                memo: memo.unwrap_or_default(),
+                bank_name,
+            });
+        }
+        Ok(results)
     }
 }
 
@@ -1968,5 +2070,286 @@ mod tests {
             .get_incomplete_imports()
             .expect("get_incomplete_imports");
         assert!(incomplete.is_empty());
+    }
+
+    // ── find_transfer_matches ──────────────────────────────────────────────────
+
+    /// Creates a two-line draft JE where the bank-side line has `debit=0, credit=credit_amount`,
+    /// and an import_ref in the junction table. The contra line mirrors the bank line.
+    /// Used to simulate an existing withdrawal draft for transfer-match tests.
+    fn make_transfer_draft(
+        conn: &Connection,
+        period_id: FiscalPeriodId,
+        acct1: AccountId,
+        acct2: AccountId,
+        date: NaiveDate,
+        credit_amount: Money,
+        import_ref: &str,
+    ) -> JournalEntryId {
+        let date_str = date.to_string();
+        let je_number = JournalRepo::new(conn)
+            .get_next_je_number()
+            .expect("get_next_je_number");
+        conn.execute(
+            "INSERT INTO journal_entries
+                 (je_number, entry_date, memo, status, is_reversed,
+                  reversal_of_je_id, fiscal_period_id, created_at, updated_at)
+             VALUES (?1, ?2, 'Transfer test', 'Draft', 0,
+                     NULL, ?3, datetime('now'), datetime('now'))",
+            params![je_number, date_str, i64::from(period_id)],
+        )
+        .expect("insert je");
+        let je_id = JournalEntryId::from(conn.last_insert_rowid());
+        conn.execute(
+            "INSERT INTO journal_entry_import_refs (journal_entry_id, import_ref)
+             VALUES (?1, ?2)",
+            params![i64::from(je_id), import_ref],
+        )
+        .expect("insert import_ref");
+        // Bank-side line: debit=0, credit=credit_amount → signed = -credit_amount.
+        conn.execute(
+            "INSERT INTO journal_entry_lines
+                 (journal_entry_id, account_id, debit_amount, credit_amount,
+                  line_memo, reconcile_state, sort_order, created_at)
+             VALUES (?1, ?2, 0, ?3, NULL, 'Uncleared', 0, datetime('now'))",
+            params![i64::from(je_id), i64::from(acct1), credit_amount.0],
+        )
+        .expect("insert line 1");
+        // Contra line (mirrored).
+        conn.execute(
+            "INSERT INTO journal_entry_lines
+                 (journal_entry_id, account_id, debit_amount, credit_amount,
+                  line_memo, reconcile_state, sort_order, created_at)
+             VALUES (?1, ?2, ?3, 0, NULL, 'Uncleared', 1, datetime('now'))",
+            params![i64::from(je_id), i64::from(acct2), credit_amount.0],
+        )
+        .expect("insert line 2");
+        je_id
+    }
+
+    /// $3 tolerance in internal Money units.
+    const TOLERANCE: Money = Money(300_000_000);
+
+    #[test]
+    fn find_transfer_matches_finds_matching_draft() {
+        let (conn, period_id, acct1, acct2) = db_with_fiscal_year();
+        // Existing draft: Bank A withdrawal of $500 — credit line on bank account.
+        // signed amount of line 1 = 0 - 500_00000000 = -500_00000000.
+        let date = NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
+        // credit_amount = $500 → bank line signed = 0 - 500 = -$500.
+        make_transfer_draft(
+            &conn,
+            period_id,
+            acct1,
+            acct2,
+            date,
+            Money(50_000_000_000),
+            "Chase|2026-01-15|ACH WITHDRAWAL|-50000000000",
+        );
+
+        // Incoming Bank B deposit of $500 → negated = -$500, should find the draft.
+        let repo = JournalRepo::new(&conn);
+        let matches = repo
+            .find_transfer_matches(Money(50_000_000_000), date, TOLERANCE, 3)
+            .expect("find_transfer_matches");
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].bank_name, "Chase");
+        assert_eq!(matches[0].entry_date, date);
+        assert_eq!(matches[0].amount, Money(-50_000_000_000));
+    }
+
+    #[test]
+    fn find_transfer_matches_outside_date_range_not_found() {
+        let (conn, period_id, acct1, acct2) = db_with_fiscal_year();
+        let draft_date = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+        make_transfer_draft(
+            &conn,
+            period_id,
+            acct1,
+            acct2,
+            draft_date,
+            Money(50_000_000_000),
+            "Chase|2026-01-01|PAYMENT|-50000000000",
+        );
+
+        // Query on Jan 10 with day_range=3 → draft on Jan 1 is 9 days away, not found.
+        let query_date = NaiveDate::from_ymd_opt(2026, 1, 10).unwrap();
+        let repo = JournalRepo::new(&conn);
+        let matches = repo
+            .find_transfer_matches(Money(50_000_000_000), query_date, TOLERANCE, 3)
+            .expect("find_transfer_matches");
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn find_transfer_matches_outside_amount_tolerance_not_found() {
+        let (conn, period_id, acct1, acct2) = db_with_fiscal_year();
+        let date = NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
+        // Draft for $500; query for $510 ($10 difference > $3 tolerance).
+        make_transfer_draft(
+            &conn,
+            period_id,
+            acct1,
+            acct2,
+            date,
+            Money(50_000_000_000), // -$500 signed
+            "Chase|2026-01-15|PAYMENT|-50000000000",
+        );
+
+        // Query amount = +$510 → negated = -$510, lower = -51_300_000_000, upper = -50_700_000_000.
+        // Draft line signed = -50_000_000_000 — outside range.
+        let repo = JournalRepo::new(&conn);
+        let matches = repo
+            .find_transfer_matches(Money(51_000_000_000), date, TOLERANCE, 3)
+            .expect("find_transfer_matches");
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn find_transfer_matches_posted_entry_not_found() {
+        let (conn, period_id, acct1, acct2) = db_with_fiscal_year();
+        let date = NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
+        let je_id = make_transfer_draft(
+            &conn,
+            period_id,
+            acct1,
+            acct2,
+            date,
+            Money(50_000_000_000),
+            "Chase|2026-01-15|PAYMENT|-50000000000",
+        );
+        // Post the entry — should no longer be found.
+        conn.execute(
+            "UPDATE journal_entries SET status = 'Posted' WHERE id = ?1",
+            params![i64::from(je_id)],
+        )
+        .expect("post entry");
+
+        let repo = JournalRepo::new(&conn);
+        let matches = repo
+            .find_transfer_matches(Money(50_000_000_000), date, TOLERANCE, 3)
+            .expect("find_transfer_matches");
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn find_transfer_matches_draft_without_import_ref_not_found() {
+        let (conn, period_id, acct1, acct2) = db_with_fiscal_year();
+        let date = NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
+        // Create draft WITHOUT an import_ref (manually entered, not from CSV import).
+        let entry = NewJournalEntry {
+            entry_date: date,
+            memo: None,
+            fiscal_period_id: period_id,
+            reversal_of_je_id: None,
+            lines: vec![
+                NewJournalEntryLine {
+                    account_id: acct1,
+                    debit_amount: Money(0),
+                    credit_amount: Money(50_000_000_000),
+                    line_memo: None,
+                    sort_order: 0,
+                },
+                NewJournalEntryLine {
+                    account_id: acct2,
+                    debit_amount: Money(50_000_000_000),
+                    credit_amount: Money(0),
+                    line_memo: None,
+                    sort_order: 1,
+                },
+            ],
+        };
+        JournalRepo::new(&conn)
+            .create_draft(&entry)
+            .expect("create_draft");
+
+        // Draft has no import_ref → not a bank import → should not match.
+        let repo = JournalRepo::new(&conn);
+        let matches = repo
+            .find_transfer_matches(Money(50_000_000_000), date, TOLERANCE, 3)
+            .expect("find_transfer_matches");
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn find_transfer_matches_returns_multiple_when_multiple_exist() {
+        let (conn, period_id, acct1, acct2) = db_with_fiscal_year();
+        let date = NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
+        make_transfer_draft(
+            &conn,
+            period_id,
+            acct1,
+            acct2,
+            date,
+            Money(50_000_000_000),
+            "Chase|2026-01-15|PAYMENT|-50000000000",
+        );
+        // Second draft on same date, slightly different amount (within tolerance).
+        make_transfer_draft(
+            &conn,
+            period_id,
+            acct1,
+            acct2,
+            date,
+            Money(50_100_000_000), // -$501 (within $3 of $500)
+            "Ally|2026-01-15|TRANSFER|-50100000000",
+        );
+
+        let repo = JournalRepo::new(&conn);
+        let matches = repo
+            .find_transfer_matches(Money(50_000_000_000), date, TOLERANCE, 3)
+            .expect("find_transfer_matches");
+        assert_eq!(matches.len(), 2, "both drafts should match");
+    }
+
+    #[test]
+    fn find_transfer_matches_deduplicates_je_appearing_multiple_times() {
+        // A JE with two lines both satisfying the amount filter should still
+        // produce exactly one TransferMatch.
+        let (conn, period_id, acct1, acct2) = db_with_fiscal_year();
+        let date = NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
+        // Both lines: acct1 credit $500, acct2 credit $500 (imbalanced, but testing dedup).
+        let je_number = JournalRepo::new(&conn)
+            .get_next_je_number()
+            .expect("get_next_je_number");
+        conn.execute(
+            "INSERT INTO journal_entries
+                 (je_number, entry_date, memo, status, is_reversed,
+                  reversal_of_je_id, fiscal_period_id, created_at, updated_at)
+             VALUES (?1, ?2, NULL, 'Draft', 0,
+                     NULL, ?3, datetime('now'), datetime('now'))",
+            params![je_number, date.to_string(), i64::from(period_id)],
+        )
+        .expect("insert je");
+        let je_id = JournalEntryId::from(conn.last_insert_rowid());
+        conn.execute(
+            "INSERT INTO journal_entry_import_refs (journal_entry_id, import_ref)
+             VALUES (?1, 'Chase|2026-01-15|DUP|-50000000000')",
+            params![i64::from(je_id)],
+        )
+        .expect("insert ref");
+        // Two lines, both with signed = -50_000_000_000.
+        for sort_order in 0..2i32 {
+            let acct = if sort_order == 0 { acct1 } else { acct2 };
+            conn.execute(
+                "INSERT INTO journal_entry_lines
+                     (journal_entry_id, account_id, debit_amount, credit_amount,
+                      line_memo, reconcile_state, sort_order, created_at)
+                 VALUES (?1, ?2, 0, 50000000000, NULL, 'Uncleared', ?3, datetime('now'))",
+                params![i64::from(je_id), i64::from(acct), sort_order],
+            )
+            .expect("insert line");
+        }
+
+        let repo = JournalRepo::new(&conn);
+        let matches = repo
+            .find_transfer_matches(Money(50_000_000_000), date, TOLERANCE, 3)
+            .expect("find_transfer_matches");
+        assert_eq!(
+            matches.len(),
+            1,
+            "should deduplicate to one TransferMatch per JE"
+        );
     }
 }
