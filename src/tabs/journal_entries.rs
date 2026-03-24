@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState},
+    widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState, Wrap},
 };
 
 use crate::db::{
@@ -951,12 +951,13 @@ impl JournalEntriesTab {
         if let Some(memo) = &entry.memo {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Length(1), Constraint::Min(3)])
+                .constraints([Constraint::Length(3), Constraint::Min(3)])
                 .split(area);
 
             frame.render_widget(
                 Paragraph::new(format!("  Memo: {memo}"))
-                    .style(Style::default().fg(Color::DarkGray)),
+                    .style(Style::default().fg(Color::DarkGray))
+                    .wrap(Wrap { trim: false }),
                 chunks[0],
             );
             self.render_lines_table(frame, chunks[1], d, &title);
