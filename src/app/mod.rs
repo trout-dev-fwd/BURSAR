@@ -143,6 +143,8 @@ pub struct App {
     pending_draft_creation: bool,
     /// Multi-line feedback modal (bug report or feature request), shown over the main UI.
     feedback_modal: Option<FeedbackModal>,
+    /// Set when the `u` key is pressed in the Tax tab; consumed by process_pending.
+    pending_tax_ingestion: bool,
 }
 
 impl App {
@@ -178,6 +180,7 @@ impl App {
             pending_pass2: false,
             pending_draft_creation: false,
             feedback_modal: None,
+            pending_tax_ingestion: false,
         }
     }
 
@@ -236,6 +239,10 @@ impl App {
         if self.pending_draft_creation {
             self.pending_draft_creation = false;
             self.run_draft_creation_step(terminal);
+        }
+        if self.pending_tax_ingestion {
+            self.pending_tax_ingestion = false;
+            self.run_tax_ingestion(terminal);
         }
     }
 
@@ -407,6 +414,104 @@ impl App {
     // run_pass2_step, run_draft_creation_step, handle_file_picker_key, handle_import_key)
     // live in import_handler.rs.
     // Standalone import rendering functions also live there.
+
+    /// Fetches and ingests all IRS tax reference publications.
+    /// Called from `process_pending` when `pending_tax_ingestion` is set by the `u` key.
+    ///
+    /// Phase 1: fetch each publication with progress display (blocking network I/O).
+    /// Phase 2: one atomic DB transaction — clear existing data + insert all collected chunks.
+    /// Failed publications are skipped with a warning; the rest are still committed.
+    fn run_tax_ingestion<B: ratatui::backend::Backend>(&mut self, terminal: &mut Terminal<B>) {
+        use crate::tax_ingestion::{PUBLICATIONS, fetch_and_parse};
+        use chrono::Datelike;
+
+        let total = PUBLICATIONS.len();
+        let tax_year = chrono::Local::now().year();
+
+        // Phase 1: fetch each publication, accumulating parsed chunks.
+        let mut collected: Vec<crate::tax_ingestion::ParsedChunk> = Vec::new();
+        let mut fetch_errors: Vec<String> = Vec::new();
+
+        for (i, pub_def) in PUBLICATIONS.iter().enumerate() {
+            self.status_bar.set_message(format!(
+                "Fetching IRS Pub {} ({}/{total})...",
+                pub_def.number,
+                i + 1
+            ));
+            let _ = terminal.draw(|frame| self.render_frame(frame));
+
+            match fetch_and_parse(pub_def) {
+                Ok(chunks) => {
+                    tracing::info!(
+                        "IRS ingestion: Pub {} — {} chunks",
+                        pub_def.number,
+                        chunks.len()
+                    );
+                    collected.extend(chunks);
+                }
+                Err(e) => {
+                    tracing::warn!("IRS ingestion: failed to fetch Pub {}: {e}", pub_def.number);
+                    fetch_errors.push(format!("Pub {}: {e}", pub_def.number));
+                }
+            }
+        }
+
+        // Phase 2: write all collected chunks in one transaction.
+        self.status_bar
+            .set_message("Saving tax reference library...".to_string());
+        let _ = terminal.draw(|frame| self.render_frame(frame));
+
+        let now = crate::db::now_str();
+        let chunk_count = collected.len();
+
+        let db_result: anyhow::Result<()> = {
+            let conn = self.entity.db.conn();
+            let tx_result: anyhow::Result<()> = (|| {
+                conn.execute_batch("BEGIN")?;
+                conn.execute("DELETE FROM tax_reference", [])?;
+                for chunk in &collected {
+                    conn.execute(
+                        "INSERT INTO tax_reference \
+                         (publication, section, topic_tags, content, tax_year, ingested_at) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                        rusqlite::params![
+                            &chunk.publication,
+                            &chunk.section,
+                            &chunk.topic_tags,
+                            &chunk.content,
+                            tax_year,
+                            &now
+                        ],
+                    )?;
+                }
+                conn.execute_batch("COMMIT")?;
+                Ok(())
+            })();
+            if tx_result.is_err() {
+                let _ = conn.execute_batch("ROLLBACK");
+            }
+            tx_result
+        };
+
+        match db_result {
+            Ok(()) => {
+                if fetch_errors.is_empty() {
+                    self.status_bar.set_message(format!(
+                        "Tax library updated: {chunk_count} chunks from {total} publications."
+                    ));
+                } else {
+                    self.status_bar.set_message(format!(
+                        "Tax library updated: {chunk_count} chunks. {} publication(s) failed.",
+                        fetch_errors.len()
+                    ));
+                }
+            }
+            Err(e) => {
+                self.status_bar
+                    .set_error(format!("Failed to save tax library: {e}"));
+            }
+        }
+    }
 
     /// Returns the short label for a tab, abbreviating if `abbreviate` is true.
     fn tab_label(title: &str, abbreviate: bool) -> &str {

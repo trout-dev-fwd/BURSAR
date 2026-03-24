@@ -182,6 +182,7 @@ impl Tab for TaxTab {
                 self.form_config_modal = Some(FormConfigModal::new(&self.enabled_forms));
                 TabAction::None
             }
+            KeyCode::Char('u') => TabAction::StartTaxIngestion,
             _ => TabAction::None,
         }
     }
@@ -210,6 +211,9 @@ impl Tab for TaxTab {
     }
 
     fn hotkey_help(&self) -> Vec<(&'static str, &'static str)> {
-        vec![("c", "Configure enabled tax forms")]
+        vec![
+            ("c", "Configure enabled tax forms"),
+            ("u", "Update tax reference library (fetch IRS publications)"),
+        ]
     }
 }

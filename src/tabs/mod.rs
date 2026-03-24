@@ -91,6 +91,8 @@ pub enum TabAction {
     /// Save tax form configuration to entity TOML.
     /// Carries the list of enabled form tag strings.
     SaveTaxFormConfig(Vec<String>),
+    /// Start ingestion of IRS tax reference publications (`u` key in Tax tab).
+    StartTaxIngestion,
     /// Quit the application.
     Quit,
 }

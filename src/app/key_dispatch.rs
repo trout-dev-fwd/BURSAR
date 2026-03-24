@@ -572,6 +572,11 @@ impl App {
                     };
                 }
             }
+            TabAction::StartTaxIngestion => {
+                self.pending_tax_ingestion = true;
+                self.status_bar
+                    .set_message("Preparing to ingest IRS publications...".to_string());
+            }
             TabAction::SaveTaxFormConfig(forms) => {
                 let (toml_path, workspace_dir) = self.entity_toml_path();
                 let mut entity_cfg =
