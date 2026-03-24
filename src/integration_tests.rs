@@ -721,4 +721,252 @@ mod tests {
         assert!(db.import_refs().exists(confirmed_b_ref).expect("exists"));
         assert!(db.import_refs().exists(rejected_b_ref).expect("exists"));
     }
+
+    // ── End-to-end transfer detection tests ──────────────────────────────────
+    // These tests use find_transfer_matches directly to verify the detection
+    // logic (tolerance, date range, multiple matches) and check_duplicates to
+    // verify that confirmed import_refs prevent re-import.
+
+    // $3 tolerance = 300_000_000 internal units. Day range = 3.
+    const TOLERANCE: Money = Money(300_000_000);
+    const DAY_RANGE: i64 = 3;
+
+    /// Creates a single-line draft JE with an import_ref for transfer detection tests.
+    fn make_transfer_draft_je(
+        db: &crate::db::EntityDb,
+        period_id: crate::types::FiscalPeriodId,
+        date: NaiveDate,
+        signed_amount: Money, // positive = debit, negative = credit on bank line
+        import_ref: &str,
+    ) -> crate::types::JournalEntryId {
+        let (debit, credit) = if signed_amount.0 >= 0 {
+            (signed_amount, Money(0))
+        } else {
+            (Money(0), Money(-signed_amount.0))
+        };
+        db.journals()
+            .create_draft_with_import_ref(
+                &NewJournalEntry {
+                    entry_date: date,
+                    memo: None,
+                    fiscal_period_id: period_id,
+                    reversal_of_je_id: None,
+                    lines: vec![NewJournalEntryLine {
+                        account_id: account_id(db, "1110"),
+                        debit_amount: debit,
+                        credit_amount: credit,
+                        line_memo: None,
+                        sort_order: 0,
+                    }],
+                },
+                Some(import_ref),
+            )
+            .expect("transfer draft JE")
+    }
+
+    #[test]
+    fn end_to_end_cross_bank_transfer_scenario() {
+        // Full scenario:
+        // 1. Import Bank A with -$500 on Jan 15 → draft JE created
+        // 2. Import Bank B with +$500 on Jan 16 → find_transfer_matches detects Bank A draft
+        // 3. Confirm match → link Bank B import_ref to the Bank A JE
+        // 4. Re-import Bank B → detected as duplicate
+        // 5. Re-import Bank A → detected as duplicate
+        let (db, jan_id) = setup_transfer_test_db();
+        let jan15 = NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
+        let jan16 = NaiveDate::from_ymd_opt(2026, 1, 16).unwrap();
+
+        let bank_a_ref = "BankA|2026-01-15|Transfer|50000000000";
+        let bank_b_ref = "BankB|2026-01-16|ACH Deposit Chase|50000000000";
+
+        // Step 1: Bank A import — -$500 withdrawal (credit on checking line).
+        let je_a = make_transfer_draft_je(&db, jan_id, jan15, Money(-50_000_000_000), bank_a_ref);
+
+        // Step 2: Bank B +$500 transaction — find_transfer_matches detects Bank A draft.
+        // Bank B amount is +$500; negated = -$500; Bank A line signed amount = -$500. Match!
+        let matches = db
+            .journals()
+            .find_transfer_matches(Money(50_000_000_000), jan16, TOLERANCE, DAY_RANGE)
+            .expect("find_transfer_matches");
+        assert_eq!(
+            matches.len(),
+            1,
+            "Bank B +$500 should match Bank A -$500 draft"
+        );
+        assert_eq!(matches[0].je_id, je_a);
+
+        // Step 3: Confirm — link Bank B ref to Bank A JE.
+        db.import_refs()
+            .insert(je_a, bank_b_ref)
+            .expect("link Bank B ref");
+
+        // Step 4: Re-import Bank B — import_ref exists → duplicate.
+        let existing_refs = db.journals().get_recent_import_refs(90).expect("refs");
+        use crate::ai::csv_import::check_duplicates;
+        let bank_b_txn = vec![crate::ai::NormalizedTransaction {
+            date: jan16,
+            description: "ACH Deposit Chase".to_string(),
+            amount: Money(50_000_000_000),
+            import_ref: bank_b_ref.to_string(),
+            raw_row: String::new(),
+        }];
+        let (unique, dups) = check_duplicates(&bank_b_txn, &existing_refs);
+        assert_eq!(
+            dups.len(),
+            1,
+            "Bank B re-import should be detected as duplicate"
+        );
+        assert!(unique.is_empty());
+
+        // Step 5: Re-import Bank A — original ref exists → duplicate.
+        let bank_a_txn = vec![crate::ai::NormalizedTransaction {
+            date: jan15,
+            description: "Transfer".to_string(),
+            amount: Money(-50_000_000_000),
+            import_ref: bank_a_ref.to_string(),
+            raw_row: String::new(),
+        }];
+        let (unique_a, dups_a) = check_duplicates(&bank_a_txn, &existing_refs);
+        assert_eq!(
+            dups_a.len(),
+            1,
+            "Bank A re-import should be detected as duplicate"
+        );
+        assert!(unique_a.is_empty());
+    }
+
+    #[test]
+    fn transfer_detection_amount_within_tolerance_matches() {
+        // -$502 vs +$500: difference = $2, within $3 tolerance → should match.
+        let (db, jan_id) = setup_transfer_test_db();
+        let jan15 = NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
+
+        // Bank A draft: -$502 (50_200_000_000 internal units credit).
+        make_transfer_draft_je(
+            &db,
+            jan_id,
+            jan15,
+            Money(-50_200_000_000),
+            "BankA|2026-01-15|Wire Out|50200000000",
+        );
+
+        // Bank B: +$500 → negated = -$500. Tolerance ±$3 → range [-$503, -$497].
+        // Bank A line = -$502, which falls in [-$503, -$497]. Should match.
+        let matches = db
+            .journals()
+            .find_transfer_matches(Money(50_000_000_000), jan15, TOLERANCE, DAY_RANGE)
+            .expect("find_transfer_matches");
+        assert_eq!(
+            matches.len(),
+            1,
+            "-$502 vs +$500 within $3 tolerance should match"
+        );
+    }
+
+    #[test]
+    fn transfer_detection_amount_outside_tolerance_does_not_match() {
+        // -$510 vs +$500: difference = $10, outside $3 tolerance → no match.
+        let (db, jan_id) = setup_transfer_test_db();
+        let jan15 = NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
+
+        make_transfer_draft_je(
+            &db,
+            jan_id,
+            jan15,
+            Money(-51_000_000_000), // -$510
+            "BankA|2026-01-15|Wire Out|51000000000",
+        );
+
+        // Bank B: +$500 → tolerance range [-$503, -$497]. -$510 is outside. No match.
+        let matches = db
+            .journals()
+            .find_transfer_matches(Money(50_000_000_000), jan15, TOLERANCE, DAY_RANGE)
+            .expect("find_transfer_matches");
+        assert!(
+            matches.is_empty(),
+            "-$510 vs +$500 exceeds $3 tolerance, should not match"
+        );
+    }
+
+    #[test]
+    fn transfer_detection_date_within_3_days_matches() {
+        // Bank A on Jan 12; Bank B on Jan 15 (3-day gap, exactly at boundary).
+        let (db, jan_id) = setup_transfer_test_db();
+        let jan12 = NaiveDate::from_ymd_opt(2026, 1, 12).unwrap();
+        let jan15 = NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
+
+        make_transfer_draft_je(
+            &db,
+            jan_id,
+            jan12,
+            Money(-50_000_000_000),
+            "BankA|2026-01-12|Transfer|50000000000",
+        );
+
+        // Jan 15 query with day_range=3 → window is Jan 12 to Jan 18. Jan 12 is in window.
+        let matches = db
+            .journals()
+            .find_transfer_matches(Money(50_000_000_000), jan15, TOLERANCE, DAY_RANGE)
+            .expect("find_transfer_matches");
+        assert_eq!(matches.len(), 1, "3-day gap is within range, should match");
+    }
+
+    #[test]
+    fn transfer_detection_date_4_days_does_not_match() {
+        // Bank A on Jan 11; Bank B on Jan 15 (4-day gap, outside boundary).
+        let (db, jan_id) = setup_transfer_test_db();
+        let jan11 = NaiveDate::from_ymd_opt(2026, 1, 11).unwrap();
+        let jan15 = NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
+
+        make_transfer_draft_je(
+            &db,
+            jan_id,
+            jan11,
+            Money(-50_000_000_000),
+            "BankA|2026-01-11|Transfer|50000000000",
+        );
+
+        // Jan 15 query with day_range=3 → window is Jan 12 to Jan 18. Jan 11 is outside.
+        let matches = db
+            .journals()
+            .find_transfer_matches(Money(50_000_000_000), jan15, TOLERANCE, DAY_RANGE)
+            .expect("find_transfer_matches");
+        assert!(
+            matches.is_empty(),
+            "4-day gap exceeds range, should not match"
+        );
+    }
+
+    #[test]
+    fn transfer_detection_multiple_matches_returns_all() {
+        // Two drafts both match → find_transfer_matches returns 2.
+        // The caller (run_pass1) skips single-match flagging and sends to Pass 2.
+        let (db, jan_id) = setup_transfer_test_db();
+        let jan15 = NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
+
+        make_transfer_draft_je(
+            &db,
+            jan_id,
+            jan15,
+            Money(-50_000_000_000),
+            "BankA|2026-01-15|Wire 1|50000000000",
+        );
+        make_transfer_draft_je(
+            &db,
+            jan_id,
+            jan15,
+            Money(-50_000_000_000),
+            "BankB|2026-01-15|Wire 2|50000000000",
+        );
+
+        let matches = db
+            .journals()
+            .find_transfer_matches(Money(50_000_000_000), jan15, TOLERANCE, DAY_RANGE)
+            .expect("find_transfer_matches");
+        assert_eq!(
+            matches.len(),
+            2,
+            "multiple matching drafts should all be returned"
+        );
+    }
 }
