@@ -62,7 +62,7 @@ pub enum AppMode {
     InterEntity(Box<InterEntityMode>),
 }
 
-/// Active entity context: database handle, entity name, and the 9 tab instances.
+/// Active entity context: database handle, entity name, and the 10 tab instances.
 pub struct EntityContext {
     pub db: EntityDb,
     pub name: String,
@@ -70,7 +70,7 @@ pub struct EntityContext {
 }
 
 impl EntityContext {
-    /// Creates an entity context from an open EntityDb, building all 9 tabs and
+    /// Creates an entity context from an open EntityDb, building all 10 tabs and
     /// performing an initial data load so tabs render content immediately.
     pub fn new(db: EntityDb, name: String, report_output_dir: std::path::PathBuf) -> Self {
         let mut coa = ChartOfAccountsTab::new();
