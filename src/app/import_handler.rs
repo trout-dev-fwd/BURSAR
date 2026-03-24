@@ -448,7 +448,13 @@ impl App {
         use crate::types::{ImportMatchSource, ImportMatchType, MatchSource};
 
         // Extract data from flow before the terminal.draw() call (to release borrow).
-        let (bank_name, bank_account_number, matches_snapshot, is_rematch) = {
+        let (
+            bank_name,
+            bank_account_number,
+            matches_snapshot,
+            transfer_matches_snapshot,
+            is_rematch,
+        ) = {
             let Some(ref flow) = self.import_flow else {
                 return;
             };
@@ -466,8 +472,15 @@ impl App {
                 .map(|c| c.linked_account.clone())
                 .unwrap_or_default();
             let matches_snapshot = flow.matches.clone();
+            let transfer_matches_snapshot = flow.transfer_matches.clone();
             let is_rematch = flow.is_rematch;
-            (bank_name, bank_account_number, matches_snapshot, is_rematch)
+            (
+                bank_name,
+                bank_account_number,
+                matches_snapshot,
+                transfer_matches_snapshot,
+                is_rematch,
+            )
         };
         let entity_name = self.entity.name.clone();
 
@@ -500,13 +513,15 @@ impl App {
         let mut created_count = 0usize;
         let mut ai_matched_count = 0usize;
         let mut manual_count = 0usize;
+        let mut confirmed_transfer_count = 0usize;
         let mut batch_error: Option<String> = None;
         let mut learned_mappings: Vec<(String, crate::types::AccountId, String, String)> =
             Vec::new(); // (desc, account_id, account_number, account_name)
 
         'batch: for m in &matches_snapshot {
             if m.rejected || m.match_source == MatchSource::TransferMatch {
-                // Rejected by user, or confirmed as transfer (handled in Phase 4 wiring).
+                // Rejected by user (already in transfer_matches with confirmed=false),
+                // or confirmed as transfer (processed below in the transfer_matches loop).
                 continue;
             }
 
@@ -623,6 +638,91 @@ impl App {
             }
         }
 
+        // ── Process transfer matches ───────────────────────────────────────────
+        // Confirmed: store second import_ref on existing draft JE, no new draft.
+        // Rejected: create a draft JE with just the bank line (user edits account later).
+        if batch_error.is_none() {
+            'transfers: for row in &transfer_matches_snapshot {
+                if row.confirmed {
+                    // Link the current transaction's import_ref to the existing draft JE.
+                    if let Err(e) = self
+                        .entity
+                        .db
+                        .import_refs()
+                        .insert(row.matched_je_id, &row.import_ref)
+                    {
+                        batch_error = Some(format!(
+                            "Failed to link transfer match to JE {}: {e}",
+                            row.matched_je_number
+                        ));
+                        break 'transfers;
+                    }
+                    let _ = self.entity.db.audit().append(
+                        crate::types::AuditAction::CsvImport,
+                        &entity_name,
+                        None,
+                        None,
+                        &format!(
+                            "Transfer match: skipped import, linked to JE {}",
+                            row.matched_je_number
+                        ),
+                    );
+                    confirmed_transfer_count += 1;
+                } else {
+                    // Rejected match: create a draft with only the bank line.
+                    // V3 simplification: no contra account — user edits during draft review.
+                    let fiscal_period = match self.entity.db.fiscal().get_period_for_date(row.date)
+                    {
+                        Ok(fp) => fp,
+                        Err(e) => {
+                            batch_error = Some(format!("No fiscal period for {}: {e}", row.date));
+                            break 'transfers;
+                        }
+                    };
+                    let memo_str = format!(
+                        "Import: {}",
+                        row.description.chars().take(200).collect::<String>()
+                    );
+                    let bank_acct_type = bank_account
+                        .as_ref()
+                        .map(|a| a.account_type)
+                        .unwrap_or(crate::types::AccountType::Asset);
+                    let (bank_debit, bank_credit, _) =
+                        determine_debit_credit(row.amount, bank_acct_type);
+                    let mut lines = Vec::new();
+                    if let Some(ref ba) = bank_account {
+                        lines.push(NewJournalEntryLine {
+                            account_id: ba.id,
+                            debit_amount: bank_debit,
+                            credit_amount: bank_credit,
+                            line_memo: None,
+                            sort_order: 0,
+                        });
+                    }
+                    let entry = NewJournalEntry {
+                        entry_date: row.date,
+                        memo: Some(memo_str),
+                        fiscal_period_id: fiscal_period.id,
+                        reversal_of_je_id: None,
+                        lines,
+                    };
+                    match self
+                        .entity
+                        .db
+                        .journals()
+                        .create_draft_with_import_ref(&entry, Some(&row.import_ref))
+                    {
+                        Ok(_) => created_count += 1,
+                        Err(e) => {
+                            batch_error =
+                                Some(format!("Failed to create draft for rejected transfer: {e}"));
+                            break 'transfers;
+                        }
+                    }
+                }
+            }
+        }
+
         if let Some(err) = batch_error {
             // Rollback entire batch.
             let _ = self
@@ -686,9 +786,13 @@ impl App {
             tab.refresh(&self.entity.db);
         }
 
-        self.status_bar.set_message(format!(
-            "Imported {created_count} draft entries from {bank_name}."
-        ));
+        let mut status_msg = format!("Imported {created_count} draft entries from {bank_name}.");
+        if confirmed_transfer_count > 0 {
+            status_msg.push_str(&format!(
+                " {confirmed_transfer_count} transfer match(es) linked."
+            ));
+        }
+        self.status_bar.set_message(status_msg);
 
         // Clear all import flow state.
         self.import_flow = None;

@@ -475,4 +475,250 @@ mod tests {
         // ── Cleanup ──────────────────────────────────────────────────────────────
         let _ = std::fs::remove_dir_all(&output_dir);
     }
+
+    // ── Transfer match integration tests ─────────────────────────────────────
+
+    /// Helper: create a minimal in-memory DB with fiscal year 2026.
+    fn setup_transfer_test_db() -> (crate::db::EntityDb, crate::types::FiscalPeriodId) {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        initialize_schema(&conn).expect("schema");
+        seed_default_accounts(&conn).expect("seed");
+        let db = entity_db_from_conn(conn);
+        let fy_id = db
+            .fiscal()
+            .create_fiscal_year(1, 2026)
+            .expect("fiscal year");
+        let periods = db.fiscal().list_periods(fy_id).expect("list periods");
+        let jan_id = periods[0].id;
+        (db, jan_id)
+    }
+
+    #[test]
+    fn confirmed_transfer_match_links_second_import_ref() {
+        // Simulates: Bank A JE has import_ref stored, Bank B confirms the match →
+        // second import_ref is added to the junction table, no new JE created.
+        let (db, jan_id) = setup_transfer_test_db();
+        let jan15 = NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
+
+        // Step 1: Bank A import creates a draft JE with import_ref.
+        let bank_a_ref = "BankA|2026-01-15|Transfer|50000000000";
+        let je_id = db
+            .journals()
+            .create_draft_with_import_ref(
+                &NewJournalEntry {
+                    entry_date: jan15,
+                    memo: Some("Import: Transfer".to_string()),
+                    fiscal_period_id: jan_id,
+                    reversal_of_je_id: None,
+                    lines: vec![NewJournalEntryLine {
+                        account_id: account_id(&db, "1110"),
+                        debit_amount: Money(0),
+                        credit_amount: Money(50_000_000_000),
+                        line_memo: None,
+                        sort_order: 0,
+                    }],
+                },
+                Some(bank_a_ref),
+            )
+            .expect("create Bank A draft");
+
+        // Step 2: Bank B confirms the match — stores its import_ref on the same JE.
+        let bank_b_ref = "BankB|2026-01-16|ACH Deposit|50000000000";
+        db.import_refs()
+            .insert(je_id, bank_b_ref)
+            .expect("link Bank B import_ref");
+
+        // Verify: junction table has both refs for the same JE.
+        let refs = db.import_refs().get_for_je(je_id).expect("get_for_je");
+        assert_eq!(refs.len(), 2);
+        assert!(refs.contains(&bank_a_ref.to_string()));
+        assert!(refs.contains(&bank_b_ref.to_string()));
+
+        // Verify: no new JE was created (still only one JE exists).
+        let all_jes = db
+            .journals()
+            .list(&JournalFilter::default())
+            .expect("list JEs");
+        assert_eq!(
+            all_jes.len(),
+            1,
+            "only the original Bank A draft should exist"
+        );
+    }
+
+    #[test]
+    fn confirmed_match_import_ref_detected_as_duplicate_on_reimport() {
+        // After confirming a transfer match, both import_refs should be in the
+        // junction table and detected as duplicates on subsequent imports.
+        let (db, jan_id) = setup_transfer_test_db();
+        let jan15 = NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
+
+        let bank_a_ref = "BankA|2026-01-15|Transfer Out|50000000000";
+        let bank_b_ref = "BankB|2026-01-16|Transfer In|50000000000";
+
+        // Bank A import.
+        let je_id = db
+            .journals()
+            .create_draft_with_import_ref(
+                &NewJournalEntry {
+                    entry_date: jan15,
+                    memo: None,
+                    fiscal_period_id: jan_id,
+                    reversal_of_je_id: None,
+                    lines: vec![NewJournalEntryLine {
+                        account_id: account_id(&db, "1110"),
+                        debit_amount: Money(0),
+                        credit_amount: Money(50_000_000_000),
+                        line_memo: None,
+                        sort_order: 0,
+                    }],
+                },
+                Some(bank_a_ref),
+            )
+            .expect("Bank A draft");
+
+        // Confirm transfer: link Bank B ref to the same JE.
+        db.import_refs()
+            .insert(je_id, bank_b_ref)
+            .expect("link Bank B ref");
+
+        // Re-import Bank B: import_ref exists → duplicate detected.
+        assert!(
+            db.import_refs().exists(bank_b_ref).expect("exists check"),
+            "Bank B ref should be detected as duplicate"
+        );
+
+        // Re-import Bank A: original import_ref exists → duplicate detected.
+        assert!(
+            db.import_refs().exists(bank_a_ref).expect("exists check"),
+            "Bank A ref should still be detected as duplicate"
+        );
+    }
+
+    #[test]
+    fn rejected_transfer_match_creates_new_draft() {
+        // Simulates: Bank B transaction was flagged as transfer match but user rejected it.
+        // A new draft JE is created with the bank line only (no contra account).
+        let (db, jan_id) = setup_transfer_test_db();
+        let jan16 = NaiveDate::from_ymd_opt(2026, 1, 16).unwrap();
+
+        let bank_b_ref = "BankB|2026-01-16|ACH Deposit|50000000000";
+
+        // Rejected match → create a draft with just the bank line.
+        let checking_id = account_id(&db, "1110");
+        let je_id = db
+            .journals()
+            .create_draft_with_import_ref(
+                &NewJournalEntry {
+                    entry_date: jan16,
+                    memo: Some("Import: ACH Deposit".to_string()),
+                    fiscal_period_id: jan_id,
+                    reversal_of_je_id: None,
+                    lines: vec![NewJournalEntryLine {
+                        account_id: checking_id,
+                        debit_amount: Money(50_000_000_000),
+                        credit_amount: Money(0),
+                        line_memo: None,
+                        sort_order: 0,
+                    }],
+                },
+                Some(bank_b_ref),
+            )
+            .expect("rejected transfer draft");
+
+        // Verify: a new JE was created.
+        let all_jes = db
+            .journals()
+            .list(&JournalFilter::default())
+            .expect("list JEs");
+        assert_eq!(all_jes.len(), 1, "one new draft for the rejected match");
+
+        // Verify: import_ref is stored so future re-imports are detected as duplicates.
+        assert!(
+            db.import_refs().exists(bank_b_ref).expect("exists"),
+            "rejected match import_ref should be stored"
+        );
+
+        // Verify: JE has only one line (no contra account).
+        let (_je, lines) = db
+            .journals()
+            .get_with_lines(je_id)
+            .expect("get JE with lines");
+        assert_eq!(lines.len(), 1, "rejected match draft has only bank line");
+    }
+
+    #[test]
+    fn mix_of_confirmed_and_rejected_transfer_matches() {
+        // Confirmed match: second import_ref linked to existing JE.
+        // Rejected match: new draft JE created.
+        let (db, jan_id) = setup_transfer_test_db();
+        let jan15 = NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
+        let jan16 = NaiveDate::from_ymd_opt(2026, 1, 16).unwrap();
+
+        let bank_a_ref = "BankA|2026-01-15|Wire Out|100000000000";
+        let confirmed_b_ref = "BankB|2026-01-15|Wire In|100000000000";
+        let rejected_b_ref = "BankB|2026-01-16|Random Deposit|20000000000";
+
+        // Bank A JE (will be confirmed match target).
+        let je_a = db
+            .journals()
+            .create_draft_with_import_ref(
+                &NewJournalEntry {
+                    entry_date: jan15,
+                    memo: None,
+                    fiscal_period_id: jan_id,
+                    reversal_of_je_id: None,
+                    lines: vec![NewJournalEntryLine {
+                        account_id: account_id(&db, "1110"),
+                        debit_amount: Money(0),
+                        credit_amount: Money(100_000_000_000),
+                        line_memo: None,
+                        sort_order: 0,
+                    }],
+                },
+                Some(bank_a_ref),
+            )
+            .expect("Bank A draft");
+
+        // Confirmed match: link confirmed_b_ref to je_a.
+        db.import_refs()
+            .insert(je_a, confirmed_b_ref)
+            .expect("link confirmed ref");
+
+        // Rejected match: create a new draft.
+        db.journals()
+            .create_draft_with_import_ref(
+                &NewJournalEntry {
+                    entry_date: jan16,
+                    memo: Some("Import: Random Deposit".to_string()),
+                    fiscal_period_id: jan_id,
+                    reversal_of_je_id: None,
+                    lines: vec![NewJournalEntryLine {
+                        account_id: account_id(&db, "1110"),
+                        debit_amount: Money(20_000_000_000),
+                        credit_amount: Money(0),
+                        line_memo: None,
+                        sort_order: 0,
+                    }],
+                },
+                Some(rejected_b_ref),
+            )
+            .expect("rejected draft");
+
+        // Verify: je_a has both import_refs.
+        let refs_a = db.import_refs().get_for_je(je_a).expect("get_for_je");
+        assert_eq!(refs_a.len(), 2);
+        assert!(refs_a.contains(&bank_a_ref.to_string()));
+        assert!(refs_a.contains(&confirmed_b_ref.to_string()));
+
+        // Verify: two JEs total (je_a + rejected draft).
+        let all_jes = db.journals().list(&JournalFilter::default()).expect("list");
+        assert_eq!(all_jes.len(), 2, "je_a + rejected draft = 2 JEs");
+
+        // Verify: all three import_refs detected as duplicates.
+        assert!(db.import_refs().exists(bank_a_ref).expect("exists"));
+        assert!(db.import_refs().exists(confirmed_b_ref).expect("exists"));
+        assert!(db.import_refs().exists(rejected_b_ref).expect("exists"));
+    }
 }
