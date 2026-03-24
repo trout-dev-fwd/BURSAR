@@ -213,7 +213,31 @@ impl App {
         };
 
         if let Some(ref mut f) = self.import_flow {
+            // Populate transfer_matches before storing matches (so we can borrow both).
+            let transfer_matches: Vec<crate::ai::csv_import::TransferMatchRow> = matches
+                .iter()
+                .filter(|m| {
+                    m.match_source == crate::types::MatchSource::TransferMatch
+                        && m.transfer_match.is_some()
+                })
+                .filter_map(|m| {
+                    let tm = m.transfer_match.as_ref()?;
+                    Some(crate::ai::csv_import::TransferMatchRow {
+                        date: m.transaction.date,
+                        amount: m.transaction.amount,
+                        description: m.transaction.description.clone(),
+                        import_ref: m.transaction.import_ref.clone(),
+                        matched_je_id: tm.je_id,
+                        matched_je_number: tm.je_number.clone(),
+                        matched_date: tm.entry_date,
+                        matched_amount: tm.amount,
+                        matched_bank: tm.bank_name.clone(),
+                        confirmed: true,
+                    })
+                })
+                .collect();
             f.matches = matches;
+            f.transfer_matches = transfer_matches;
             f.step = next_step.clone();
             if next_step == ImportFlowStep::ReviewScreen {
                 f.selected_index = 0;

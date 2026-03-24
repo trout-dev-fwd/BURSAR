@@ -29,6 +29,25 @@ pub enum ImportFlowStep {
     Failed(String),
 }
 
+/// A single row in the transfer matches section of the import review screen.
+#[derive(Debug, Clone)]
+pub struct TransferMatchRow {
+    /// Current transaction details.
+    pub date: NaiveDate,
+    pub amount: Money,
+    pub description: String,
+    pub import_ref: String,
+    /// Matched draft JE details.
+    pub matched_je_id: crate::types::JournalEntryId,
+    pub matched_je_number: String,
+    pub matched_date: NaiveDate,
+    pub matched_amount: Money,
+    pub matched_bank: String,
+    /// true = confirmed (skip import, store import_ref on existing JE).
+    /// false = rejected (send to Pass 2 instead).
+    pub confirmed: bool,
+}
+
 /// Full wizard state persisted across steps.
 pub struct ImportFlowState {
     pub step: ImportFlowStep,
@@ -74,6 +93,8 @@ pub struct ImportFlowState {
     pub is_editing_bank: bool,
     /// Index into `available_banks` of the bank being edited (only valid when `is_editing_bank`).
     pub editing_bank_index: Option<usize>,
+    /// Transfer matches detected during Pass 1, displayed at the top of the review screen.
+    pub transfer_matches: Vec<TransferMatchRow>,
 }
 
 impl Default for ImportFlowState {
@@ -114,6 +135,7 @@ impl ImportFlowState {
             warnings: Vec::new(),
             is_editing_bank: false,
             editing_bank_index: None,
+            transfer_matches: Vec::new(),
         }
     }
 }
