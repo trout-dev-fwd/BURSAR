@@ -86,6 +86,7 @@ impl EntityContext {
         let mut reports = ReportsTab::new(report_output_dir);
         reports.set_entity_name(&name);
         let mut tabs: Vec<Box<dyn Tab>> = vec![
+            Box::new(AuditLogTab::new()),
             Box::new(coa),
             Box::new(GeneralLedgerTab::new()),
             Box::new(je),
@@ -94,7 +95,6 @@ impl EntityContext {
             Box::new(env),
             Box::new(FixedAssetsTab::new()),
             Box::new(reports),
-            Box::new(AuditLogTab::new()),
         ];
         // Initial data load so tabs show content on first render.
         for tab in &mut tabs {

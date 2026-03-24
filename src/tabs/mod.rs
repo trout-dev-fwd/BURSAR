@@ -27,21 +27,22 @@ use crate::types::{AccountId, ApItemId, ArItemId, JournalEntryId};
 /// All 9 application tabs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TabId {
-    ChartOfAccounts,    // index 0
-    GeneralLedger,      // index 1
-    JournalEntries,     // index 2
-    AccountsReceivable, // index 3
-    AccountsPayable,    // index 4
-    Envelopes,          // index 5
-    FixedAssets,        // index 6
-    Reports,            // index 7
-    AuditLog,           // index 8
+    AuditLog,           // index 0
+    ChartOfAccounts,    // index 1
+    GeneralLedger,      // index 2
+    JournalEntries,     // index 3
+    AccountsReceivable, // index 4
+    AccountsPayable,    // index 5
+    Envelopes,          // index 6
+    FixedAssets,        // index 7
+    Reports,            // index 8
 }
 
 impl TabId {
     /// Returns all tab IDs in display order.
     pub fn all() -> [TabId; 9] {
         [
+            TabId::AuditLog,
             TabId::ChartOfAccounts,
             TabId::GeneralLedger,
             TabId::JournalEntries,
@@ -50,7 +51,6 @@ impl TabId {
             TabId::Envelopes,
             TabId::FixedAssets,
             TabId::Reports,
-            TabId::AuditLog,
         ]
     }
 }

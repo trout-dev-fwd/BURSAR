@@ -237,9 +237,9 @@ impl App {
                     self.focus = FocusTarget::MainTab;
                 }
             }
-            // Tab switching: 1–9 keys select tabs by number.
-            KeyCode::Char(c @ '1'..='9') if key.modifiers == KeyModifiers::NONE => {
-                let idx = (c as usize) - ('1' as usize);
+            // Tab switching: 0–9 keys select tabs by number.
+            KeyCode::Char(c @ '0'..='9') if key.modifiers == KeyModifiers::NONE => {
+                let idx = (c as usize) - ('0' as usize);
                 if idx < self.entity.tabs.len() {
                     self.active_tab = idx;
                 }
@@ -588,7 +588,7 @@ pub(super) fn render_help_overlay(
     panel_visible: bool,
 ) {
     let global_hotkeys: &[(&str, &str)] = &[
-        ("1–9", "Switch to tab"),
+        ("0–9", "Switch to tab"),
         ("Ctrl+← / Ctrl+→", "Previous / next tab"),
         ("Ctrl+K", "AI Accountant panel"),
         ("f", "Fiscal period management"),
