@@ -1566,7 +1566,7 @@ pub(super) fn render_review_screen(
         layout::{Constraint, Direction, Layout},
         style::{Color, Modifier, Style},
         text::{Line, Span},
-        widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
+        widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
     };
 
     // Clear the full area first so nothing from the underlying tab bleeds through
@@ -1863,7 +1863,7 @@ pub(super) fn render_review_screen(
                 Style::default().fg(Color::Gray),
             )),
             Line::from(Span::styled(
-                format!(" Memo: {}", memo.chars().take(60).collect::<String>()),
+                format!(" Memo: {memo}"),
                 Style::default().fg(Color::Gray),
             )),
             Line::from(Span::styled(
@@ -1903,12 +1903,14 @@ pub(super) fn render_review_screen(
     };
 
     frame.render_widget(
-        Paragraph::new(detail_lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Draft Preview ")
-                .style(Style::default().fg(Color::DarkGray)),
-        ),
+        Paragraph::new(detail_lines)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Draft Preview ")
+                    .style(Style::default().fg(Color::DarkGray)),
+            )
+            .wrap(Wrap { trim: false }),
         detail_area,
     );
 
