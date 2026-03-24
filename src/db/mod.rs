@@ -10,6 +10,7 @@ pub mod import_ref_repo;
 pub mod journal_repo;
 pub mod recurring_repo;
 pub mod schema;
+pub mod tax_ref_repo;
 pub mod tax_tag_repo;
 
 use std::path::Path;
@@ -30,6 +31,7 @@ use crate::db::import_ref_repo::ImportRefRepo;
 use crate::db::journal_repo::JournalRepo;
 use crate::db::recurring_repo::RecurringRepo;
 use crate::db::schema::{initialize_schema, seed_default_accounts};
+use crate::db::tax_ref_repo::TaxRefRepo;
 use crate::db::tax_tag_repo::TaxTagRepo;
 
 /// Holds the SQLite connection for one entity database.
@@ -143,6 +145,11 @@ impl EntityDb {
     /// Returns a TaxTagRepo borrowing this connection.
     pub fn tax_tags(&self) -> TaxTagRepo<'_> {
         TaxTagRepo::new(&self.conn)
+    }
+
+    /// Returns a TaxRefRepo borrowing this connection.
+    pub fn tax_refs(&self) -> TaxRefRepo<'_> {
+        TaxRefRepo::new(&self.conn)
     }
 
     /// Create an in-memory database with schema and default accounts.

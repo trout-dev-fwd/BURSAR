@@ -203,6 +203,22 @@ pub fn initialize_schema(conn: &Connection) -> Result<()> {
             reviewed_at         TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS tax_reference (
+            id          INTEGER PRIMARY KEY,
+            publication TEXT    NOT NULL,
+            section     TEXT    NOT NULL,
+            topic_tags  TEXT    NOT NULL DEFAULT '',
+            content     TEXT    NOT NULL,
+            tax_year    INTEGER NOT NULL,
+            ingested_at TEXT    NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_tax_reference_publication
+            ON tax_reference(publication);
+
+        CREATE INDEX IF NOT EXISTS idx_tax_reference_topic_tags
+            ON tax_reference(topic_tags);
+
         COMMIT;
         ",
     )?;
@@ -397,10 +413,11 @@ mod tests {
         "import_mappings",
         "journal_entry_import_refs",
         "tax_tags",
+        "tax_reference",
     ];
 
     #[test]
-    fn all_14_tables_exist_after_init() {
+    fn all_18_tables_exist_after_init() {
         let conn = Connection::open_in_memory().expect("in-memory db");
         initialize_schema(&conn).expect("initialize_schema failed");
 
@@ -421,8 +438,8 @@ mod tests {
         }
         assert_eq!(
             table_names.len(),
-            17,
-            "Expected 17 tables, found {}",
+            18,
+            "Expected 18 tables, found {}",
             table_names.len()
         );
     }
