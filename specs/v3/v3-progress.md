@@ -1,13 +1,13 @@
 # V3 Progress Tracker
 
 ## Current State
-- **Active Phase**: Phase 3 — Review Screen UI (complete)
-- **Last Completed Task**: Phase 3, Task 3
-- **Next Task**: Phase 4, Task 1
+- **Active Phase**: Phase 4 — Wiring and Integration (complete)
+- **Last Completed Task**: Phase 4, Task 3
+- **Next Task**: Developer review, then release v0.4.0
 - **Blockers**: None
 
 ## Completed Phases
-_(Phase 1 tasks done, Phase 2 tasks done, Phase 3 tasks done — awaiting developer sign-off)_
+_(All V3 phases complete — awaiting developer sign-off for v0.4.0 release)_
 
 ## Phase 1 Progress
 - [x] Task 1: Create junction table and migration
@@ -22,6 +22,11 @@ _(Phase 1 tasks done, Phase 2 tasks done, Phase 3 tasks done — awaiting develo
 - [x] Task 1: Add transfer match state to import flow
 - [x] Task 2: Render transfer matches section in review screen
 - [x] Task 3: Handle key events for transfer matches
+
+## Phase 4 Progress
+- [x] Task 1: Process confirmed matches during draft creation
+- [x] Task 2: End-to-end integration test for transfer detection
+- [x] Task 3: Update documentation for transfer detection
 
 ## Decisions & Discoveries
 
@@ -101,6 +106,21 @@ _(Phase 1 tasks done, Phase 2 tasks done, Phase 3 tasks done — awaiting develo
   `ApproveAction` restricted to Enter only (Space excluded) to avoid accidental approval while
   toggling transfer matches. Navigation between sections works automatically since transfer items
   occupy the first N indices in the row list. 7 new tests added (711 total).
+
+- **[Phase 4, Task 1]**: `transfer_matches_snapshot` added to the extract tuple in `run_draft_creation_step`
+  alongside `matches_snapshot`. Confirmed matches call `import_refs().insert()` inside a
+  `'transfers:` loop (separate from `'batch:`). Rejected matches call `create_draft_with_import_ref`
+  with just the bank line — V3 simplification documented in spec and code comment.
+
+- **[Phase 4, Task 1]**: Status message updated to include "N transfer match(es) linked." suffix
+  when confirmed_transfer_count > 0.
+
+- **[Phase 4, Task 2]**: `NormalizedTransaction` is defined in `src/ai/mod.rs` (not `csv_import.rs`);
+  use `crate::ai::NormalizedTransaction` in tests. `JournalRepo` uses `get_with_lines(id)` not `get(id)`.
+
+- **[Phase 4, Task 2]**: `make_transfer_draft_je` helper added to `integration_tests.rs` for
+  end-to-end tests; constructs a single-line draft JE matching the transfer detection pattern
+  (bank line only, with import_ref).
 
 ## Known Issues
 - None currently.

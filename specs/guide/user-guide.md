@@ -229,10 +229,12 @@ Press `u` to import a bank statement CSV file and automatically categorize trans
 3. **Account linking** — confirm which Chart of Accounts entry is your bank account
 4. **Duplicate check** — transactions already imported are skipped automatically
 5. **Matching** — three passes categorize transactions:
-   - Pass 1: exact matches from previously learned patterns (instant)
+   - Pass 1: exact matches from previously learned patterns + transfer detection (instant)
    - Pass 2: AI categorization for remaining transactions (requires API key)
    - Pass 3: conversational clarification for low-confidence items (chat panel)
-6. **Review** — inspect all matches; press `r` to reject any item you don't want
+6. **Review** — inspect all matches; the review screen has two sections:
+   - **Transfer Matches** (top, if any) — inter-account transfers detected automatically
+   - **All other transactions** — normal categorized and uncategorized items
 7. **Confirm** — press `Enter` to create Draft journal entries for all approved items
 
 **After importing**, review the Draft entries on the Journal Entries tab, make any corrections
@@ -241,6 +243,45 @@ via `e` (edit), then post them with `p`.
 **Re-matching incomplete imports:** Press `Shift+U` to re-run AI matching on Draft entries
 that have only one journal line (the bank line was created but the contra account was not
 matched). This is useful when Pass 2 was skipped (e.g., no API key) or failed.
+
+### Transfer Matches
+
+When you import bank statements from multiple accounts (e.g., checking and credit card), the
+same transfer appears twice: once as a withdrawal from Account A and once as a deposit to
+Account B. Without detection, both sides get imported as separate journal entries,
+double-counting the transfer.
+
+**How it works:** During Pass 1, each new transaction is compared against existing Draft
+journal entries. If a Draft is found with a negated amount within $3 and a date within 3
+calendar days, it is flagged as a transfer match.
+
+**Transfer Matches section in the review screen:**
+```
+─── Transfer Matches (2) ──────────────────────────────────────────
+  ✓  Jan 14  +$500.00   "ACH Deposit Chase"  →  JE #47  (-$500, Jan 14)
+  ✓  Jan 18  +$2000.00  "Payment Thank You"  →  JE #62  (-$2000, Jan 17)
+```
+
+Each row shows:
+- `✓` (green) — will be confirmed (skip import, link to existing JE)
+- `✗` (red) — rejected (will be imported as a new draft instead)
+
+**Navigation:**
+| Key | Action |
+|-----|--------|
+| `↑` / `↓` | Move between transfer match rows and the rest of the review |
+| `Enter` or `Space` | Toggle confirm (`✓`) / reject (`✗`) for the selected match |
+| `Enter` (on Approve button) | Submit the review screen |
+
+**When a match is confirmed:**
+- No new Draft JE is created for this transaction
+- The current transaction's import reference is linked to the existing Draft JE
+- Future imports from either bank will detect this transaction as a duplicate (no re-import)
+- The existing Draft's accounts are unchanged — fix any incorrect accounts during normal draft review
+
+**When a match is rejected:**
+- A new Draft JE is created with the bank line only (no contra account)
+- Edit it on the Journal Entries tab to add the correct offsetting account before posting
 
 ---
 

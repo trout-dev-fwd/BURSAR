@@ -67,6 +67,17 @@ Detailed specifications live in `specs/`. Read the relevant files for your curre
 | `specs/v2.2/v2.2-phase-2.md` | Auto-update: download, verify, replace, restart. |
 | `specs/v2.2/v2.2-phase-3.md` | In-app feedback: bug reports, feature requests, help overlay. |
 
+### V3 Specs
+
+| File | Contents |
+|------|----------|
+| `specs/v3/v3-SPEC.md` | Master entry point: success criteria, match rule, pipeline changes. |
+| `specs/v3/v3-progress.md` | V3 task tracking, decisions log, known issues. |
+| `specs/v3/v3-phase-1.md` | Schema migration: junction table, data migration, duplicate detection. |
+| `specs/v3/v3-phase-2.md` | Transfer detection logic: matching function, Pass 1 integration. |
+| `specs/v3/v3-phase-3.md` | Review screen UI: transfer matches section, confirm/reject interaction. |
+| `specs/v3/v3-phase-4.md` | Wiring: confirmed matches → junction table writes, end-to-end tests. |
+
 **Do not duplicate spec content here.** This file stays lean. Specs are the source of truth.
 
 ## Key Decisions
@@ -225,3 +236,12 @@ _(Discoveries from implementation — update as the project evolves)_
 - **Windows tests with `HOME` env var.** Windows uses `USERPROFILE` not `HOME`. Tests that depend on tilde expansion are gated with `#[cfg(not(target_os = "windows"))]`.
 - **Progress bar during download.** Same forced-render pattern as AI calls: `terminal.draw()` between chunk reads. Blocks event loop, acceptable on splash screen.
 - **`b`/`f` feedback keys scoped to `?` overlay.** Not global hotkeys. No conflicts with per-tab bindings. Feedback only available in Running state, not startup screen.
+
+### V3 — Transfer Detection
+- **Junction table replaces `import_ref` column.** `journal_entry_import_refs` (junction table) stores multiple refs per JE. Supports both sides of a cross-bank transfer on the same JE.
+- **Migration runs on `EntityDb::open()`.** Detects old schema (column exists) vs new (junction table exists). Copies non-NULL values, rebuilds table without the column.
+- **`JournalEntry.import_ref` field retained.** Populated via correlated subquery returning the first ref. Sufficient for all callers that need one ref to reconstruct the transaction.
+- **Transfer detection rule:** amount negated within ±$3 (±300,000,000 internal units) AND date within 3 calendar days. Single match → flagged in review. Multiple matches → sent to Pass 2.
+- **Confirmed matches create no new draft.** Only a second import_ref row is inserted in the junction table. The existing draft is untouched — user fixes categorization during normal draft review.
+- **Rejected matches (V3 simplification).** Rejected transfer matches create a draft JE with only the bank line (no contra account). User must add the offsetting account before posting.
+- **Transfer items are `MatchSource::TransferMatch` in `flow.matches`.** They are skipped in `has_unmatched`, `run_pass2_step`, and the creating loop. Processed separately in `run_draft_creation_step` via `flow.transfer_matches`.
