@@ -72,8 +72,7 @@ pub fn initialize_schema(conn: &Connection) -> Result<()> {
             source_entity_name  TEXT,
             fiscal_period_id    INTEGER NOT NULL REFERENCES fiscal_periods(id),
             created_at          TEXT    NOT NULL,
-            updated_at          TEXT    NOT NULL,
-            import_ref          TEXT
+            updated_at          TEXT    NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS journal_entry_lines (
@@ -184,6 +183,14 @@ pub fn initialize_schema(conn: &Connection) -> Result<()> {
             last_used_at        TEXT    NOT NULL,
             use_count           INTEGER NOT NULL DEFAULT 1,
             UNIQUE(description_pattern, bank_name)
+        );
+
+        CREATE TABLE IF NOT EXISTS journal_entry_import_refs (
+            id               INTEGER PRIMARY KEY,
+            journal_entry_id INTEGER NOT NULL REFERENCES journal_entries(id),
+            import_ref       TEXT    NOT NULL,
+            created_at       TEXT    NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(import_ref)
         );
 
         COMMIT;
@@ -378,6 +385,7 @@ mod tests {
         "recurring_entry_templates",
         "audit_log",
         "import_mappings",
+        "journal_entry_import_refs",
     ];
 
     #[test]
@@ -402,8 +410,8 @@ mod tests {
         }
         assert_eq!(
             table_names.len(),
-            15,
-            "Expected 15 tables, found {}",
+            16,
+            "Expected 16 tables, found {}",
             table_names.len()
         );
     }
@@ -629,5 +637,94 @@ mod tests {
             [],
         );
         assert!(result.is_err(), "invalid account_id should violate FK");
+    }
+
+    #[test]
+    fn journal_entry_import_refs_table_exists_in_fresh_db() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        initialize_schema(&conn).expect("initialize_schema");
+
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='journal_entry_import_refs'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("query");
+        assert_eq!(exists, 1, "journal_entry_import_refs table should exist");
+    }
+
+    #[test]
+    fn journal_entries_has_no_import_ref_column_in_fresh_db() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        initialize_schema(&conn).expect("initialize_schema");
+
+        let mut stmt = conn
+            .prepare("PRAGMA table_info('journal_entries')")
+            .expect("prepare");
+        let col_names: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("query")
+            .map(|r| r.expect("row"))
+            .collect();
+
+        assert!(
+            !col_names.contains(&"import_ref".to_string()),
+            "journal_entries should not have import_ref column in new schema"
+        );
+    }
+
+    #[test]
+    fn journal_entry_import_refs_unique_constraint() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        initialize_schema(&conn).expect("initialize_schema");
+        seed_default_accounts(&conn).expect("seed");
+
+        // Need a JE to reference; set up fiscal year first
+        use crate::db::fiscal_repo::FiscalRepo;
+        let fiscal = FiscalRepo::new(&conn);
+        fiscal.create_fiscal_year(1, 2026).expect("fiscal year");
+        let period_id: i64 = conn
+            .query_row(
+                "SELECT id FROM fiscal_periods WHERE period_number = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("period");
+        let now = "2026-01-15T00:00:00";
+        conn.execute(
+            "INSERT INTO journal_entries (je_number, entry_date, status, is_reversed, fiscal_period_id, created_at, updated_at)
+             VALUES ('JE-0001', '2026-01-15', 'Draft', 0, ?1, ?2, ?2)",
+            rusqlite::params![period_id, now],
+        )
+        .expect("insert je");
+        let je_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO journal_entry_import_refs (journal_entry_id, import_ref) VALUES (?1, 'ref-1')",
+            rusqlite::params![je_id],
+        )
+        .expect("first insert");
+
+        // Duplicate import_ref should fail.
+        let result = conn.execute(
+            "INSERT INTO journal_entry_import_refs (journal_entry_id, import_ref) VALUES (?1, 'ref-1')",
+            rusqlite::params![je_id],
+        );
+        assert!(
+            result.is_err(),
+            "duplicate import_ref should violate UNIQUE constraint"
+        );
+
+        // Different import_ref for same JE should succeed.
+        let result = conn.execute(
+            "INSERT INTO journal_entry_import_refs (journal_entry_id, import_ref) VALUES (?1, 'ref-2')",
+            rusqlite::params![je_id],
+        );
+        assert!(
+            result.is_ok(),
+            "different import_ref for same JE should succeed"
+        );
     }
 }

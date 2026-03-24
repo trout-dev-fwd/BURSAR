@@ -46,7 +46,7 @@ impl EntityDb {
         // Migrations run after so they only ADD missing columns to pre-existing tables.
         initialize_schema(&conn)?;
         migrate_fixed_asset_details(&conn)?;
-        migrate_journal_import_ref(&conn)?;
+        migrate_to_junction_table(&conn)?;
         // Seed default accounts on a fresh database (no rows → first open).
         let account_count: i64 =
             conn.query_row("SELECT COUNT(*) FROM accounts", [], |row| row.get(0))?;
@@ -170,8 +170,13 @@ fn migrate_fixed_asset_details(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Adds the `import_ref` column to `journal_entries` for databases created before V2.
-fn migrate_journal_import_ref(conn: &Connection) -> Result<()> {
+/// Migrates V2-era databases from the `import_ref` column on `journal_entries` to the
+/// `journal_entry_import_refs` junction table introduced in V3.
+///
+/// If `journal_entries` still has `import_ref` (old schema): copies all non-NULL values
+/// to the junction table and rebuilds `journal_entries` without the column.
+/// If the column is already absent (new schema or pre-V2 DB), this is a no-op.
+fn migrate_to_junction_table(conn: &Connection) -> Result<()> {
     let mut stmt = conn.prepare("PRAGMA table_info(journal_entries)")?;
     let columns: Vec<String> = stmt
         .query_map([], |row| row.get::<_, String>(1))?
@@ -179,8 +184,48 @@ fn migrate_journal_import_ref(conn: &Connection) -> Result<()> {
         .collect();
 
     if !columns.contains(&"import_ref".to_string()) {
-        conn.execute_batch("ALTER TABLE journal_entries ADD COLUMN import_ref TEXT")?;
+        return Ok(()); // Already on new schema or fresh DB.
     }
+
+    // V2 schema detected: migrate import_refs to junction table and drop the old column.
+    conn.execute_batch("PRAGMA foreign_keys=OFF;")?;
+    conn.execute_batch(
+        "
+        BEGIN;
+
+        INSERT OR IGNORE INTO journal_entry_import_refs (journal_entry_id, import_ref)
+        SELECT id, import_ref FROM journal_entries WHERE import_ref IS NOT NULL;
+
+        CREATE TABLE journal_entries_new (
+            id                  INTEGER PRIMARY KEY,
+            je_number           TEXT    NOT NULL UNIQUE,
+            entry_date          TEXT    NOT NULL,
+            memo                TEXT,
+            status              TEXT    NOT NULL DEFAULT 'Draft',
+            is_reversed         INTEGER NOT NULL DEFAULT 0,
+            reversed_by_je_id   INTEGER REFERENCES journal_entries_new(id),
+            reversal_of_je_id   INTEGER REFERENCES journal_entries_new(id),
+            inter_entity_uuid   TEXT,
+            source_entity_name  TEXT,
+            fiscal_period_id    INTEGER NOT NULL REFERENCES fiscal_periods(id),
+            created_at          TEXT    NOT NULL,
+            updated_at          TEXT    NOT NULL
+        );
+
+        INSERT INTO journal_entries_new
+        SELECT id, je_number, entry_date, memo, status, is_reversed,
+               reversed_by_je_id, reversal_of_je_id, inter_entity_uuid,
+               source_entity_name, fiscal_period_id, created_at, updated_at
+        FROM journal_entries;
+
+        DROP TABLE journal_entries;
+        ALTER TABLE journal_entries_new RENAME TO journal_entries;
+
+        COMMIT;
+        ",
+    )?;
+    conn.execute_batch("PRAGMA foreign_keys=ON;")?;
+
     Ok(())
 }
 
@@ -259,5 +304,134 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM accounts", [], |row| row.get(0))
             .expect("query");
         assert_eq!(result, 0); // no seeded data in this test
+    }
+
+    /// Creates an old-schema (V2-era) SQLite file with `import_ref` on `journal_entries`
+    /// and no `journal_entry_import_refs` table. Returns the path and a JE id with a ref.
+    fn setup_old_schema_db(path: &std::path::Path) -> i64 {
+        let conn = Connection::open(path).expect("open");
+        conn.execute_batch("PRAGMA foreign_keys=OFF;").unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE fiscal_periods (
+                id INTEGER PRIMARY KEY,
+                fiscal_year_id INTEGER,
+                period_number INTEGER,
+                start_date TEXT,
+                end_date TEXT,
+                is_closed INTEGER DEFAULT 0,
+                closed_at TEXT,
+                reopened_at TEXT,
+                created_at TEXT
+            );
+            INSERT INTO fiscal_periods VALUES (1, 1, 1, '2026-01-01', '2026-01-31', 0, NULL, NULL, '2026-01-01');
+
+            CREATE TABLE journal_entries (
+                id INTEGER PRIMARY KEY,
+                je_number TEXT NOT NULL UNIQUE,
+                entry_date TEXT NOT NULL,
+                memo TEXT,
+                status TEXT NOT NULL DEFAULT 'Draft',
+                is_reversed INTEGER NOT NULL DEFAULT 0,
+                reversed_by_je_id INTEGER,
+                reversal_of_je_id INTEGER,
+                inter_entity_uuid TEXT,
+                source_entity_name TEXT,
+                fiscal_period_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                import_ref TEXT
+            );
+            INSERT INTO journal_entries VALUES (
+                1, 'JE-0001', '2026-01-15', 'Test', 'Draft', 0,
+                NULL, NULL, NULL, NULL, 1,
+                '2026-01-15T00:00:00', '2026-01-15T00:00:00',
+                'TestBank|2026-01-15|DEPOSIT|10000000000'
+            );
+            INSERT INTO journal_entries VALUES (
+                2, 'JE-0002', '2026-01-16', 'No ref', 'Draft', 0,
+                NULL, NULL, NULL, NULL, 1,
+                '2026-01-16T00:00:00', '2026-01-16T00:00:00',
+                NULL
+            );
+            ",
+        )
+        .unwrap();
+        1 // return je_id with import_ref
+    }
+
+    #[test]
+    fn migrate_to_junction_table_moves_import_refs() {
+        let dir = std::env::temp_dir().join("bursar_junction_migration_test");
+        let path = dir.join("migration_test.sqlite");
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let je_id_with_ref = setup_old_schema_db(&path);
+
+        // Open with new code: runs initialize_schema (creates junction table) + migration.
+        let db = EntityDb::open(&path).expect("open with new code");
+
+        // The import_ref should be in the junction table.
+        let ref_count: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM journal_entry_import_refs WHERE journal_entry_id = ?1",
+                rusqlite::params![je_id_with_ref],
+                |row| row.get(0),
+            )
+            .expect("query");
+        assert_eq!(
+            ref_count, 1,
+            "import_ref should be migrated to junction table"
+        );
+
+        let migrated_ref: String = db
+            .conn()
+            .query_row(
+                "SELECT import_ref FROM journal_entry_import_refs WHERE journal_entry_id = ?1",
+                rusqlite::params![je_id_with_ref],
+                |row| row.get(0),
+            )
+            .expect("query");
+        assert_eq!(migrated_ref, "TestBank|2026-01-15|DEPOSIT|10000000000");
+
+        // NULL-ref JE should have no entry in junction table.
+        let null_count: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM journal_entry_import_refs WHERE journal_entry_id = 2",
+                [],
+                |row| row.get(0),
+            )
+            .expect("query");
+        assert_eq!(null_count, 0, "NULL import_ref should not be migrated");
+
+        // journal_entries should no longer have the import_ref column.
+        let mut stmt = db
+            .conn()
+            .prepare("PRAGMA table_info(journal_entries)")
+            .unwrap();
+        let cols: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(
+            !cols.contains(&"import_ref".to_string()),
+            "import_ref column should be removed from journal_entries after migration"
+        );
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn migrate_to_junction_table_is_noop_on_new_schema() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        initialize_schema(&conn).expect("schema");
+        // Should not fail — column absent, migration is a no-op.
+        migrate_to_junction_table(&conn).expect("migration on new schema should be no-op");
     }
 }

@@ -144,24 +144,30 @@ impl<'conn> JournalRepo<'conn> {
     /// Creates a draft journal entry with its lines in a single operation.
     /// Returns the new JE's ID.
     pub fn create_draft(&self, entry: &NewJournalEntry) -> Result<JournalEntryId> {
-        self.create_draft_inner(entry, None)
+        self.create_draft_inner(entry)
     }
 
     /// Creates a draft journal entry with an optional import reference.
-    /// Used by the CSV import pipeline to link drafts back to their source bank statement lines.
+    /// Writes the import_ref to `journal_entry_import_refs` (junction table) if provided.
     pub fn create_draft_with_import_ref(
         &self,
         entry: &NewJournalEntry,
         import_ref: Option<&str>,
     ) -> Result<JournalEntryId> {
-        self.create_draft_inner(entry, import_ref)
+        let je_id = self.create_draft_inner(entry)?;
+        if let Some(r) = import_ref {
+            self.conn
+                .execute(
+                    "INSERT INTO journal_entry_import_refs (journal_entry_id, import_ref)
+                     VALUES (?1, ?2)",
+                    params![i64::from(je_id), r],
+                )
+                .context("Failed to insert import_ref into junction table")?;
+        }
+        Ok(je_id)
     }
 
-    fn create_draft_inner(
-        &self,
-        entry: &NewJournalEntry,
-        import_ref: Option<&str>,
-    ) -> Result<JournalEntryId> {
+    fn create_draft_inner(&self, entry: &NewJournalEntry) -> Result<JournalEntryId> {
         // Reject if the target fiscal period is closed — drafts in closed periods cannot
         // be posted, so we refuse at creation to avoid orphaned un-postable entries.
         let is_closed: i32 = self
@@ -192,8 +198,8 @@ impl<'conn> JournalRepo<'conn> {
             .execute(
                 "INSERT INTO journal_entries
                     (je_number, entry_date, memo, status, is_reversed,
-                     reversal_of_je_id, fiscal_period_id, created_at, updated_at, import_ref)
-                 VALUES (?1, ?2, ?3, 'Draft', 0, ?4, ?5, ?6, ?7, ?8)",
+                     reversal_of_je_id, fiscal_period_id, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, 'Draft', 0, ?4, ?5, ?6, ?7)",
                 params![
                     je_number,
                     date_str,
@@ -202,7 +208,6 @@ impl<'conn> JournalRepo<'conn> {
                     i64::from(entry.fiscal_period_id),
                     now,
                     now,
-                    import_ref,
                 ],
             )
             .context("Failed to insert journal entry")?;
@@ -396,7 +401,9 @@ impl<'conn> JournalRepo<'conn> {
             .query_row(
                 "SELECT id, je_number, entry_date, memo, status, is_reversed,
                          reversed_by_je_id, reversal_of_je_id, inter_entity_uuid,
-                         source_entity_name, fiscal_period_id, created_at, updated_at, import_ref
+                         source_entity_name, fiscal_period_id, created_at, updated_at,
+                         (SELECT import_ref FROM journal_entry_import_refs
+                          WHERE journal_entry_id = journal_entries.id LIMIT 1) AS import_ref
                   FROM journal_entries WHERE id = ?1",
                 params![i64::from(id)],
                 row_to_entry,
@@ -455,7 +462,9 @@ impl<'conn> JournalRepo<'conn> {
         let sql = format!(
             "SELECT id, je_number, entry_date, memo, status, is_reversed,
                     reversed_by_je_id, reversal_of_je_id, inter_entity_uuid,
-                    source_entity_name, fiscal_period_id, created_at, updated_at, import_ref
+                    source_entity_name, fiscal_period_id, created_at, updated_at,
+                    (SELECT import_ref FROM journal_entry_import_refs
+                     WHERE journal_entry_id = journal_entries.id LIMIT 1) AS import_ref
              FROM journal_entries
              {where_clause}
              ORDER BY entry_date DESC, je_number DESC"
@@ -655,13 +664,14 @@ impl<'conn> JournalRepo<'conn> {
         Ok(())
     }
 
-    /// Returns all non-null import_ref values from journal entries created in the last `days` days.
-    /// Used for duplicate detection before importing new CSV rows.
+    /// Returns all import_ref values from the junction table for journal entries created
+    /// in the last `days` days. Used for duplicate detection before importing new CSV rows.
     pub fn get_recent_import_refs(&self, days: i64) -> Result<HashSet<String>> {
         let mut stmt = self.conn.prepare(
-            "SELECT import_ref FROM journal_entries
-             WHERE import_ref IS NOT NULL
-               AND created_at >= datetime('now', ?1)",
+            "SELECT r.import_ref
+             FROM journal_entry_import_refs r
+             JOIN journal_entries je ON je.id = r.journal_entry_id
+             WHERE je.created_at >= datetime('now', ?1)",
         )?;
         let modifier = format!("-{days} days");
         let refs = stmt
@@ -678,15 +688,19 @@ impl<'conn> JournalRepo<'conn> {
             "SELECT id, je_number, entry_date, memo, status, is_reversed,
                     reversed_by_je_id, reversal_of_je_id, inter_entity_uuid,
                     source_entity_name, fiscal_period_id, created_at, updated_at,
-                    import_ref
-             FROM journal_entries je
-             WHERE je.status = 'Draft'
-               AND je.import_ref IS NOT NULL
+                    (SELECT import_ref FROM journal_entry_import_refs
+                     WHERE journal_entry_id = journal_entries.id LIMIT 1) AS import_ref
+             FROM journal_entries
+             WHERE status = 'Draft'
+               AND EXISTS (
+                   SELECT 1 FROM journal_entry_import_refs
+                   WHERE journal_entry_id = journal_entries.id
+               )
                AND (
-                   SELECT COUNT(*) FROM journal_entry_lines jel
-                   WHERE jel.journal_entry_id = je.id
+                   SELECT COUNT(*) FROM journal_entry_lines
+                   WHERE journal_entry_id = journal_entries.id
                ) < 2
-             ORDER BY je.entry_date, je.id",
+             ORDER BY entry_date, id",
         )?;
         stmt.query_map([], row_to_entry)?
             .map(|r| r.map_err(anyhow::Error::from))
@@ -1855,9 +1869,9 @@ mod tests {
 
     // ── get_incomplete_imports ─────────────────────────────────────────────────
 
-    /// Inserts a single-line draft JE with an import_ref directly via SQL (bypasses the
-    /// balance check in create_draft). This simulates an incomplete import where only
-    /// one side has been matched.
+    /// Inserts a single-line draft JE with an optional import_ref (via the junction table).
+    /// Bypasses the balance check in create_draft. Simulates an incomplete import where
+    /// only one side has been matched.
     fn insert_incomplete_import(
         conn: &Connection,
         period_id: FiscalPeriodId,
@@ -1867,13 +1881,21 @@ mod tests {
         conn.execute(
             "INSERT INTO journal_entries
                  (je_number, entry_date, memo, status, is_reversed,
-                  reversal_of_je_id, fiscal_period_id, created_at, updated_at, import_ref)
+                  reversal_of_je_id, fiscal_period_id, created_at, updated_at)
              VALUES ('JE-INCOMPLETE', '2026-01-15', NULL, 'Draft', 0,
-                     NULL, ?1, '2026-01-15T00:00:00', '2026-01-15T00:00:00', ?2)",
-            params![i64::from(period_id), import_ref],
+                     NULL, ?1, '2026-01-15T00:00:00', '2026-01-15T00:00:00')",
+            params![i64::from(period_id)],
         )
         .expect("insert je");
         let je_id = JournalEntryId::from(conn.last_insert_rowid());
+        if let Some(r) = import_ref {
+            conn.execute(
+                "INSERT INTO journal_entry_import_refs (journal_entry_id, import_ref)
+                 VALUES (?1, ?2)",
+                params![i64::from(je_id), r],
+            )
+            .expect("insert import_ref");
+        }
         conn.execute(
             "INSERT INTO journal_entry_lines
                  (journal_entry_id, account_id, debit_amount, credit_amount,
