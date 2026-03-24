@@ -193,6 +193,16 @@ pub fn initialize_schema(conn: &Connection) -> Result<()> {
             UNIQUE(import_ref)
         );
 
+        CREATE TABLE IF NOT EXISTS tax_tags (
+            id                  INTEGER PRIMARY KEY,
+            journal_entry_id    INTEGER NOT NULL UNIQUE REFERENCES journal_entries(id),
+            form_tag            TEXT,
+            status              TEXT    NOT NULL DEFAULT 'unreviewed',
+            ai_suggested_form   TEXT,
+            reason              TEXT,
+            reviewed_at         TEXT
+        );
+
         COMMIT;
         ",
     )?;
@@ -386,6 +396,7 @@ mod tests {
         "audit_log",
         "import_mappings",
         "journal_entry_import_refs",
+        "tax_tags",
     ];
 
     #[test]
@@ -410,8 +421,8 @@ mod tests {
         }
         assert_eq!(
             table_names.len(),
-            16,
-            "Expected 16 tables, found {}",
+            17,
+            "Expected 17 tables, found {}",
             table_names.len()
         );
     }

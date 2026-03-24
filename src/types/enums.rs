@@ -208,6 +208,181 @@ pub enum MatchConfidence {
     Low,
 }
 
+// ── TaxReviewStatus ───────────────────────────────────────────────────────────
+
+/// The review lifecycle state of a single journal entry in the Tax tab.
+/// Stored as TEXT in `tax_tags.status`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaxReviewStatus {
+    Unreviewed,
+    AiPending,
+    AiSuggested,
+    Confirmed,
+    NonDeductible,
+}
+
+impl fmt::Display for TaxReviewStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TaxReviewStatus::Unreviewed => write!(f, "unreviewed"),
+            TaxReviewStatus::AiPending => write!(f, "ai_pending"),
+            TaxReviewStatus::AiSuggested => write!(f, "ai_suggested"),
+            TaxReviewStatus::Confirmed => write!(f, "confirmed"),
+            TaxReviewStatus::NonDeductible => write!(f, "non_deductible"),
+        }
+    }
+}
+
+#[derive(Debug, Error)]
+#[error("Unknown tax review status: '{0}'")]
+pub struct UnknownTaxReviewStatus(String);
+
+impl FromStr for TaxReviewStatus {
+    type Err = UnknownTaxReviewStatus;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "unreviewed" => Ok(TaxReviewStatus::Unreviewed),
+            "ai_pending" => Ok(TaxReviewStatus::AiPending),
+            "ai_suggested" => Ok(TaxReviewStatus::AiSuggested),
+            "confirmed" => Ok(TaxReviewStatus::Confirmed),
+            "non_deductible" => Ok(TaxReviewStatus::NonDeductible),
+            _ => Err(UnknownTaxReviewStatus(s.to_owned())),
+        }
+    }
+}
+
+// ── TaxFormTag ────────────────────────────────────────────────────────────────
+
+/// A tax form classification for a journal entry.
+/// Stored as TEXT in `tax_tags.form_tag` and `tax_tags.ai_suggested_form`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaxFormTag {
+    ScheduleC,
+    ScheduleAMedical,
+    ScheduleATaxes,
+    ScheduleAInterest,
+    ScheduleACharity,
+    ScheduleD,
+    ScheduleE,
+    ScheduleSe,
+    Form4562,
+    Form8829,
+    Form4797,
+    Form1120s,
+    EstimatedPayment,
+    NonDeductible,
+}
+
+impl TaxFormTag {
+    /// Returns all variants in display order.
+    pub fn all() -> Vec<TaxFormTag> {
+        vec![
+            TaxFormTag::ScheduleC,
+            TaxFormTag::ScheduleAMedical,
+            TaxFormTag::ScheduleATaxes,
+            TaxFormTag::ScheduleAInterest,
+            TaxFormTag::ScheduleACharity,
+            TaxFormTag::ScheduleD,
+            TaxFormTag::ScheduleE,
+            TaxFormTag::ScheduleSe,
+            TaxFormTag::Form4562,
+            TaxFormTag::Form8829,
+            TaxFormTag::Form4797,
+            TaxFormTag::Form1120s,
+            TaxFormTag::EstimatedPayment,
+            TaxFormTag::NonDeductible,
+        ]
+    }
+
+    /// Human-readable display name (e.g. "Schedule C").
+    pub fn display_name(&self) -> &str {
+        match self {
+            TaxFormTag::ScheduleC => "Schedule C",
+            TaxFormTag::ScheduleAMedical => "Schedule A — Medical",
+            TaxFormTag::ScheduleATaxes => "Schedule A — Taxes",
+            TaxFormTag::ScheduleAInterest => "Schedule A — Interest",
+            TaxFormTag::ScheduleACharity => "Schedule A — Charity",
+            TaxFormTag::ScheduleD => "Schedule D",
+            TaxFormTag::ScheduleE => "Schedule E",
+            TaxFormTag::ScheduleSe => "Schedule SE",
+            TaxFormTag::Form4562 => "Form 4562",
+            TaxFormTag::Form8829 => "Form 8829",
+            TaxFormTag::Form4797 => "Form 4797",
+            TaxFormTag::Form1120s => "Form 1120-S",
+            TaxFormTag::EstimatedPayment => "Form 1040-ES",
+            TaxFormTag::NonDeductible => "Non-Deductible",
+        }
+    }
+
+    /// Short description shown in the form picker.
+    pub fn description(&self) -> &str {
+        match self {
+            TaxFormTag::ScheduleC => "Business income & expenses",
+            TaxFormTag::ScheduleAMedical => "Medical & dental expenses",
+            TaxFormTag::ScheduleATaxes => "State & local taxes paid",
+            TaxFormTag::ScheduleAInterest => "Mortgage & investment interest",
+            TaxFormTag::ScheduleACharity => "Charitable contributions",
+            TaxFormTag::ScheduleD => "Capital gains & losses",
+            TaxFormTag::ScheduleE => "Rental income & expenses",
+            TaxFormTag::ScheduleSe => "Self-employment tax",
+            TaxFormTag::Form4562 => "Depreciation & amortization",
+            TaxFormTag::Form8829 => "Home office deduction",
+            TaxFormTag::Form4797 => "Sale of business property",
+            TaxFormTag::Form1120s => "S-Corporation return",
+            TaxFormTag::EstimatedPayment => "Estimated tax payments",
+            TaxFormTag::NonDeductible => "No deduction applies",
+        }
+    }
+}
+
+impl fmt::Display for TaxFormTag {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TaxFormTag::ScheduleC => write!(f, "schedule_c"),
+            TaxFormTag::ScheduleAMedical => write!(f, "schedule_a_medical"),
+            TaxFormTag::ScheduleATaxes => write!(f, "schedule_a_taxes"),
+            TaxFormTag::ScheduleAInterest => write!(f, "schedule_a_interest"),
+            TaxFormTag::ScheduleACharity => write!(f, "schedule_a_charity"),
+            TaxFormTag::ScheduleD => write!(f, "schedule_d"),
+            TaxFormTag::ScheduleE => write!(f, "schedule_e"),
+            TaxFormTag::ScheduleSe => write!(f, "schedule_se"),
+            TaxFormTag::Form4562 => write!(f, "form_4562"),
+            TaxFormTag::Form8829 => write!(f, "form_8829"),
+            TaxFormTag::Form4797 => write!(f, "form_4797"),
+            TaxFormTag::Form1120s => write!(f, "form_1120s"),
+            TaxFormTag::EstimatedPayment => write!(f, "estimated_payment"),
+            TaxFormTag::NonDeductible => write!(f, "non_deductible"),
+        }
+    }
+}
+
+#[derive(Debug, Error)]
+#[error("Unknown tax form tag: '{0}'")]
+pub struct UnknownTaxFormTag(String);
+
+impl FromStr for TaxFormTag {
+    type Err = UnknownTaxFormTag;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "schedule_c" => Ok(TaxFormTag::ScheduleC),
+            "schedule_a_medical" => Ok(TaxFormTag::ScheduleAMedical),
+            "schedule_a_taxes" => Ok(TaxFormTag::ScheduleATaxes),
+            "schedule_a_interest" => Ok(TaxFormTag::ScheduleAInterest),
+            "schedule_a_charity" => Ok(TaxFormTag::ScheduleACharity),
+            "schedule_d" => Ok(TaxFormTag::ScheduleD),
+            "schedule_e" => Ok(TaxFormTag::ScheduleE),
+            "schedule_se" => Ok(TaxFormTag::ScheduleSe),
+            "form_4562" => Ok(TaxFormTag::Form4562),
+            "form_8829" => Ok(TaxFormTag::Form8829),
+            "form_4797" => Ok(TaxFormTag::Form4797),
+            "form_1120s" => Ok(TaxFormTag::Form1120s),
+            "estimated_payment" => Ok(TaxFormTag::EstimatedPayment),
+            "non_deductible" => Ok(TaxFormTag::NonDeductible),
+            _ => Err(UnknownTaxFormTag(s.to_owned())),
+        }
+    }
+}
+
 // ── AccountType ──────────────────────────────────────────────────────────────
 
 impl AccountType {
