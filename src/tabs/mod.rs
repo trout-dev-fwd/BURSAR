@@ -7,6 +7,7 @@ pub mod fixed_assets;
 pub mod general_ledger;
 pub mod journal_entries;
 pub mod reports;
+pub mod tax;
 
 pub use accounts_payable::AccountsPayableTab;
 pub use accounts_receivable::AccountsReceivableTab;
@@ -17,6 +18,7 @@ pub use fixed_assets::FixedAssetsTab;
 pub use general_ledger::GeneralLedgerTab;
 pub use journal_entries::JournalEntriesTab;
 pub use reports::ReportsTab;
+pub use tax::TaxTab;
 
 use crossterm::event::KeyEvent;
 use ratatui::{Frame, layout::Rect};
@@ -24,7 +26,7 @@ use ratatui::{Frame, layout::Rect};
 use crate::db::EntityDb;
 use crate::types::{AccountId, ApItemId, ArItemId, JournalEntryId};
 
-/// All 9 application tabs.
+/// All 10 application tabs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TabId {
     AuditLog,           // index 0
@@ -36,11 +38,12 @@ pub enum TabId {
     Envelopes,          // index 6
     FixedAssets,        // index 7
     Reports,            // index 8
+    Tax,                // index 9
 }
 
 impl TabId {
     /// Returns all tab IDs in display order.
-    pub fn all() -> [TabId; 9] {
+    pub fn all() -> [TabId; 10] {
         [
             TabId::AuditLog,
             TabId::ChartOfAccounts,
@@ -51,6 +54,7 @@ impl TabId {
             TabId::Envelopes,
             TabId::FixedAssets,
             TabId::Reports,
+            TabId::Tax,
         ]
     }
 }

@@ -34,7 +34,7 @@ use crate::{
         Tab, accounts_payable::AccountsPayableTab, accounts_receivable::AccountsReceivableTab,
         audit_log::AuditLogTab, chart_of_accounts::ChartOfAccountsTab, envelopes::EnvelopesTab,
         fixed_assets::FixedAssetsTab, general_ledger::GeneralLedgerTab,
-        journal_entries::JournalEntriesTab, reports::ReportsTab,
+        journal_entries::JournalEntriesTab, reports::ReportsTab, tax::TaxTab,
     },
     types::{AiRequestState, FocusTarget},
     widgets::{
@@ -95,6 +95,7 @@ impl EntityContext {
             Box::new(env),
             Box::new(FixedAssetsTab::new()),
             Box::new(reports),
+            Box::new(TaxTab::new()),
         ];
         // Initial data load so tabs show content on first render.
         for tab in &mut tabs {
