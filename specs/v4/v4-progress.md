@@ -1,0 +1,90 @@
+# V4 Progress Tracker
+
+## Current State
+- **Active Phase**: Phase 1 complete
+- **Last Completed Task**: Phase 1, Task 5
+- **Next Task**: Phase 2, Task 1
+- **Blockers**: None
+
+## Completed Phases
+
+### Phase 1 — Tab Restructuring + Schema (2026-03-24)
+All 5 tasks committed. Verification: `cargo fmt && cargo clippy -D warnings && cargo test` all pass (744 tests).
+
+| Task | Commit | Description |
+|------|--------|-------------|
+| 1 | 6ce306f | Move Audit Log tab to position 0 |
+| 2 | d00a30d | tax_tags table, enums, and TaxTagRepo |
+| 3 | 93b9003 | Create Tax tab shell at position 9 |
+| 4 | d25babd | Form configuration screen and entity TOML |
+| 5 | 9894484 | Memo editing on JE tab and hide per-line memo |
+
+## Current Phase Progress
+_(Phase 1 complete — Phase 2 not started)_
+
+## Decisions & Discoveries
+
+- **[Pre-implementation]**: Tax tab at position 9, Audit Log moved to 0.
+
+- **[Pre-implementation]**: All tax forms enabled by default. Users disable via `c` config screen.
+
+- **[Pre-implementation]**: Renamed "Not Taxable" to "Non-Deductible" — clearer terminology.
+  Tag name: `non_deductible`. Display: "Non-Deductible".
+
+- **[Pre-implementation]**: Per-line `line_memo` hidden from JE UI. JE-level `memo` is the sole
+  description. `m` key for memo editing available on both JE tab and Tax tab.
+
+- **[Pre-implementation]**: `reason` column added to `tax_tags`. Stores AI explanation or user's
+  manual note. Included in Tax Summary report for accountant context.
+
+- **[Pre-implementation]**: AI batch response uses pipe-separated format, not JSON/XML:
+  `JE-0004: schedule_c | Office supplies are ordinary business expenses`
+  Saves tokens, more reliable parsing than JSON from LLM output.
+
+- **[Pre-implementation]**: Prompt caching enabled for batch review system prompt. Same
+  `anthropic-beta: prompt-caching-2024-07-31` pattern as chat panel.
+
+- **[Pre-implementation]**: `f` and `n` keys work on ANY status. Re-flagging always allowed.
+
+- **[Pre-implementation]**: Tax Form Guide lives in Ctrl+H user guide, not `?` overlay.
+  `?` overlay shows `Ctrl+H` as "Open user guide (& form guide)".
+
+- **[Pre-implementation]**: Per-JE tagging only. Split Draft feature (for mixed business/personal
+  JEs) deferred to a future version. Workaround: split at draft stage before posting.
+
+- **[Pre-implementation]**: Tax reference context only in AI chat from Tax tab. Other tabs
+  get normal accounting AI context.
+
+- **[Pre-implementation]**: Highlighted JE's tax tag (form, status, reason) auto-included in
+  Tax tab AI context. User can ask about any JE by number — Claude uses `get_tax_tag` tool
+  to fetch non-highlighted JEs' classifications.
+
+- **[Pre-implementation]**: New `get_tax_tag` AI tool for Tax tab. Read-only, returns form_tag,
+  status, reason, ai_suggested_form for any JE number. Consistent with existing tool pattern.
+
+- **[Pre-implementation]**: Keyword mapping table includes form names (e.g., "Schedule C" maps
+  to `small_business,business_expense` tags) so asking about a specific form pulls the right
+  IRS reference chunks.
+
+- **[Phase 1, Task 1]**: Tab key cycling uses `'0'..='9'` range. `0` → AuditLog (idx 0), `9` → Tax (idx 9).
+  Help overlay updated from "1–9" to "0–9".
+
+- **[Phase 1, Task 2]**: `TaxFormTag` has 14 variants (13 IRS forms + `NonDeductible`).
+  `TaxTagRepo` uses UPSERT for `set_manual` and `set_non_deductible` — re-flagging always
+  overwrites regardless of current status. 19 tests covering all CRUD and status transitions.
+
+- **[Phase 1, Task 3]**: `TaxTab::set_enabled_forms_from_strings()` is a non-trait public method
+  (not added to Tab trait). Called optionally during entity load to restore persisted config.
+  Tab starts with all-enabled default when config absent.
+
+- **[Phase 1, Task 4]**: `TaxConfig { enabled_forms: Option<Vec<String>> }` added to
+  `EntityTomlConfig`. `TabAction::SaveTaxFormConfig(Vec<String>)` handled in `key_dispatch.rs`
+  via entity TOML load → update → save pattern, same as other entity config actions.
+
+- **[Phase 1, Task 5]**: `Focus::LineNote` removed entirely from `je_form.rs`. Tab order is now
+  Account → Debit → Credit (wraps to next row). Note column hidden from both JE form and detail
+  view. `note_input`/`line_memo` data preserved in storage and roundtripped via `from_existing`.
+  `m` key opens `TextInputModal` pre-filled with current memo; works on any selected entry.
+
+## Known Issues
+- None currently.
