@@ -294,6 +294,8 @@ impl App {
         if let Err(msg) = self.ensure_ai_client() {
             if let Some(ref mut f) = self.import_flow {
                 f.step = ImportFlowStep::ReviewScreen;
+                f.selected_index = 0;
+                f.scroll_offset = 0;
             }
             self.chat_panel
                 .add_system_note(&format!("AI matching skipped: {msg}"));
@@ -304,6 +306,8 @@ impl App {
         if total == 0 {
             if let Some(ref mut f) = self.import_flow {
                 f.step = ImportFlowStep::ReviewScreen;
+                f.selected_index = 0;
+                f.scroll_offset = 0;
             }
             return;
         }
