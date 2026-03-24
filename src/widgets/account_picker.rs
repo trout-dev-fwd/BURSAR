@@ -37,8 +37,9 @@ pub struct AccountPicker {
     /// Indexes into the caller's account slice that match the current query.
     matches: Vec<usize>,
     list_state: ListState,
-    /// When true, placeholder accounts are included in results (e.g. for parent selection).
-    /// Defaults to false (appropriate for JE line account selection).
+    /// When true, shows only placeholder accounts (e.g. for parent selection).
+    /// When false, shows only non-placeholder accounts (appropriate for JE line account selection).
+    /// Defaults to false.
     include_placeholders: bool,
 }
 
@@ -58,8 +59,8 @@ impl AccountPicker {
         }
     }
 
-    /// Returns a new picker that includes placeholder accounts in results.
-    /// Use this when selecting parent accounts (placeholders are valid parents).
+    /// Returns a new picker that shows only placeholder accounts.
+    /// Use this when selecting parent accounts (only placeholders are valid parents).
     pub fn with_placeholders() -> Self {
         Self {
             include_placeholders: true,
@@ -88,7 +89,7 @@ impl AccountPicker {
             .enumerate()
             .filter(|(_, a)| {
                 a.is_active
-                    && (self.include_placeholders || !a.is_placeholder)
+                    && (a.is_placeholder == self.include_placeholders)
                     && (q.is_empty()
                         || a.name.to_lowercase().contains(&q)
                         || a.number.to_lowercase().contains(&q))
@@ -445,20 +446,21 @@ mod tests {
     }
 
     #[test]
-    fn with_placeholders_includes_placeholder_accounts() {
+    fn with_placeholders_only_shows_placeholder_accounts() {
         let accs = accounts();
         let mut picker = AccountPicker::with_placeholders();
         picker.refresh(&accs);
 
-        // 8 total - 1 inactive = 7 matches (placeholders included)
-        assert_eq!(picker.matches.len(), 7);
+        // accounts() has 3 active placeholders: Assets(1), Cash & Bank Accounts(2), Expenses(6)
+        assert_eq!(picker.matches.len(), 3);
 
-        // Verify placeholders are present
-        let has_placeholder = picker.matches.iter().any(|&idx| accs[idx].is_placeholder);
-        assert!(has_placeholder, "placeholders should be included");
-
-        // Verify inactive still excluded
-        let has_inactive = picker.matches.iter().any(|&idx| !accs[idx].is_active);
-        assert!(!has_inactive, "inactive should still be excluded");
+        // All matches should be placeholders; inactive still excluded
+        for &idx in &picker.matches {
+            assert!(
+                accs[idx].is_placeholder,
+                "only placeholders should be included"
+            );
+            assert!(accs[idx].is_active, "inactive should still be excluded");
+        }
     }
 }
