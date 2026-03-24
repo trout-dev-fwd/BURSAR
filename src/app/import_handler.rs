@@ -290,13 +290,6 @@ impl App {
             (bank_name, accounts, unmatched_indices)
         };
 
-        // Auto-open chat panel if not already visible.
-        if !self.chat_panel.is_visible() {
-            self.chat_panel.toggle_visible();
-        }
-        // Keep focus on import, not chat panel.
-        self.focus = FocusTarget::MainTab;
-
         // Ensure AI client is initialized.
         if let Err(msg) = self.ensure_ai_client() {
             if let Some(ref mut f) = self.import_flow {
