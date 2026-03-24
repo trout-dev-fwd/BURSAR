@@ -572,6 +572,22 @@ impl App {
                     };
                 }
             }
+            TabAction::SaveTaxFormConfig(forms) => {
+                let (toml_path, workspace_dir) = self.entity_toml_path();
+                let mut entity_cfg =
+                    crate::config::load_entity_toml(&toml_path, &workspace_dir).unwrap_or_default();
+                entity_cfg.tax = Some(crate::config::TaxConfig {
+                    enabled_forms: Some(forms),
+                });
+                match crate::config::save_entity_toml(&toml_path, &workspace_dir, &entity_cfg) {
+                    Ok(()) => self
+                        .status_bar
+                        .set_message("Tax form config saved.".to_string()),
+                    Err(e) => self
+                        .status_bar
+                        .set_error(format!("Failed to save tax config: {e}")),
+                }
+            }
             TabAction::Quit => {
                 self.should_quit = true;
             }

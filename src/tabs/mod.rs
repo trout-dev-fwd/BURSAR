@@ -88,6 +88,9 @@ pub enum TabAction {
     StartImport,
     /// Start re-matching incomplete import drafts (Shift+U).
     StartRematch,
+    /// Save tax form configuration to entity TOML.
+    /// Carries the list of enabled form tag strings.
+    SaveTaxFormConfig(Vec<String>),
     /// Quit the application.
     Quit,
 }

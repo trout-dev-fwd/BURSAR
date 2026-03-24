@@ -111,6 +111,25 @@ pub struct EntityTomlConfig {
     pub last_import_dir: Option<String>,
     #[serde(default)]
     pub bank_accounts: Vec<BankAccountConfig>,
+    /// Tax workstation configuration. When absent, all forms are enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tax: Option<TaxConfig>,
+}
+
+/// The `[tax]` section of an entity TOML file.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct TaxConfig {
+    /// List of enabled tax form tags. When `None`, all forms are enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled_forms: Option<Vec<String>>,
+}
+
+impl TaxConfig {
+    /// Returns the set of enabled form tag strings.
+    /// When `enabled_forms` is `None`, returns an empty slice (interpreted as all-enabled).
+    pub fn enabled_form_tags(&self) -> Option<&[String]> {
+        self.enabled_forms.as_deref()
+    }
 }
 
 /// A single `[[bank_accounts]]` entry in the entity TOML file.
@@ -517,6 +536,7 @@ db_path = "/tmp/acme.sqlite"
                 debit_is_negative: true,
                 date_format: "%m/%d/%Y".to_string(),
             }],
+            tax: None,
         };
 
         save_entity_toml("entity.toml", &dir, &config).expect("save");
@@ -555,6 +575,7 @@ db_path = "/tmp/acme.sqlite"
                 debit_is_negative: true,
                 date_format: "%Y-%m-%d".to_string(),
             }],
+            tax: None,
         };
 
         save_entity_toml("entity.toml", &dir, &config).expect("save");
