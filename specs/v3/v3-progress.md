@@ -1,18 +1,22 @@
 # V3 Progress Tracker
 
 ## Current State
-- **Active Phase**: Phase 1 — Schema Migration (complete)
-- **Last Completed Task**: Phase 1, Task 3
-- **Next Task**: Phase 2, Task 1
+- **Active Phase**: Phase 2 — Transfer Detection Logic (complete)
+- **Last Completed Task**: Phase 2, Task 2
+- **Next Task**: Phase 3, Task 1
 - **Blockers**: None
 
 ## Completed Phases
-_(none fully completed yet — Phase 1 tasks done, awaiting developer sign-off)_
+_(Phase 1 tasks done, Phase 2 tasks done — awaiting developer sign-off)_
 
 ## Phase 1 Progress
 - [x] Task 1: Create junction table and migration
 - [x] Task 2: Create ImportRefRepo
 - [x] Task 3: Migrate all import_ref usage to junction table
+
+## Phase 2 Progress
+- [x] Task 1: Add transfer match query to JournalRepo
+- [x] Task 2: Integrate transfer detection into Pass 1
 
 ## Decisions & Discoveries
 
@@ -60,6 +64,24 @@ _(none fully completed yet — Phase 1 tasks done, awaiting developer sign-off)_
   ai_handler.rs, and tabs/journal_entries.rs all access `JournalEntry.import_ref` (the Rust
   field), which is now populated from the junction table subquery. No code changes needed
   in those files. grep confirms zero direct column reads on journal_entries.import_ref.
+
+- **[Phase 2, Task 1]**: `TransferMatch` struct added to `journal_repo.rs`. The `find_transfer_matches`
+  query uses `(debit_amount - credit_amount) BETWEEN lower AND upper` to match the signed line amount
+  against the negated input amount ±$3 tolerance. Results are deduplicated by `je_id` in Rust since
+  multiple lines of the same JE may satisfy the filter.
+
+- **[Phase 2, Task 1]**: Test helper `make_transfer_draft` uses `get_next_je_number()` to avoid
+  UNIQUE constraint failures when called multiple times in the same test.
+
+- **[Phase 2, Task 2]**: `MatchSource::TransferMatch` added as a unit variant (keeps `Copy` derive).
+  Transfer match details stored in `ImportMatch::transfer_match: Option<TransferMatch>` field.
+  This keeps the sections array in `build_review_rows` intact — TransferMatch items are simply
+  invisible in all four existing sections until Phase 3 adds the dedicated section.
+
+- **[Phase 2, Task 2]**: Three guards added in `import_handler.rs`: (1) `has_unmatched` excludes
+  TransferMatch so they don't trigger Pass 2; (2) `unmatched_indices` in `run_pass2_step` also
+  excludes them; (3) the Creating loop skips TransferMatch items (no new draft created — wiring
+  is Phase 4).
 
 ## Known Issues
 - None currently.
