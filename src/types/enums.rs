@@ -191,6 +191,9 @@ pub enum MatchSource {
     Ai,
     UserConfirmed,
     Unmatched,
+    /// The transaction was identified as the other side of an existing draft JE
+    /// (a cross-bank transfer). Details are stored in `ImportMatch::transfer_match`.
+    TransferMatch,
 }
 
 // ── MatchConfidence ───────────────────────────────────────────────────────────

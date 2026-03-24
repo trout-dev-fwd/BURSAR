@@ -199,9 +199,11 @@ impl App {
 
         let matches = crate::ai::csv_import::run_pass1(&transactions, &bank_name, &self.entity.db);
 
-        let has_unmatched = matches
-            .iter()
-            .any(|m| m.matched_account_id.is_none() && !m.rejected);
+        let has_unmatched = matches.iter().any(|m| {
+            m.matched_account_id.is_none()
+                && !m.rejected
+                && m.match_source != crate::types::MatchSource::TransferMatch
+        });
 
         // Determine next step.
         let next_step = if has_unmatched && self.ensure_ai_client().is_ok() {
@@ -254,7 +256,11 @@ impl App {
                 .matches
                 .iter()
                 .enumerate()
-                .filter(|(_, m)| m.matched_account_id.is_none() && !m.rejected)
+                .filter(|(_, m)| {
+                    m.matched_account_id.is_none()
+                        && !m.rejected
+                        && m.match_source != MatchSource::TransferMatch
+                })
                 .map(|(i, _)| i)
                 .collect();
             (bank_name, accounts, unmatched_indices)
@@ -475,7 +481,8 @@ impl App {
             Vec::new(); // (desc, account_id, account_number, account_name)
 
         'batch: for m in &matches_snapshot {
-            if m.rejected {
+            if m.rejected || m.match_source == MatchSource::TransferMatch {
+                // Rejected by user, or confirmed as transfer (handled in Phase 4 wiring).
                 continue;
             }
 

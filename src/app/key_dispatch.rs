@@ -537,6 +537,7 @@ impl App {
                                     reasoning: None,
                                     rejected: false,
                                     existing_je_id: Some(je.id),
+                                    transfer_match: None,
                                 })
                             })
                             .collect();

@@ -120,10 +120,16 @@ impl ImportFlowState {
 
 // ── Pass 1: Local Matching ────────────────────────────────────────────────────
 
-/// Runs Pass 1: local deterministic matching against the `import_mappings` table.
+/// Runs Pass 1: local deterministic matching then transfer detection.
 ///
-/// For each transaction, tries exact match first, then longest-substring match.
-/// Records use on matched mappings. Returns one `ImportMatch` per transaction.
+/// For each transaction:
+/// 1. Try exact match against `import_mappings`, then longest-substring match.
+/// 2. If no learned mapping found, run transfer detection against existing draft JEs.
+///    - Exactly one match → `MatchSource::TransferMatch` (removed from unmatched pool).
+///    - Multiple matches → leave `Unmatched` (sent to Pass 2 for AI resolution).
+///    - Zero matches → leave `Unmatched` (normal flow).
+///
+/// Returns one `ImportMatch` per transaction.
 pub fn run_pass1(
     transactions: &[NormalizedTransaction],
     bank_name: &str,
@@ -131,7 +137,13 @@ pub fn run_pass1(
 ) -> Vec<crate::ai::ImportMatch> {
     use crate::types::MatchSource;
 
-    let repo = db.import_mappings();
+    /// $3 tolerance in internal Money units.
+    const TRANSFER_TOLERANCE: Money = Money(300_000_000);
+    const TRANSFER_DAY_RANGE: i64 = 3;
+
+    let mapping_repo = db.import_mappings();
+    let journal_repo = db.journals();
+
     // Load all accounts for display names.
     let accounts: Vec<crate::db::account_repo::Account> =
         db.accounts().list_all().unwrap_or_else(|e| {
@@ -142,53 +154,80 @@ pub fn run_pass1(
     transactions
         .iter()
         .map(|txn| {
-            // Try exact match.
-            let result = repo.find_exact_match(bank_name, &txn.description);
-            let matched = match result {
+            // ── Step 1: learned mapping lookup ────────────────────────────────
+            let result = mapping_repo.find_exact_match(bank_name, &txn.description);
+            let learned = match result {
                 Ok(Some((id, account_id))) => {
-                    let _ = repo.record_use(id);
+                    let _ = mapping_repo.record_use(id);
                     Some(account_id)
                 }
-                Ok(None) => {
-                    // Try substring match.
-                    match repo.find_substring_match(bank_name, &txn.description) {
-                        Ok(Some((id, account_id))) => {
-                            let _ = repo.record_use(id);
-                            Some(account_id)
-                        }
-                        _ => None,
+                Ok(None) => match mapping_repo.find_substring_match(bank_name, &txn.description) {
+                    Ok(Some((id, account_id))) => {
+                        let _ = mapping_repo.record_use(id);
+                        Some(account_id)
                     }
-                }
+                    _ => None,
+                },
                 Err(_) => None,
             };
 
-            match matched {
-                Some(account_id) => {
-                    let display = accounts
-                        .iter()
-                        .find(|a| a.id == account_id)
-                        .map(|a| format!("{} - {}", a.number, a.name));
-                    crate::ai::ImportMatch {
-                        transaction: txn.clone(),
-                        matched_account_id: Some(account_id),
-                        matched_account_display: display,
-                        match_source: MatchSource::Local,
-                        confidence: None,
-                        reasoning: None,
-                        rejected: false,
-                        existing_je_id: None,
-                    }
-                }
-                None => crate::ai::ImportMatch {
+            if let Some(account_id) = learned {
+                let display = accounts
+                    .iter()
+                    .find(|a| a.id == account_id)
+                    .map(|a| format!("{} - {}", a.number, a.name));
+                return crate::ai::ImportMatch {
                     transaction: txn.clone(),
-                    matched_account_id: None,
-                    matched_account_display: None,
-                    match_source: MatchSource::Unmatched,
+                    matched_account_id: Some(account_id),
+                    matched_account_display: display,
+                    match_source: MatchSource::Local,
                     confidence: None,
                     reasoning: None,
                     rejected: false,
                     existing_je_id: None,
-                },
+                    transfer_match: None,
+                };
+            }
+
+            // ── Step 2: transfer detection ────────────────────────────────────
+            let transfer_candidates = journal_repo
+                .find_transfer_matches(txn.amount, txn.date, TRANSFER_TOLERANCE, TRANSFER_DAY_RANGE)
+                .unwrap_or_else(|e| {
+                    tracing::warn!("Transfer detection failed for '{}': {e}", txn.description);
+                    Vec::new()
+                });
+
+            if transfer_candidates.len() == 1 {
+                // Single match — high confidence cross-bank transfer.
+                return crate::ai::ImportMatch {
+                    transaction: txn.clone(),
+                    matched_account_id: None,
+                    matched_account_display: None,
+                    match_source: MatchSource::TransferMatch,
+                    confidence: None,
+                    reasoning: None,
+                    rejected: false,
+                    existing_je_id: None,
+                    transfer_match: Some(
+                        transfer_candidates
+                            .into_iter()
+                            .next()
+                            .expect("exactly one element confirmed above"),
+                    ),
+                };
+            }
+
+            // Zero or multiple matches — leave unmatched (normal Pass 2 flow).
+            crate::ai::ImportMatch {
+                transaction: txn.clone(),
+                matched_account_id: None,
+                matched_account_display: None,
+                match_source: MatchSource::Unmatched,
+                confidence: None,
+                reasoning: None,
+                rejected: false,
+                existing_je_id: None,
+                transfer_match: None,
             }
         })
         .collect()
@@ -806,5 +845,198 @@ mod tests {
     fn parse_money_negative_dollar_sign() {
         let m = parse_money_str("-$1,234.56").expect("parse");
         assert_eq!(m, Money(-123_456_000_000));
+    }
+
+    // ── run_pass1: transfer detection ──────────────────────────────────────────
+
+    use crate::db::EntityDb;
+    use crate::db::journal_repo::{NewJournalEntry, NewJournalEntryLine};
+
+    /// Sets up an in-memory EntityDb with a fiscal year and a seeded draft JE
+    /// that has an import_ref. Returns the db.
+    ///
+    /// The draft's bank-side line has `debit=0, credit=credit_amount`
+    /// (signed amount = −credit_amount), simulating a bank withdrawal.
+    fn make_db_with_draft_transfer(
+        draft_date: NaiveDate,
+        credit_amount: Money,
+        import_ref: &str,
+    ) -> EntityDb {
+        let db = EntityDb::open_in_memory().expect("open in-memory db");
+        let fy_id = db.fiscal().create_fiscal_year(1, 2026).expect("create FY");
+        let period_id = db.fiscal().list_periods(fy_id).expect("list periods")[0].id;
+
+        let accounts = db.accounts().list_active().expect("list active");
+        let non_ph: Vec<_> = accounts.iter().filter(|a| !a.is_placeholder).collect();
+        let acct1 = non_ph[0].id;
+        let acct2 = non_ph[1].id;
+
+        let entry = NewJournalEntry {
+            entry_date: draft_date,
+            memo: None,
+            fiscal_period_id: period_id,
+            reversal_of_je_id: None,
+            lines: vec![
+                NewJournalEntryLine {
+                    account_id: acct1,
+                    debit_amount: Money(0),
+                    credit_amount,
+                    line_memo: None,
+                    sort_order: 0,
+                },
+                NewJournalEntryLine {
+                    account_id: acct2,
+                    debit_amount: credit_amount,
+                    credit_amount: Money(0),
+                    line_memo: None,
+                    sort_order: 1,
+                },
+            ],
+        };
+        db.journals()
+            .create_draft_with_import_ref(&entry, Some(import_ref))
+            .expect("create_draft");
+        db
+    }
+
+    fn make_txn_for_pass1(date: NaiveDate, amount: Money) -> NormalizedTransaction {
+        NormalizedTransaction {
+            date,
+            description: "TRANSFER IN".to_string(),
+            amount,
+            import_ref: build_import_ref("Ally", date, "TRANSFER IN", amount),
+            raw_row: String::new(),
+        }
+    }
+
+    #[test]
+    fn pass1_single_transfer_match_marks_as_transfer_match() {
+        use crate::types::MatchSource;
+
+        let date = NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
+        // Existing draft: Bank A withdrawal of $500 (credit_amount = $500, signed = -$500).
+        let db = make_db_with_draft_transfer(
+            date,
+            Money(50_000_000_000),
+            "Chase|2026-01-15|ACH WITHDRAWAL|-50000000000",
+        );
+        // New transaction: Bank B deposit of $500 (amount = +$500).
+        let txn = make_txn_for_pass1(date, Money(50_000_000_000));
+        let matches = run_pass1(&[txn], "Ally", &db);
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].match_source, MatchSource::TransferMatch);
+        assert!(matches[0].transfer_match.is_some());
+        assert_eq!(matches[0].matched_account_id, None);
+    }
+
+    #[test]
+    fn pass1_multiple_transfer_matches_stays_unmatched() {
+        use crate::types::MatchSource;
+
+        let date = NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
+        let db = EntityDb::open_in_memory().expect("open in-memory db");
+        let fy_id = db.fiscal().create_fiscal_year(1, 2026).expect("create FY");
+        let period_id = db.fiscal().list_periods(fy_id).expect("list periods")[0].id;
+        let accounts = db.accounts().list_active().expect("list active");
+        let non_ph: Vec<_> = accounts.iter().filter(|a| !a.is_placeholder).collect();
+        let acct1 = non_ph[0].id;
+        let acct2 = non_ph[1].id;
+
+        // Create two drafts both within amount/date tolerance of the test transaction.
+        for import_ref in &[
+            "Chase|2026-01-15|PAYMENT|-50000000000",
+            "Ally|2026-01-15|TRANSFER|-50000000000",
+        ] {
+            let entry = NewJournalEntry {
+                entry_date: date,
+                memo: None,
+                fiscal_period_id: period_id,
+                reversal_of_je_id: None,
+                lines: vec![
+                    NewJournalEntryLine {
+                        account_id: acct1,
+                        debit_amount: Money(0),
+                        credit_amount: Money(50_000_000_000),
+                        line_memo: None,
+                        sort_order: 0,
+                    },
+                    NewJournalEntryLine {
+                        account_id: acct2,
+                        debit_amount: Money(50_000_000_000),
+                        credit_amount: Money(0),
+                        line_memo: None,
+                        sort_order: 1,
+                    },
+                ],
+            };
+            db.journals()
+                .create_draft_with_import_ref(&entry, Some(import_ref))
+                .expect("create_draft");
+        }
+
+        let txn = make_txn_for_pass1(date, Money(50_000_000_000));
+        let matches = run_pass1(&[txn], "Marcus", &db);
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(
+            matches[0].match_source,
+            MatchSource::Unmatched,
+            "multiple candidates → unmatched (sent to Pass 2)"
+        );
+        assert!(matches[0].transfer_match.is_none());
+    }
+
+    #[test]
+    fn pass1_no_transfer_match_stays_unmatched() {
+        use crate::types::MatchSource;
+
+        let date = NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
+        let db = EntityDb::open_in_memory().expect("open in-memory db");
+        // No drafts in db — nothing to match against.
+        let txn = make_txn_for_pass1(date, Money(50_000_000_000));
+        let matches = run_pass1(&[txn], "Ally", &db);
+
+        assert_eq!(matches[0].match_source, MatchSource::Unmatched);
+        assert!(matches[0].transfer_match.is_none());
+    }
+
+    #[test]
+    fn pass1_learned_mapping_match_skips_transfer_detection() {
+        use crate::types::{ImportMatchSource, ImportMatchType, MatchSource};
+
+        let date = NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
+        // Build db with a matching draft AND a learned mapping for the same description.
+        let db = make_db_with_draft_transfer(
+            date,
+            Money(50_000_000_000),
+            "Chase|2026-01-15|ACH WITHDRAWAL|-50000000000",
+        );
+
+        // Find any non-placeholder account to use as the learned mapping target.
+        let accounts = db.accounts().list_active().expect("list active");
+        let target = accounts
+            .iter()
+            .find(|a| !a.is_placeholder)
+            .expect("account");
+
+        // Create an exact learned mapping for "TRANSFER IN" on the "Ally" bank.
+        db.import_mappings()
+            .create(
+                "TRANSFER IN",
+                target.id,
+                ImportMatchType::Exact,
+                ImportMatchSource::Confirmed,
+                "Ally",
+            )
+            .expect("create mapping");
+
+        let txn = make_txn_for_pass1(date, Money(50_000_000_000));
+        let matches = run_pass1(&[txn], "Ally", &db);
+
+        // Should be Local (from learned mapping), NOT TransferMatch.
+        assert_eq!(matches[0].match_source, MatchSource::Local);
+        assert!(matches[0].transfer_match.is_none());
+        assert_eq!(matches[0].matched_account_id, Some(target.id));
     }
 }

@@ -150,6 +150,9 @@ pub struct ImportMatch {
     pub rejected: bool,
     /// Set for re-match flows (Shift+U): the existing draft JE to update in-place.
     pub existing_je_id: Option<crate::types::JournalEntryId>,
+    /// Populated when `match_source == TransferMatch`. Contains the matched draft JE
+    /// details for display in the review screen (Phase 3).
+    pub transfer_match: Option<crate::db::journal_repo::TransferMatch>,
 }
 
 #[cfg(test)]
@@ -250,6 +253,7 @@ mod tests {
             reasoning: None,
             rejected: false,
             existing_je_id: None,
+            transfer_match: None,
         };
         assert!(!im.rejected);
         assert_eq!(im.match_source, MatchSource::Unmatched);
@@ -276,6 +280,7 @@ mod tests {
             reasoning: Some("Payroll expense account".to_string()),
             rejected: false,
             existing_je_id: None,
+            transfer_match: None,
         };
         assert_eq!(im.match_source, MatchSource::Ai);
         assert_eq!(im.confidence, Some(MatchConfidence::High));
