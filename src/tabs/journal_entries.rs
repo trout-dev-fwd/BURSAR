@@ -24,6 +24,7 @@ use crate::widgets::{
     JeForm, centered_rect,
     confirmation::{ConfirmAction, Confirmation},
     je_form::JeFormAction,
+    text_input_modal::{TextInputAction, TextInputModal},
 };
 
 // ── Status filter cycle ───────────────────────────────────────────────────────
@@ -140,6 +141,11 @@ enum Modal {
     /// Confirmation to delete a Draft entry.
     ConfirmDelete {
         confirm: Confirmation,
+        je_id: JournalEntryId,
+    },
+    /// Single-line text input for editing a JE memo.
+    MemoEdit {
+        input: TextInputModal,
         je_id: JournalEntryId,
     },
 }
@@ -482,6 +488,30 @@ impl JournalEntriesTab {
             ConfirmAction::Cancelled => TabAction::None,
             ConfirmAction::Pending => {
                 self.modal = Some(Modal::ConfirmDelete { confirm, je_id });
+                TabAction::None
+            }
+        }
+    }
+
+    fn handle_memo_edit_key(&mut self, key: KeyEvent, db: &EntityDb) -> TabAction {
+        let Some(Modal::MemoEdit { mut input, je_id }) = self.modal.take() else {
+            return TabAction::None;
+        };
+        match input.handle_key(key) {
+            TextInputAction::Confirm(text) => {
+                let memo = if text.trim().is_empty() {
+                    None
+                } else {
+                    Some(text.trim().to_string())
+                };
+                match db.journals().update_memo(je_id, memo.as_deref()) {
+                    Ok(()) => TabAction::RefreshData,
+                    Err(e) => TabAction::ShowMessage(format!("Failed to update memo: {e}")),
+                }
+            }
+            TextInputAction::Cancel => TabAction::None,
+            TextInputAction::None => {
+                self.modal = Some(Modal::MemoEdit { input, je_id });
                 TabAction::None
             }
         }
@@ -977,7 +1007,7 @@ impl JournalEntriesTab {
         };
 
         let title = format!(
-            " {} — {} line(s)  ↑↓: line  [c] Cleared  [g] GL  Esc: close ",
+            " {} — {} line(s)  ↑↓: line  [c] Cleared  [g] GL  [m] Edit memo  Esc: close ",
             entry.je_number,
             d.lines.len()
         );
@@ -1006,7 +1036,6 @@ impl JournalEntriesTab {
             Cell::from("Account").style(Style::default().add_modifier(Modifier::BOLD)),
             Cell::from("Debit").style(Style::default().add_modifier(Modifier::BOLD)),
             Cell::from("Credit").style(Style::default().add_modifier(Modifier::BOLD)),
-            Cell::from("Note").style(Style::default().add_modifier(Modifier::BOLD)),
             Cell::from("Rec").style(Style::default().add_modifier(Modifier::BOLD)),
         ]);
 
@@ -1031,7 +1060,6 @@ impl JournalEntriesTab {
                 } else {
                     line.credit_amount.to_string()
                 };
-                let note = line.line_memo.as_deref().unwrap_or("").to_string();
                 let row_style = if i == d.focused_line {
                     Style::default().add_modifier(Modifier::REVERSED)
                 } else {
@@ -1043,7 +1071,6 @@ impl JournalEntriesTab {
                     Cell::from(acct),
                     Cell::from(debit),
                     Cell::from(credit),
-                    Cell::from(note),
                     Cell::from(rec),
                 ])
                 .style(row_style)
@@ -1052,10 +1079,9 @@ impl JournalEntriesTab {
 
         let widths = [
             Constraint::Length(3),
-            Constraint::Percentage(35),
+            Constraint::Percentage(45),
             Constraint::Length(14),
             Constraint::Length(14),
-            Constraint::Min(10),
             Constraint::Length(5),
         ];
 
@@ -1138,6 +1164,9 @@ impl JournalEntriesTab {
                     popup,
                 );
             }
+            Modal::MemoEdit { input, .. } => {
+                input.render(frame, area);
+            }
         }
     }
 }
@@ -1161,6 +1190,7 @@ impl Tab for JournalEntriesTab {
                 ("↑/↓ or k/j", "Navigate"),
                 ("a", "Add journal entry"),
                 ("e", "Edit draft entry"),
+                ("m", "Edit memo"),
                 ("p", "Post selected entry"),
                 ("r", "Reverse posted entry"),
                 ("s", "Scheduled entries sub-view"),
@@ -1197,6 +1227,7 @@ impl Tab for JournalEntriesTab {
                 Some(Modal::ConfirmReverse { .. }) => self.handle_confirm_reverse_key(key, db),
                 Some(Modal::RecurringSetup { .. }) => self.handle_recurring_setup_key(key, db),
                 Some(Modal::ConfirmDelete { .. }) => self.handle_confirm_delete_key(key, db),
+                Some(Modal::MemoEdit { .. }) => self.handle_memo_edit_key(key, db),
                 None => TabAction::None,
             };
         }
@@ -1367,6 +1398,20 @@ impl Tab for JournalEntriesTab {
                             "Cannot delete posted entries. Use reverse instead.".to_string(),
                         );
                     }
+                }
+            }
+            // [m] edit memo on the selected entry.
+            KeyCode::Char('m') | KeyCode::Char('M') => {
+                if let Some(entry) = self.selected_entry() {
+                    let je_id = entry.id;
+                    let prefill = entry.memo.clone().unwrap_or_default();
+                    self.modal = Some(Modal::MemoEdit {
+                        input: TextInputModal::new(
+                            " Edit Memo (Enter: save, Esc: cancel) ",
+                            prefill,
+                        ),
+                        je_id,
+                    });
                 }
             }
             _ => {}

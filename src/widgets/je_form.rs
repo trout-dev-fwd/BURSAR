@@ -67,7 +67,6 @@ enum Focus {
     LineAccount(usize),
     LineDebit(usize),
     LineCredit(usize),
-    LineNote(usize),
 }
 
 /// One line row in the form.
@@ -254,12 +253,12 @@ impl JeForm {
                 match self.focus {
                     Focus::LineAccount(_) => self.open_picker(accounts),
                     _ => {
-                        // From the last field of the last row → add a new row.
-                        let is_last_note = matches!(
+                        // From the last credit field of the last row → add a new row.
+                        let is_last_credit = matches!(
                             self.focus,
-                            Focus::LineNote(i) if i + 1 == self.lines.len()
+                            Focus::LineCredit(i) if i + 1 == self.lines.len()
                         );
-                        if is_last_note {
+                        if is_last_credit {
                             self.add_row_at_end();
                         } else {
                             self.advance_focus(true);
@@ -328,8 +327,7 @@ impl JeForm {
                 Focus::Memo => Focus::LineAccount(0),
                 Focus::LineAccount(i) => Focus::LineDebit(i),
                 Focus::LineDebit(i) => Focus::LineCredit(i),
-                Focus::LineCredit(i) => Focus::LineNote(i),
-                Focus::LineNote(i) => {
+                Focus::LineCredit(i) => {
                     if i + 1 < n {
                         Focus::LineAccount(i + 1)
                     } else {
@@ -341,17 +339,16 @@ impl JeForm {
             match self.focus {
                 Focus::Date => {
                     if n > 0 {
-                        Focus::LineNote(n - 1)
+                        Focus::LineCredit(n - 1)
                     } else {
                         Focus::Memo
                     }
                 }
                 Focus::Memo => Focus::Date,
                 Focus::LineAccount(0) => Focus::Memo,
-                Focus::LineAccount(i) => Focus::LineNote(i - 1),
+                Focus::LineAccount(i) => Focus::LineCredit(i - 1),
                 Focus::LineDebit(i) => Focus::LineAccount(i),
                 Focus::LineCredit(i) => Focus::LineDebit(i),
-                Focus::LineNote(i) => Focus::LineCredit(i),
             }
         };
     }
@@ -380,11 +377,6 @@ impl JeForm {
                     self.focus = Focus::LineCredit(i + 1);
                 }
             }
-            Focus::LineNote(i) => {
-                if i + 1 < self.lines.len() {
-                    self.focus = Focus::LineNote(i + 1);
-                }
-            }
         }
     }
 
@@ -393,35 +385,29 @@ impl JeForm {
     fn move_focus_up(&mut self) {
         match self.focus {
             Focus::Date | Focus::Memo => {}
-            Focus::LineAccount(0)
-            | Focus::LineDebit(0)
-            | Focus::LineCredit(0)
-            | Focus::LineNote(0) => {
+            Focus::LineAccount(0) | Focus::LineDebit(0) | Focus::LineCredit(0) => {
                 self.focus = Focus::Date;
             }
             Focus::LineAccount(i) => self.focus = Focus::LineAccount(i - 1),
             Focus::LineDebit(i) => self.focus = Focus::LineDebit(i - 1),
             Focus::LineCredit(i) => self.focus = Focus::LineCredit(i - 1),
-            Focus::LineNote(i) => self.focus = Focus::LineNote(i - 1),
         }
     }
 
     /// Move right one column within the same line row.
-    /// Column order: Account → Debit → Credit → Note. Does nothing at Note or on header fields.
+    /// Column order: Account → Debit → Credit. Does nothing at Credit or on header fields.
     fn move_focus_right(&mut self) {
         self.focus = match self.focus {
             Focus::LineAccount(i) => Focus::LineDebit(i),
             Focus::LineDebit(i) => Focus::LineCredit(i),
-            Focus::LineCredit(i) => Focus::LineNote(i),
             other => other,
         };
     }
 
     /// Move left one column within the same line row.
-    /// Column order: Note → Credit → Debit → Account. Does nothing at Account or on header fields.
+    /// Column order: Credit → Debit → Account. Does nothing at Account or on header fields.
     fn move_focus_left(&mut self) {
         self.focus = match self.focus {
-            Focus::LineNote(i) => Focus::LineCredit(i),
             Focus::LineCredit(i) => Focus::LineDebit(i),
             Focus::LineDebit(i) => Focus::LineAccount(i),
             other => other,
@@ -438,10 +424,7 @@ impl JeForm {
 
     fn add_row_after_focused(&mut self) {
         let insert_at = match self.focus {
-            Focus::LineAccount(i)
-            | Focus::LineDebit(i)
-            | Focus::LineCredit(i)
-            | Focus::LineNote(i) => i + 1,
+            Focus::LineAccount(i) | Focus::LineDebit(i) | Focus::LineCredit(i) => i + 1,
             _ => self.lines.len(),
         };
         self.lines.insert(insert_at, LineRow::default());
@@ -456,10 +439,7 @@ impl JeForm {
 
     fn remove_focused_row(&mut self) {
         let row = match self.focus {
-            Focus::LineAccount(i)
-            | Focus::LineDebit(i)
-            | Focus::LineCredit(i)
-            | Focus::LineNote(i) => i,
+            Focus::LineAccount(i) | Focus::LineDebit(i) | Focus::LineCredit(i) => i,
             _ => return,
         };
 
@@ -491,9 +471,6 @@ impl JeForm {
             Focus::LineCredit(i) => {
                 self.lines[i].credit_input.pop();
             }
-            Focus::LineNote(i) => {
-                self.lines[i].note_input.pop();
-            }
             Focus::LineAccount(_) => {}
         }
         self.error = None;
@@ -512,19 +489,13 @@ impl JeForm {
             Focus::LineDebit(i) => {
                 if c.is_ascii_digit() || c == '.' {
                     self.lines[i].debit_input.push(c);
-                    // Clear credit when debit is typed (mutual exclusivity hint).
-                    if !self.lines[i].debit_input.is_empty() {
-                        // Allow both for now; validation enforces at submit.
-                    }
+                    // Allow both for now; validation enforces at submit.
                 }
             }
             Focus::LineCredit(i) => {
                 if c.is_ascii_digit() || c == '.' {
                     self.lines[i].credit_input.push(c);
                 }
-            }
-            Focus::LineNote(i) => {
-                self.lines[i].note_input.push(c);
             }
             Focus::LineAccount(_) => {
                 // Typing while on account field opens the picker and seeds the query.
@@ -620,7 +591,7 @@ impl JeForm {
         let last = self.lines.len().saturating_sub(1);
         matches!(
             self.focus,
-            Focus::LineAccount(i) | Focus::LineDebit(i) | Focus::LineCredit(i) | Focus::LineNote(i)
+            Focus::LineAccount(i) | Focus::LineDebit(i) | Focus::LineCredit(i)
             if i == last
         )
     }
@@ -629,7 +600,7 @@ impl JeForm {
     pub fn is_at_first_line_row(&self) -> bool {
         matches!(
             self.focus,
-            Focus::LineAccount(0) | Focus::LineDebit(0) | Focus::LineCredit(0) | Focus::LineNote(0)
+            Focus::LineAccount(0) | Focus::LineDebit(0) | Focus::LineCredit(0)
         )
     }
 
@@ -640,13 +611,13 @@ impl JeForm {
         self.focus = Focus::LineAccount(0);
     }
 
-    /// Advances focus to the last line-item field (Note of the last row).
+    /// Advances focus to the last line-item field (Credit of the last row).
     /// Called by `InterEntityForm` when BackTab-ing into this form from the next section.
     pub fn skip_to_last_line_field(&mut self) {
         if self.lines.is_empty() {
             self.focus = Focus::Memo;
         } else {
-            self.focus = Focus::LineNote(self.lines.len() - 1);
+            self.focus = Focus::LineCredit(self.lines.len() - 1);
         }
     }
 
@@ -828,7 +799,6 @@ impl JeForm {
             Cell::from("Avail").style(Style::default().add_modifier(Modifier::BOLD)),
             Cell::from("Debit").style(Style::default().add_modifier(Modifier::BOLD)),
             Cell::from("Credit").style(Style::default().add_modifier(Modifier::BOLD)),
-            Cell::from("Note").style(Style::default().add_modifier(Modifier::BOLD)),
         ]);
 
         let rows: Vec<Row> =
@@ -867,18 +837,15 @@ impl JeForm {
                             .style(field_style(self.focus == Focus::LineDebit(i))),
                         Cell::from(format!("{}_", row.credit_input))
                             .style(field_style(self.focus == Focus::LineCredit(i))),
-                        Cell::from(format!("{}_", row.note_input))
-                            .style(field_style(self.focus == Focus::LineNote(i))),
                     ])
                 })
                 .collect();
 
         let widths = [
-            Constraint::Percentage(34),
+            Constraint::Percentage(44),
             Constraint::Length(12),
-            Constraint::Percentage(14),
-            Constraint::Percentage(14),
-            Constraint::Percentage(24),
+            Constraint::Percentage(20),
+            Constraint::Percentage(20),
         ];
 
         let table = Table::new(rows, widths)
@@ -1045,11 +1012,9 @@ mod tests {
             Focus::LineAccount(0),
             Focus::LineDebit(0),
             Focus::LineCredit(0),
-            Focus::LineNote(0),
             Focus::LineAccount(1),
             Focus::LineDebit(1),
             Focus::LineCredit(1),
-            Focus::LineNote(1),
             Focus::Date, // wraps back
         ];
         for expected_focus in expected {
@@ -1059,13 +1024,13 @@ mod tests {
     }
 
     #[test]
-    fn enter_on_last_note_of_last_row_adds_new_row() {
+    fn enter_on_last_credit_of_last_row_adds_new_row() {
         let mut form = JeForm::new();
         let accts = make_accounts();
         assert_eq!(form.lines.len(), 2);
 
-        // Navigate to LineNote of row 1 (last row, index 1).
-        form.focus = Focus::LineNote(1);
+        // Navigate to LineCredit of row 1 (last row, index 1).
+        form.focus = Focus::LineCredit(1);
         form.handle_key(key(KeyCode::Enter), &accts);
 
         assert_eq!(form.lines.len(), 3, "Should have 3 rows after adding");
@@ -1087,7 +1052,7 @@ mod tests {
         let mut form = JeForm::new();
         let accts = make_accounts();
         assert_eq!(form.lines.len(), 2);
-        form.focus = Focus::LineNote(1);
+        form.focus = Focus::LineCredit(1);
         form.handle_key(key(KeyCode::F(3)), &accts);
         assert_eq!(form.lines.len(), 1, "Row should be removed");
     }
@@ -1298,20 +1263,16 @@ mod tests {
         assert_eq!(form.focus, Focus::LineDebit(0));
         form.handle_key(key(KeyCode::Right), &accts);
         assert_eq!(form.focus, Focus::LineCredit(0));
+        // Right at Credit does nothing
         form.handle_key(key(KeyCode::Right), &accts);
-        assert_eq!(form.focus, Focus::LineNote(0));
-        // Right at Note does nothing
-        form.handle_key(key(KeyCode::Right), &accts);
-        assert_eq!(form.focus, Focus::LineNote(0));
+        assert_eq!(form.focus, Focus::LineCredit(0));
     }
 
     #[test]
     fn left_moves_through_columns_in_row() {
         let mut form = JeForm::new();
         let accts = make_accounts();
-        form.focus = Focus::LineNote(0);
-        form.handle_key(key(KeyCode::Left), &accts);
-        assert_eq!(form.focus, Focus::LineCredit(0));
+        form.focus = Focus::LineCredit(0);
         form.handle_key(key(KeyCode::Left), &accts);
         assert_eq!(form.focus, Focus::LineDebit(0));
         form.handle_key(key(KeyCode::Left), &accts);

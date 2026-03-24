@@ -505,6 +505,17 @@ impl<'conn> JournalRepo<'conn> {
         Ok(())
     }
 
+    /// Updates the `memo` field of a journal entry. Works on both Draft and Posted entries.
+    pub fn update_memo(&self, id: JournalEntryId, memo: Option<&str>) -> Result<()> {
+        self.conn
+            .execute(
+                "UPDATE journal_entries SET memo = ?1, updated_at = ?2 WHERE id = ?3",
+                params![memo, now_str(), i64::from(id)],
+            )
+            .with_context(|| format!("Failed to update memo for JE {}", i64::from(id)))?;
+        Ok(())
+    }
+
     /// Marks a journal entry as reversed, recording which JE reversed it.
     pub fn mark_reversed(&self, id: JournalEntryId, reversed_by: JournalEntryId) -> Result<()> {
         self.conn
