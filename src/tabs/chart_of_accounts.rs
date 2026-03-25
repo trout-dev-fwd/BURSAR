@@ -1500,7 +1500,7 @@ impl Tab for ChartOfAccountsTab {
                         .get_balance(alloc.account_id)
                         .unwrap_or(Money(0)),
                 };
-                let available = Money(earmarked.0 - gl_balance.0);
+                let available = Money((earmarked.0 - gl_balance.0).max(0));
                 env_bals.insert(alloc.account_id, available);
             }
         }
