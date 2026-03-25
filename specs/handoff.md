@@ -578,8 +578,8 @@ Run after opening an entity, before the main event loop:
 | `Arrow keys + Enter` | Alternative navigation (fallback when Tab intercepted by chat panel) |
 | `Ctrl+S` | Validate and submit |
 | `Esc` | Cancel |
-| `F2` | Insert new line below |
-| `F3` / `Delete` | Remove focused line |
+| `Ctrl+↓` | Insert new line below |
+| `Ctrl+↑` / `Delete` | Remove focused line |
 
 ### Chat Panel
 

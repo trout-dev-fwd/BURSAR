@@ -13,7 +13,7 @@
 //! - `Tab` in Header → moves to Entity A lines.
 //! - `Tab` past Entity A's last field → moves to Entity B's first field.
 //! - `Tab` past Entity B's last field → wraps back to Header.
-//! - `F2` / `F3`: add/remove rows in the focused entity's form.
+//! - `Ctrl+Down` / `Ctrl+Up`: add/remove rows in the focused entity's form.
 //! - `Ctrl+S` → validate both sides, return `Submitted` if valid.
 //! - `Esc` → `Cancelled` (with unsaved-changes prompt if content exists).
 
