@@ -613,7 +613,7 @@ pub(super) fn render_help_overlay(
         ("Ctrl+← / Ctrl+→", "Previous / next tab"),
         ("Ctrl+K", "AI Accountant panel"),
         ("f", "Fiscal period management"),
-        ("Ctrl+H", "Open user guide"),
+        ("Ctrl+H", "Open user guide (& form guide)"),
         ("q", "Quit"),
         ("?", "Show / hide this help"),
     ];

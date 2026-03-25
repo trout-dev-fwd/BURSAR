@@ -37,12 +37,12 @@ These work from any tab:
 
 | Key | Action |
 |-----|--------|
-| `1`–`9` | Jump to tab by number (only when no form/modal is open) |
+| `0`–`9` | Jump to tab by number (only when no form/modal is open) |
 | `Ctrl+←` / `Ctrl+→` | Cycle to the previous / next tab (wraps around) |
 | `Ctrl+K` | Open / close the AI Accountant panel |
 | `f` | Open fiscal period management (close/reopen periods, year-end close) |
 | `?` | Show hotkey quick-reference for the current tab; also shows Feedback section (`b` / `f`) |
-| `Ctrl+H` | Open this user guide |
+| `Ctrl+H` | Open this user guide (& form guide) |
 | `q` | Quit the application |
 
 ---
@@ -470,7 +470,96 @@ any envelope.
 
 ---
 
-## Tab 9: Audit Log
+## Tab 9: Tax Workstation
+
+The Tax tab is your tax preparation workspace. It shows all posted journal entries for
+the selected fiscal year with their review status, so you can classify each transaction
+to the right IRS form — manually or with AI assistance.
+
+### Navigating the Tax List
+
+| Key | Action |
+|-----|--------|
+| `↑/↓` or `k/j` | Move up / down through entries |
+| `←/→` | Switch fiscal year |
+| `Enter` | View full JE detail (lines, accounts, amounts) — press again or `Esc` to close |
+
+### Classifying Entries
+
+| Key | Action |
+|-----|--------|
+| `f` | Flag selected entry with a tax form + optional reason |
+| `n` | Mark selected entry as non-deductible + optional reason |
+| `a` | Queue selected entry for AI batch review |
+| `m` | Edit the journal entry memo |
+
+**`f` — Flag with form:**
+1. A form picker opens listing your enabled forms
+2. Select a form with arrow keys + `Enter`
+3. Enter an optional reason (or press `Enter` to skip)
+4. Entry status becomes **Confirmed** (shown in green)
+
+**`n` — Non-deductible:**
+1. Enter an optional reason (or press `Enter` to skip)
+2. Entry status becomes **Non-Deductible** (shown in gray)
+
+**Re-flagging:** Both `f` and `n` work on any status — you can always correct a
+classification. Re-flagging overwrites the previous form, status, and reason.
+
+### AI Batch Review
+
+| Key | Action |
+|-----|--------|
+| `a` | Queue selected entry for AI review (status → AI Pending, shown in yellow) |
+| `R` | Run AI batch review on all queued entries |
+
+After batch review, AI-suggested entries appear in **cyan** with a `?` suffix on the
+form name (e.g., `Schedule C?`). Press `Enter` to accept the suggestion, `f` to
+override with a different form, or `n` to mark as non-deductible.
+
+### Tax Reference Library
+
+| Key | Action |
+|-----|--------|
+| `u` | Fetch/update IRS publication text (requires internet connection) |
+
+When the AI chat panel (`Ctrl+K`) is opened from the Tax tab, it automatically includes
+relevant IRS publication excerpts and the selected entry's full details. Ask questions
+like "Is this home office expense deductible?" and get sourced answers citing IRS pubs.
+
+### Form Configuration
+
+| Key | Action |
+|-----|--------|
+| `c` | Configure which tax forms are enabled |
+
+Press `Space` to toggle a form on/off. Only enabled forms appear in the `f` picker.
+All forms are enabled by default. Your configuration is saved per-entity.
+
+### Status Colors
+
+| Color | Status | Meaning |
+|-------|--------|---------|
+| Dim/gray | Unreviewed | Entry has not been classified |
+| Yellow | AI Pending | Queued for AI batch review |
+| Cyan | AI Suggested | AI has classified this entry (review pending) |
+| Green | Confirmed | Classification confirmed |
+| Gray | Non-Deductible | Entry marked as non-deductible |
+
+### Progress Indicator
+
+The tab header shows `Tax Review: 47/200 (23%)` — the count of reviewed entries
+(any status other than Unreviewed) vs total posted entries in the fiscal year.
+
+### Tax Summary Report
+
+Once entries are classified, generate the Tax Summary report from the **Reports** tab.
+It lists confirmed entries grouped by form with their reasons, plus counts of
+non-deductible and unreviewed entries. Share this with your accountant.
+
+---
+
+## Tab 0: Audit Log
 
 Every change in the system is recorded here. The audit log is read-only and cannot be
 modified or deleted.
@@ -698,3 +787,64 @@ Posted entries cannot be edited. Instead:
 4. Press `f` → `y` to run year-end close
 5. Review and post the closing entries
 6. Create the new fiscal year when prompted
+
+---
+
+## Tax Form Guide
+
+This section explains each IRS tax form available in the Tax tab classifier.
+Access via `Ctrl+H` from any tab.
+
+### Schedule C — Profit or Loss from Business
+For sole proprietors and single-member LLCs. Report all business revenue
+and deductible expenses: supplies, rent, utilities, advertising, insurance,
+contract labor, vehicle expenses, home office, and more. Net profit flows
+to your Form 1040 and is also subject to self-employment tax (Schedule SE).
+
+### Schedule A — Itemized Deductions
+Use instead of the standard deduction if your itemized total is higher.
+Four subcategories in this app:
+- **Medical & Dental**: expenses exceeding 7.5% of AGI
+- **State & Local Taxes**: income tax, property tax (capped at $10,000)
+- **Interest**: mortgage interest, investment interest
+- **Charitable Contributions**: cash/property donations to 501(c)(3) organizations
+
+### Schedule D — Capital Gains and Losses
+Report gains or losses from selling stocks, bonds, real estate, crypto, or
+other capital assets. Short-term gains (held <1 year) taxed as ordinary income.
+Long-term gains (held >1 year) taxed at favorable rates (0%, 15%, or 20%).
+
+### Schedule E — Supplemental Income and Loss
+Rental property income and expenses, royalties, and pass-through income from
+partnerships (K-1) and S-Corps (K-1). Report rental revenue minus deductible
+expenses: repairs, insurance, depreciation, property management fees.
+
+### Schedule SE — Self-Employment Tax
+Social Security (12.4%) + Medicare (2.9%) on net self-employment income from
+Schedule C. Required if net SE income exceeds $400. You can deduct half of SE
+tax as an adjustment to income on Form 1040.
+
+### Form 4562 — Depreciation and Amortization
+Claim depreciation on business assets: vehicles, equipment, furniture, buildings.
+Includes Section 179 immediate expensing (up to $1,220,000 for 2024) and MACRS
+depreciation schedules (3, 5, 7, 15, 27.5, or 39 year recovery periods).
+
+### Form 8829 — Expenses for Business Use of Your Home
+Home office deduction. Simplified method: $5 per square foot of dedicated workspace,
+up to 300 sq ft ($1,500 max). Regular method: calculate actual expenses (mortgage
+interest, rent, utilities, insurance, repairs) × business-use percentage.
+
+### Form 4797 — Sales of Business Property
+Gains or losses from selling business property (not inventory). Includes Section 1231
+gains (favorable long-term capital gains treatment) and depreciation recapture
+(taxed as ordinary income up to the amount of depreciation previously claimed).
+
+### Form 1120-S — U.S. Income Tax Return for an S Corporation
+S-Corps are pass-through entities: corporate income flows to shareholders via K-1.
+Owner-employees must take a reasonable salary (subject to payroll taxes) before
+taking distributions (not subject to SE tax). QBI deduction may apply.
+
+### Form 1040-ES — Estimated Tax for Individuals
+Quarterly estimated tax payments. Required if you expect to owe $1,000+ when you
+file. Due dates: April 15, June 15, September 15, January 15 of the following year.
+Underpayment penalties apply if you don't pay enough each quarter.
