@@ -1,9 +1,9 @@
 # V4 Progress Tracker
 
 ## Current State
-- **Active Phase**: Phase 4 complete
-- **Last Completed Task**: Phase 4, Task 3
-- **Next Task**: Phase 5, Task 1
+- **Active Phase**: Phase 5 complete — all phases done
+- **Last Completed Task**: Phase 5, Task 2
+- **Next Task**: None (V4 complete — pending release v0.5.0)
 - **Blockers**: None
 
 ## Completed Phases
@@ -52,8 +52,18 @@ All 3 tasks committed. Verification: `cargo fmt && cargo clippy -D warnings && c
 | 2 | 3949512 | AI batch classification with R hotkey and prompt caching |
 | 3 | 465fb14 | AI suggestion review — accept, override, reject |
 
+## Completed Phases (continued)
+
+### Phase 5 — Tax Summary Report + Documentation (2026-03-25)
+All 2 tasks committed. Verification: `cargo fmt && cargo clippy -D warnings && cargo test` all pass (797 tests).
+
+| Task | Commit | Description |
+|------|--------|-------------|
+| 1 | 9467bde | Tax Summary by Form report with reasons |
+| 2 | (see git log) | Update CLAUDE.md, user guide, and progress tracking |
+
 ## Current Phase Progress
-_(Phase 4 complete — Phase 5 not started)_
+_(All phases complete — V4 done)_
 
 ## Decisions & Discoveries
 
@@ -173,6 +183,23 @@ _(Phase 4 complete — Phase 5 not started)_
   is NOT in the UPSERT SET clause for `set_manual` or `set_non_deductible`, so it's automatically
   preserved as an audit trail after any override. Three new tests added to tax_tag_repo.rs:
   accept_preserves_reason, override_preserves_ai_suggested_form, re_flag_preserves_ai_suggested_form.
+
+## Decisions & Discoveries (Phase 5)
+
+- **[Phase 5, Task 1]**: `TaxFormTag` required `#[derive(Hash)]` for use as HashMap key in the
+  Tax Summary grouping logic. Added to `src/types/enums.rs`.
+
+- **[Phase 5, Task 1]**: `%-b` is an invalid chrono format specifier (the `-` flag only applies
+  to numeric specifiers). Changed to `%b %-d` for "Jan 15" style date formatting. Invalid format
+  causes chrono's `Display::fmt` to return `Err`, which panics in `.to_string()`.
+
+- **[Phase 5, Task 1]**: Tax Summary uses `list_all_posted_for_date_range` (returns all posted JEs
+  with optional tags) and partitions client-side: confirmed → listed by form, non_deductible → count,
+  all others (unreviewed/ai_pending/ai_suggested) → unreviewed count.
+
+- **[Phase 5, Task 1]**: Column alignment uses pre-built strings (`format!("{:<width$}", ...)`)
+  rather than complex multi-argument format strings. Avoids Rust restrictions on mixing positional
+  and named args in a single `format!` call.
 
 ## Known Issues
 - None currently.

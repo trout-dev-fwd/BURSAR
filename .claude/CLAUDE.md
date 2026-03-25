@@ -78,6 +78,18 @@ Detailed specifications live in `specs/`. Read the relevant files for your curre
 | `specs/v3/v3-phase-3.md` | Review screen UI: transfer matches section, confirm/reject interaction. |
 | `specs/v3/v3-phase-4.md` | Wiring: confirmed matches → junction table writes, end-to-end tests. |
 
+### V4 Specs
+
+| File | Contents |
+|------|----------|
+| `specs/v4/v4-SPEC.md` | Master entry point: Tax Workstation success criteria, schema, forms, AI batch review, IRS library. |
+| `specs/v4/v4-progress.md` | V4 task tracking, decisions log, known issues. |
+| `specs/v4/v4-phase-1.md` | Tab restructuring, tax_tags schema, Tax tab shell, form config, memo simplification. |
+| `specs/v4/v4-phase-2.md` | Tax reference library: scraper, IRS HTML fetch/parse, `u` hotkey. |
+| `specs/v4/v4-phase-3.md` | Tax review workflow: JE list, manual flagging, reason input, memo editing, fiscal year selector. |
+| `specs/v4/v4-phase-4.md` | AI batch review: queue, prompt caching, pipe-separated response, accept/override/reject. |
+| `specs/v4/v4-phase-5.md` | Tax Summary report with reasons, CLAUDE.md, user guide. |
+
 **Do not duplicate spec content here.** This file stays lean. Specs are the source of truth.
 
 ## Key Decisions
@@ -143,10 +155,24 @@ V2.2 introduces user-visible features that require guide updates:
 - **Splash screen:** Centered version number, update progress bar during auto-update
 - **Auto-update behavior:** Document that updates are forced on launch with graceful fallthrough
 
+### V4
+
+- **Tax tab at position 9, Audit Log moved to position 0.** Tab key `0`–`9` covers all tabs.
+- **`tax_tags` table** with `reason` column — stores AI explanation or user's manual note. Per-JE tagging only. Included in Tax Summary report for accountant context.
+- **Non-deductible terminology:** "Non-Deductible" (not "Not Taxable"). Tag: `non_deductible`.
+- **Form configuration:** all forms enabled by default. Users disable via `c` in Tax tab. Stored in entity TOML as `[tax].enabled_forms`.
+- **AI batch response format:** pipe-separated — `JE-0004: schedule_c | Office supplies are ordinary business expenses`. More reliable parsing than JSON from LLM output.
+- **Prompt caching for batch review:** `anthropic-beta: prompt-caching-2024-07-31` header, same pattern as chat panel. System prompt cached across batches in a single `R` run.
+- **Re-flagging always allowed:** `f` and `n` keys work on ANY status. UPSERT overwrites form_tag, status, reason. `ai_suggested_form` is NOT in SET clause — preserved as audit trail.
+- **Tax context scoped to Tax tab:** IRS reference chunks + `get_tax_tag` tool only when Ctrl+K opened from Tax tab. Other tabs get normal accounting context.
+- **Per-JE tagging only.** Split Draft feature (mixed-category JEs) deferred to future version.
+- **`TaxFormTag` derives `Hash`:** needed for `HashMap<TaxFormTag, Vec<_>>` grouping in Tax Summary report.
+- **Tax Summary report:** groups confirmed JEs by form with reasons and subtotals. Non-deductible and unreviewed shown as counts. Report index 9 in Reports tab.
+
 ## Commit Messages
 
 ```
-V2.2 Phase N, Task M: [short description]
+V4 Phase N, Task M: [short description]
 ```
 
 One commit per task. See `specs/v1/implementation-protocols.md` for full protocol.
@@ -236,6 +262,14 @@ _(Discoveries from implementation — update as the project evolves)_
 - **Windows tests with `HOME` env var.** Windows uses `USERPROFILE` not `HOME`. Tests that depend on tilde expansion are gated with `#[cfg(not(target_os = "windows"))]`.
 - **Progress bar during download.** Same forced-render pattern as AI calls: `terminal.draw()` between chunk reads. Blocks event loop, acceptable on splash screen.
 - **`b`/`f` feedback keys scoped to `?` overlay.** Not global hotkeys. No conflicts with per-tab bindings. Feedback only available in Running state, not startup screen.
+
+### V4 — Tax Workstation
+- **`%-b` is invalid in chrono format.** The `-` flag (suppress padding) applies to numeric specifiers only. Use `%b` for abbreviated month name, `%-d` for zero-stripped day. Invalid format causes chrono's `Display` to return `Err`, panicking in `.to_string()`.
+- **Re-flagging always overwrites via UPSERT.** `set_manual` and `set_non_deductible` use `INSERT ... ON CONFLICT DO UPDATE`. The `ai_suggested_form` column is intentionally omitted from the UPDATE SET clause so it's preserved as an audit trail after any user override.
+- **IRS publication HTML varies.** Section headings aren't always `<h2>`. The parser uses `while let` loop (not `loop/break`) per clippy's `while_let_loop` lint. Uses lowercase comparison for tag names to handle mixed-case tags from real IRS pages.
+- **Batch size is 25 JEs per AI request.** Larger batches risk hitting context limits. Token budget is finite; IRS reference chunks are included in the system prompt.
+- **Tax context built lazily.** `build_tax_context` returns `None` when `tax_reference` table is empty and no JE is selected — avoids injecting an empty system prompt block.
+- **`send_cached_simple` on AiClient.** Single-round cached requests (no tool use) for batch review. Distinct from the tool-use `classify_round` path used by chat.
 
 ### V3 — Transfer Detection
 - **Junction table replaces `import_ref` column.** `journal_entry_import_refs` (junction table) stores multiple refs per JE. Supports both sides of a cross-bank transfer on the same JE.

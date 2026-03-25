@@ -443,6 +443,7 @@ Generate formatted accounting reports as `.txt` files.
 | AP Aging | Open payables by age | As-of date |
 | Fixed Asset Schedule | All assets with cost, depreciation, book value | As-of date |
 | Envelope Budget Summary | Earmarked vs. GL spending vs. available for each allocated account | Date range |
+| Tax Summary | Confirmed JEs grouped by tax form with reasons; counts of non-deductible and unreviewed | Date range |
 
 ### Generating a Report
 1. Select a report from the list
@@ -556,6 +557,13 @@ The tab header shows `Tax Review: 47/200 (23%)` — the count of reviewed entrie
 Once entries are classified, generate the Tax Summary report from the **Reports** tab.
 It lists confirmed entries grouped by form with their reasons, plus counts of
 non-deductible and unreviewed entries. Share this with your accountant.
+
+### Tax Disclaimer
+
+This tool organizes your financial records to assist with tax preparation. It does not
+constitute tax advice. Tax laws vary by jurisdiction, change frequently, and depend on
+your specific circumstances. Always consult a qualified tax professional before filing.
+The AI guidance and IRS publication excerpts provided are for informational purposes only.
 
 ---
 
