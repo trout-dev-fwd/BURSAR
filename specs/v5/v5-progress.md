@@ -1,9 +1,9 @@
 # V5 Progress Tracker
 
 ## Current State
-- **Active Phase**: Phase 1 — complete
-- **Last Completed Task**: Phase 1, Task 3
-- **Next Task**: Phase 2, Task 1
+- **Active Phase**: Phase 2 — complete
+- **Last Completed Task**: Phase 2, Task 3
+- **Next Task**: Phase 3, Task 1
 - **Blockers**: None
 
 ## Completed Phases
@@ -15,6 +15,11 @@ _(none fully released yet)_
 - [x] Task 1: add secondary_percentage and cap_amount columns with migration
 - [x] Task 2: update EnvelopeRepo with secondary percentage and cap
 - [x] Task 3: update all EnvelopeAllocation consumers for new fields
+
+### Phase 2: Fill Algorithm + Allocation Config UI
+- [x] Task 1: two-tier envelope fill algorithm with caps and overflow
+- [x] Task 2: update Allocation Config view with new columns and totals
+- [x] Task 3: sequential editing for primary, cap, and secondary allocation
 
 ## Decisions & Discoveries
 
@@ -54,6 +59,26 @@ _(none fully released yet)_
 
 - **[Phase 1, Task 3]**: All consumers pass `Percentage(0), None` for the new fields,
   preserving existing behavior. Phase 2 will add the UI to set real values.
+
+- **[Phase 2, Task 1]**: Split `services/journal.rs` into `journal/mod.rs` + `journal/tests.rs`
+  before adding new tests (file was at 1375 lines; new tests would exceed 1500-line limit).
+  This is a pure reorganization — no public API changes.
+
+- **[Phase 2, Task 1]**: The two-tier algorithm calls `env.get_balance(account_id)` inside
+  the transaction for cap checking. Since each account has at most one allocation, and the
+  fill is written AFTER the check for that account, the cap check always sees the pre-posting
+  balance. No ordering issues.
+
+- **[Phase 2, Task 2]**: `AllocState` is a simple local struct (not the full
+  `EnvelopeAllocation` repo type) to keep the tab's state lean. It carries only the three
+  fields needed for display and editing.
+
+- **[Phase 2, Task 3]**: Editing is triggered by `Enter` key (not `d`). The spec says "d key
+  (distribute/edit allocation)" but the existing code uses `Enter` for edit and `d` for
+  remove. Followed the existing implementation pattern.
+
+- **[Phase 2, Task 3]**: Cap = $0 is treated as "no cap" (same as empty). A cap of $0 would
+  permanently block all primary fills, which is unusual. The spec says "Empty/0 clears the cap."
 
 ## Known Issues
 - None currently.
