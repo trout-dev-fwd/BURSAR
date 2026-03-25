@@ -15,7 +15,12 @@ use crate::types::{
 pub struct EnvelopeAllocation {
     pub id: EnvelopeAllocationId,
     pub account_id: AccountId,
+    /// Primary allocation percentage.
     pub percentage: Percentage,
+    /// Secondary allocation percentage (receives overflow from capped primary fills).
+    pub secondary_percentage: Percentage,
+    /// Cap on earmarked balance that gates primary fills. `None` means no cap.
+    pub cap_amount: Option<Money>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -49,21 +54,63 @@ impl<'conn> EnvelopeRepo<'conn> {
 
     // ── Allocations ───────────────────────────────────────────────────────────
 
-    /// Upserts an allocation percentage for an account.
-    /// If `pct` is zero, equivalent to `remove_allocation`.
-    pub fn set_allocation(&self, account_id: AccountId, pct: Percentage) -> Result<()> {
+    /// Upserts an allocation for an account.
+    /// Stores primary percentage, secondary percentage, and optional cap amount atomically.
+    pub fn set_allocation(
+        &self,
+        account_id: AccountId,
+        percentage: Percentage,
+        secondary_percentage: Percentage,
+        cap_amount: Option<Money>,
+    ) -> Result<()> {
         let now = now_str();
         self.conn
             .execute(
-                "INSERT INTO envelope_allocations (account_id, percentage, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4)
+                "INSERT INTO envelope_allocations
+                     (account_id, percentage, secondary_percentage, cap_amount, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                  ON CONFLICT(account_id) DO UPDATE SET
                      percentage = excluded.percentage,
+                     secondary_percentage = excluded.secondary_percentage,
+                     cap_amount = excluded.cap_amount,
                      updated_at = excluded.updated_at",
-                params![i64::from(account_id), pct.0, now, now],
+                params![
+                    i64::from(account_id),
+                    percentage.0,
+                    secondary_percentage.0,
+                    cap_amount.map(|m| m.0),
+                    now,
+                    now
+                ],
             )
             .context("Failed to set envelope allocation")?;
         Ok(())
+    }
+
+    /// Returns the sum of all primary percentages across all allocations.
+    pub fn total_primary_percentage(&self) -> Result<Percentage> {
+        let raw: i64 = self
+            .conn
+            .query_row(
+                "SELECT COALESCE(SUM(percentage), 0) FROM envelope_allocations",
+                [],
+                |row| row.get(0),
+            )
+            .context("Failed to sum primary percentages")?;
+        Ok(Percentage(raw))
+    }
+
+    /// Returns the sum of all secondary percentages across all allocations.
+    pub fn total_secondary_percentage(&self) -> Result<Percentage> {
+        let raw: i64 = self
+            .conn
+            .query_row(
+                "SELECT COALESCE(SUM(secondary_percentage), 0) FROM envelope_allocations",
+                [],
+                |row| row.get(0),
+            )
+            .context("Failed to sum secondary percentages")?;
+        Ok(Percentage(raw))
     }
 
     /// Removes the allocation for an account (deletes the row).
@@ -80,7 +127,8 @@ impl<'conn> EnvelopeRepo<'conn> {
     /// Returns all configured allocations, ordered by account_id.
     pub fn get_all_allocations(&self) -> Result<Vec<EnvelopeAllocation>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, account_id, percentage, created_at, updated_at
+            "SELECT id, account_id, percentage, secondary_percentage, cap_amount,
+                    created_at, updated_at
              FROM envelope_allocations
              ORDER BY account_id ASC",
         )?;
@@ -294,8 +342,10 @@ fn row_to_allocation(row: &rusqlite::Row<'_>) -> rusqlite::Result<EnvelopeAlloca
         id: EnvelopeAllocationId::from(row.get::<_, i64>(0)?),
         account_id: AccountId::from(row.get::<_, i64>(1)?),
         percentage: Percentage(row.get::<_, i64>(2)?),
-        created_at: row.get(3)?,
-        updated_at: row.get(4)?,
+        secondary_percentage: Percentage(row.get::<_, i64>(3)?),
+        cap_amount: row.get::<_, Option<i64>>(4)?.map(Money),
+        created_at: row.get(5)?,
+        updated_at: row.get(6)?,
     })
 }
 
@@ -422,28 +472,72 @@ mod tests {
         let (conn, _, acct1, _) = setup_db();
         let repo = EnvelopeRepo::new(&conn);
 
-        repo.set_allocation(acct1, Percentage(15_000_000)) // 15%
+        repo.set_allocation(acct1, Percentage(15_000_000), Percentage(0), None) // 15%
             .expect("set allocation");
 
         let allocs = repo.get_all_allocations().expect("get allocations");
         assert_eq!(allocs.len(), 1);
         assert_eq!(allocs[0].account_id, acct1);
         assert_eq!(allocs[0].percentage, Percentage(15_000_000));
+        assert_eq!(allocs[0].secondary_percentage, Percentage(0));
+        assert_eq!(allocs[0].cap_amount, None);
     }
 
     #[test]
-    fn set_allocation_upserts() {
+    fn set_allocation_with_secondary_and_cap() {
         let (conn, _, acct1, _) = setup_db();
         let repo = EnvelopeRepo::new(&conn);
 
-        repo.set_allocation(acct1, Percentage(10_000_000))
+        repo.set_allocation(
+            acct1,
+            Percentage(10_000_000),       // 10% primary
+            Percentage(5_000_000),        // 5% secondary
+            Some(Money(500_000_000_000)), // $5,000 cap
+        )
+        .expect("set allocation");
+
+        let allocs = repo.get_all_allocations().expect("get allocations");
+        assert_eq!(allocs.len(), 1);
+        assert_eq!(allocs[0].percentage, Percentage(10_000_000));
+        assert_eq!(allocs[0].secondary_percentage, Percentage(5_000_000));
+        assert_eq!(allocs[0].cap_amount, Some(Money(500_000_000_000)));
+    }
+
+    #[test]
+    fn set_allocation_upserts_all_fields() {
+        let (conn, _, acct1, _) = setup_db();
+        let repo = EnvelopeRepo::new(&conn);
+
+        repo.set_allocation(acct1, Percentage(10_000_000), Percentage(0), None)
             .expect("first set");
-        repo.set_allocation(acct1, Percentage(20_000_000))
-            .expect("second set");
+        repo.set_allocation(
+            acct1,
+            Percentage(20_000_000),
+            Percentage(5_000_000),
+            Some(Money(1_000_000_000_000)),
+        )
+        .expect("second set");
 
         let allocs = repo.get_all_allocations().expect("get");
         assert_eq!(allocs.len(), 1, "Upsert should not create duplicate rows");
         assert_eq!(allocs[0].percentage, Percentage(20_000_000));
+        assert_eq!(allocs[0].secondary_percentage, Percentage(5_000_000));
+        assert_eq!(allocs[0].cap_amount, Some(Money(1_000_000_000_000)));
+    }
+
+    #[test]
+    fn set_allocation_cap_none_stored_as_null() {
+        let (conn, _, acct1, _) = setup_db();
+        let repo = EnvelopeRepo::new(&conn);
+
+        repo.set_allocation(acct1, Percentage(10_000_000), Percentage(0), None)
+            .expect("set");
+
+        let allocs = repo.get_all_allocations().expect("get");
+        assert!(
+            allocs[0].cap_amount.is_none(),
+            "None cap should be NULL in DB"
+        );
     }
 
     #[test]
@@ -451,9 +545,9 @@ mod tests {
         let (conn, _, acct1, acct2) = setup_db();
         let repo = EnvelopeRepo::new(&conn);
 
-        repo.set_allocation(acct1, Percentage(10_000_000))
+        repo.set_allocation(acct1, Percentage(10_000_000), Percentage(0), None)
             .expect("set 1");
-        repo.set_allocation(acct2, Percentage(5_000_000))
+        repo.set_allocation(acct2, Percentage(5_000_000), Percentage(0), None)
             .expect("set 2");
 
         let before = repo.get_all_allocations().expect("before");
@@ -464,6 +558,36 @@ mod tests {
         let after = repo.get_all_allocations().expect("after");
         assert_eq!(after.len(), 1);
         assert_eq!(after[0].account_id, acct2);
+    }
+
+    #[test]
+    fn total_primary_and_secondary_percentages() {
+        let (conn, _, acct1, acct2) = setup_db();
+        let repo = EnvelopeRepo::new(&conn);
+
+        // Empty — both should be zero.
+        assert_eq!(
+            repo.total_primary_percentage().expect("primary total"),
+            Percentage(0)
+        );
+        assert_eq!(
+            repo.total_secondary_percentage().expect("secondary total"),
+            Percentage(0)
+        );
+
+        repo.set_allocation(acct1, Percentage(10_000_000), Percentage(40_000_000), None)
+            .expect("set 1");
+        repo.set_allocation(acct2, Percentage(15_000_000), Percentage(35_000_000), None)
+            .expect("set 2");
+
+        assert_eq!(
+            repo.total_primary_percentage().expect("primary total"),
+            Percentage(25_000_000) // 25%
+        );
+        assert_eq!(
+            repo.total_secondary_percentage().expect("secondary total"),
+            Percentage(75_000_000) // 75%
+        );
     }
 
     // ── record_fill / get_balance ─────────────────────────────────────────────
