@@ -296,31 +296,9 @@ impl JournalEntriesTab {
         }
     }
 
-    fn close_detail(&mut self) {
-        self.detail = None;
-    }
-
     fn scroll_to(&mut self, id: JournalEntryId) {
         if let Some(pos) = self.entries.iter().position(|e| e.id == id) {
             self.table_state.select(Some(pos));
-            self.detail = None;
-        }
-    }
-
-    fn detail_line_up(&mut self) {
-        if let Some(ref mut d) = self.detail
-            && d.focused_line > 0
-        {
-            d.focused_line -= 1;
-        }
-    }
-
-    fn detail_line_down(&mut self) {
-        if let Some(ref mut d) = self.detail {
-            let max = d.lines.len().saturating_sub(1);
-            if d.focused_line < max {
-                d.focused_line += 1;
-            }
         }
     }
 
@@ -807,9 +785,9 @@ impl JournalEntriesTab {
                 if let Some(id) = je_id {
                     self.recurring = None;
                     self.status_filter = StatusFilter::All;
-                    self.close_detail();
                     self.refresh(db);
                     self.scroll_to(id);
+                    self.open_detail(db);
                 }
             }
             // [g] generate all entries due today or earlier.
@@ -999,15 +977,19 @@ impl JournalEntriesTab {
     }
 
     fn render_detail(&self, frame: &mut Frame, area: Rect) {
-        let Some(d) = &self.detail else {
-            return;
-        };
-        let Some(entry) = self.selected_entry() else {
+        let (Some(d), Some(entry)) = (&self.detail, self.selected_entry()) else {
+            frame.render_widget(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Detail ")
+                    .style(Style::default().fg(Color::DarkGray)),
+                area,
+            );
             return;
         };
 
         let title = format!(
-            " {} — {} line(s)  ↑↓: line  [c] Cleared  [g] GL  [m] Edit memo  Esc: close ",
+            " {} — {} line(s)  [c] Cleared  [g] GL  [m] Edit memo ",
             entry.je_number,
             d.lines.len()
         );
@@ -1234,27 +1216,16 @@ impl Tab for JournalEntriesTab {
 
         match key.code {
             KeyCode::Up => {
-                if self.detail.is_some() {
-                    self.detail_line_up();
-                } else {
-                    self.scroll_up();
-                }
+                self.scroll_up();
+                self.open_detail(db);
             }
             KeyCode::Down => {
-                if self.detail.is_some() {
-                    self.detail_line_down();
-                } else {
-                    self.scroll_down();
-                }
+                self.scroll_down();
+                self.open_detail(db);
             }
             KeyCode::Enter => {
-                if self.detail.is_some() {
-                    self.close_detail();
-                } else {
-                    self.open_detail(db);
-                }
+                // No-op in master-detail layout (detail is always visible).
             }
-            KeyCode::Esc => self.close_detail(),
             KeyCode::Char('c') | KeyCode::Char('C') => {
                 return self.toggle_reconcile(db);
             }
@@ -1272,7 +1243,6 @@ impl Tab for JournalEntriesTab {
             }
             KeyCode::Char('f') | KeyCode::Char('F') => {
                 self.status_filter = self.status_filter.next();
-                self.close_detail();
                 self.refresh(db);
             }
 
@@ -1426,16 +1396,13 @@ impl Tab for JournalEntriesTab {
             return;
         }
 
-        if self.detail.is_some() {
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
-                .split(area);
-            self.render_list(frame, chunks[0]);
-            self.render_detail(frame, chunks[1]);
-        } else {
-            self.render_list(frame, area);
-        }
+        // Master-detail layout: list on top, detail always visible below.
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+            .split(area);
+        self.render_list(frame, chunks[0]);
+        self.render_detail(frame, chunks[1]);
         self.render_modal(frame, area);
     }
 
@@ -1470,23 +1437,8 @@ impl Tab for JournalEntriesTab {
             self.table_state
                 .select(Some(sel.min(self.entries.len() - 1)));
         }
-        // Re-sync detail if open.
-        if let Some(id) = self.selected_entry().map(|e| e.id)
-            && self.detail.is_some()
-        {
-            match db.journals().get_with_lines(id) {
-                Ok((_, lines)) => {
-                    self.detail = Some(DetailState {
-                        lines,
-                        focused_line: 0,
-                    })
-                }
-                Err(e) => {
-                    tracing::error!("Detail refresh failed: {e}");
-                    self.detail = None;
-                }
-            }
-        }
+        // Always sync detail for the selected entry (master-detail layout).
+        self.open_detail(db);
     }
 
     fn navigate_to(&mut self, record_id: RecordId, db: &EntityDb) {
@@ -1496,14 +1448,14 @@ impl Tab for JournalEntriesTab {
         // Try current list first.
         if let Some(pos) = self.entries.iter().position(|e| e.id == id) {
             self.table_state.select(Some(pos));
-            self.detail = None;
+            self.open_detail(db);
             return;
         }
         // Entry may be filtered out — switch to All and retry.
         self.status_filter = StatusFilter::All;
-        self.close_detail();
         self.refresh(db);
         self.scroll_to(id);
+        self.open_detail(db);
     }
 }
 
