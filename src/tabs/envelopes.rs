@@ -973,7 +973,7 @@ impl Tab for EnvelopesTab {
         vec![
             ("v", "Switch view (Balances / Budget)"),
             ("↑/↓", "Navigate"),
-            ("d", "Distribute funds to envelope"),
+            ("d", "Remove envelope allocation"),
             ("t", "Transfer between envelopes"),
         ]
     }
