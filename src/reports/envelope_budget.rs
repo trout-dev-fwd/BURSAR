@@ -246,7 +246,7 @@ mod tests {
 
         // Set a 25% allocation on the expense account.
         db.envelopes()
-            .set_allocation(expense, Percentage::from_display(25.0))
+            .set_allocation(expense, Percentage::from_display(25.0), Percentage(0), None)
             .expect("set allocation");
 
         let date = NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
@@ -293,7 +293,7 @@ mod tests {
         let expense = create_account(&db, "5100", "Maintenance", AccountType::Expense);
 
         db.envelopes()
-            .set_allocation(expense, Percentage::from_display(30.0))
+            .set_allocation(expense, Percentage::from_display(30.0), Percentage(0), None)
             .expect("set allocation");
 
         let params = make_params(
@@ -332,10 +332,10 @@ mod tests {
         let a_acct = create_account(&db, "5100", "Maintenance", AccountType::Expense);
 
         db.envelopes()
-            .set_allocation(b_acct, Percentage::from_display(10.0))
+            .set_allocation(b_acct, Percentage::from_display(10.0), Percentage(0), None)
             .expect("set b");
         db.envelopes()
-            .set_allocation(a_acct, Percentage::from_display(15.0))
+            .set_allocation(a_acct, Percentage::from_display(15.0), Percentage(0), None)
             .expect("set a");
 
         let params = make_params(

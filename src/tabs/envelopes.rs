@@ -330,7 +330,10 @@ impl EnvelopesTab {
             }
         } else {
             let pct = Percentage::from_display(pct_display);
-            match db.envelopes().set_allocation(account_id, pct) {
+            match db
+                .envelopes()
+                .set_allocation(account_id, pct, Percentage(0), None)
+            {
                 Ok(()) => {
                     self.allocations.insert(account_id, pct);
                     let _ = db.audit().append(

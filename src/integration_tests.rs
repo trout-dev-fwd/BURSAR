@@ -206,7 +206,7 @@ mod tests {
         // ── Step 8: Set envelope allocation and post cash receipt ───────────────
         // Allocate 20% of incoming cash to the Rent envelope
         db.envelopes()
-            .set_allocation(rent_id, Percentage(20_000_000)) // 20%
+            .set_allocation(rent_id, Percentage(20_000_000), Percentage(0), None) // 20%
             .expect("set envelope allocation for Rent");
 
         // Post a cash receipt: Dr Checking $2,000 / Cr Service Revenue $2,000

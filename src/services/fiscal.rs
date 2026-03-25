@@ -592,7 +592,12 @@ mod tests {
 
         // Set a 10% envelope allocation on the expense account.
         db.envelopes()
-            .set_allocation(expense, crate::types::Percentage(10_000_000))
+            .set_allocation(
+                expense,
+                crate::types::Percentage(10_000_000),
+                crate::types::Percentage(0),
+                None,
+            )
             .expect("set allocation");
 
         // Post: cash receipt $1000 (triggers a fill of 10% = $100).

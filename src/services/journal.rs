@@ -902,7 +902,12 @@ mod tests {
     /// Helper: set a 10% allocation on `account_id`.
     fn set_ten_pct_allocation(db: &EntityDb, account_id: crate::types::AccountId) {
         db.envelopes()
-            .set_allocation(account_id, crate::types::Percentage(10_000_000))
+            .set_allocation(
+                account_id,
+                crate::types::Percentage(10_000_000),
+                crate::types::Percentage(0),
+                None,
+            )
             .expect("set allocation");
     }
 

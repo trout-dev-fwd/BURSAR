@@ -485,6 +485,8 @@ mod tests {
             env.set_allocation(
                 primary_envelope_account,
                 crate::types::Percentage(1_000_000),
+                crate::types::Percentage(0),
+                None,
             )
             .expect("set allocation");
         }
