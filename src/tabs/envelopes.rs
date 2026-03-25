@@ -39,9 +39,24 @@ struct AllocState {
 
 // ── Allocation edit modal ─────────────────────────────────────────────────────
 
+/// Which field is currently being prompted.
+#[derive(Debug, Clone)]
+enum EditStep {
+    /// Entering primary allocation %.
+    Primary,
+    /// Primary confirmed; entering cap amount.
+    Cap { primary: Percentage },
+    /// Primary + cap confirmed; entering secondary %.
+    Secondary {
+        primary: Percentage,
+        cap: Option<Money>,
+    },
+}
+
 struct EditPercentState {
     account_id: AccountId,
     account_name: String,
+    step: EditStep,
     input: String,
     error: Option<String>,
 }
@@ -283,7 +298,7 @@ impl EnvelopesTab {
             Some(a) => a,
             None => return,
         };
-        let current = self
+        let current_primary = self
             .allocations
             .get(&acct.id)
             .map(|s| format!("{:.2}", s.primary.0 as f64 / 1_000_000.0))
@@ -291,7 +306,8 @@ impl EnvelopesTab {
         self.modal = Some(EditPercentState {
             account_id: acct.id,
             account_name: acct.name.clone(),
-            input: current,
+            step: EditStep::Primary,
+            input: current_primary,
             error: None,
         });
     }
@@ -325,62 +341,10 @@ impl EnvelopesTab {
         }
     }
 
-    fn save_allocation(
-        &mut self,
-        account_id: AccountId,
-        account_name: &str,
-        pct_display: f64,
-        db: &EntityDb,
-    ) {
-        if pct_display == 0.0 {
-            match db.envelopes().remove_allocation(account_id) {
-                Ok(()) => {
-                    self.allocations.remove(&account_id);
-                    let _ = db.audit().append(
-                        AuditAction::EnvelopeAllocationChanged,
-                        &self.entity_name,
-                        Some("Account"),
-                        Some(i64::from(account_id)),
-                        &format!("Removed envelope allocation for {account_name}"),
-                    );
-                }
-                Err(e) => tracing::error!("Failed to remove allocation: {e}"),
-            }
-        } else {
-            let pct = Percentage::from_display(pct_display);
-            // Preserve existing secondary/cap when editing only primary.
-            let existing = self.allocations.get(&account_id);
-            let secondary = existing.map(|s| s.secondary).unwrap_or(Percentage(0));
-            let cap = existing.and_then(|s| s.cap);
-            match db
-                .envelopes()
-                .set_allocation(account_id, pct, secondary, cap)
-            {
-                Ok(()) => {
-                    self.allocations.insert(
-                        account_id,
-                        AllocState {
-                            primary: pct,
-                            secondary,
-                            cap,
-                        },
-                    );
-                    let _ = db.audit().append(
-                        AuditAction::EnvelopeAllocationChanged,
-                        &self.entity_name,
-                        Some("Account"),
-                        Some(i64::from(account_id)),
-                        &format!("Set envelope allocation for {account_name} to {pct}"),
-                    );
-                }
-                Err(e) => tracing::error!("Failed to set allocation: {e}"),
-            }
-        }
-    }
-
     fn handle_modal_key(&mut self, key: KeyEvent, db: &EntityDb) -> TabAction {
         match key.code {
             KeyCode::Esc => {
+                // Cancel the entire edit — no partial saves.
                 self.modal = None;
             }
             KeyCode::Char(c) if c.is_ascii_digit() || c == '.' => {
@@ -396,38 +360,233 @@ impl EnvelopesTab {
                 }
             }
             KeyCode::Enter => {
-                let (account_id, account_name, input) = match &self.modal {
-                    Some(s) => (
-                        s.account_id,
-                        s.account_name.clone(),
-                        s.input.trim().to_string(),
-                    ),
+                let state = match self.modal.take() {
+                    Some(s) => s,
                     None => return TabAction::None,
                 };
+                let input = state.input.trim().to_string();
 
-                let pct_display: f64 = match input.parse() {
-                    Ok(v) => v,
-                    Err(_) => {
-                        if let Some(s) = self.modal.as_mut() {
-                            s.error = Some("Enter a number (e.g., 15.5)".to_string());
+                match state.step {
+                    // ── Step 1: Primary % ──────────────────────────────────────
+                    EditStep::Primary => {
+                        let pct_display: f64 = match input.parse() {
+                            Ok(v) => v,
+                            Err(_) => {
+                                self.modal = Some(EditPercentState {
+                                    error: Some("Enter a number (e.g., 15.5)".to_string()),
+                                    input,
+                                    step: EditStep::Primary,
+                                    ..state
+                                });
+                                return TabAction::None;
+                            }
+                        };
+                        if pct_display < 0.0 {
+                            self.modal = Some(EditPercentState {
+                                error: Some("Percentage cannot be negative".to_string()),
+                                input,
+                                step: EditStep::Primary,
+                                ..state
+                            });
+                            return TabAction::None;
                         }
-                        return TabAction::None;
+                        // Validate total primary ≤ 100%.
+                        let new_primary = Percentage::from_display(pct_display);
+                        let other_primary: i64 = self
+                            .allocations
+                            .iter()
+                            .filter(|(id, _)| **id != state.account_id)
+                            .map(|(_, s)| s.primary.0)
+                            .sum();
+                        if other_primary + new_primary.0 > 100_000_000 {
+                            self.modal = Some(EditPercentState {
+                                error: Some(
+                                    "Total primary % would exceed 100%. Lower other allocations first."
+                                        .to_string(),
+                                ),
+                                input,
+                                step: EditStep::Primary,
+                                ..state
+                            });
+                            return TabAction::None;
+                        }
+                        // Advance to Cap step.
+                        let current_cap = self
+                            .allocations
+                            .get(&state.account_id)
+                            .and_then(|s| s.cap)
+                            .map(|c| format!("{c}"))
+                            .unwrap_or_default();
+                        self.modal = Some(EditPercentState {
+                            step: EditStep::Cap {
+                                primary: new_primary,
+                            },
+                            input: current_cap,
+                            error: None,
+                            ..state
+                        });
                     }
-                };
 
-                if pct_display < 0.0 {
-                    if let Some(s) = self.modal.as_mut() {
-                        s.error = Some("Percentage cannot be negative".to_string());
+                    // ── Step 2: Cap amount ─────────────────────────────────────
+                    EditStep::Cap { primary } => {
+                        let cap = if input.is_empty() {
+                            // Empty = no cap.
+                            None
+                        } else {
+                            use crate::widgets::je_form::parse_money;
+                            match parse_money(&input) {
+                                Err(msg) => {
+                                    self.modal = Some(EditPercentState {
+                                        error: Some(msg),
+                                        input,
+                                        step: EditStep::Cap { primary },
+                                        ..state
+                                    });
+                                    return TabAction::None;
+                                }
+                                Ok(m) if m.0 < 0 => {
+                                    self.modal = Some(EditPercentState {
+                                        error: Some("Cap must be ≥ $0".to_string()),
+                                        input,
+                                        step: EditStep::Cap { primary },
+                                        ..state
+                                    });
+                                    return TabAction::None;
+                                }
+                                Ok(m) if m.0 == 0 => None, // $0 cap = treat as no cap
+                                Ok(m) => Some(m),
+                            }
+                        };
+                        // Advance to Secondary step.
+                        let current_secondary = self
+                            .allocations
+                            .get(&state.account_id)
+                            .map(|s| format!("{:.2}", s.secondary.0 as f64 / 1_000_000.0))
+                            .unwrap_or_default();
+                        self.modal = Some(EditPercentState {
+                            step: EditStep::Secondary { primary, cap },
+                            input: current_secondary,
+                            error: None,
+                            ..state
+                        });
                     }
-                    return TabAction::None;
+
+                    // ── Step 3: Secondary % ────────────────────────────────────
+                    EditStep::Secondary { primary, cap } => {
+                        let pct_display: f64 = match input.parse() {
+                            Ok(v) => v,
+                            Err(_) => {
+                                self.modal = Some(EditPercentState {
+                                    error: Some("Enter a number (e.g., 5.0)".to_string()),
+                                    input,
+                                    step: EditStep::Secondary { primary, cap },
+                                    ..state
+                                });
+                                return TabAction::None;
+                            }
+                        };
+                        if pct_display < 0.0 {
+                            self.modal = Some(EditPercentState {
+                                error: Some("Percentage cannot be negative".to_string()),
+                                input,
+                                step: EditStep::Secondary { primary, cap },
+                                ..state
+                            });
+                            return TabAction::None;
+                        }
+                        let new_secondary = Percentage::from_display(pct_display);
+                        // Validate total secondary ≤ 100%.
+                        let other_secondary: i64 = self
+                            .allocations
+                            .iter()
+                            .filter(|(id, _)| **id != state.account_id)
+                            .map(|(_, s)| s.secondary.0)
+                            .sum();
+                        if other_secondary + new_secondary.0 > 100_000_000 {
+                            self.modal = Some(EditPercentState {
+                                error: Some(
+                                    "Total secondary % would exceed 100%. Lower other secondary allocations first."
+                                        .to_string(),
+                                ),
+                                input,
+                                step: EditStep::Secondary { primary, cap },
+                                ..state
+                            });
+                            return TabAction::None;
+                        }
+                        // All three fields collected — save.
+                        let account_id = state.account_id;
+                        let account_name = state.account_name.clone();
+                        self.modal = None;
+                        self.save_full_allocation(
+                            account_id,
+                            &account_name,
+                            primary,
+                            new_secondary,
+                            cap,
+                            db,
+                        );
+                    }
                 }
-
-                self.modal = None;
-                self.save_allocation(account_id, &account_name, pct_display, db);
             }
             _ => {}
         }
         TabAction::None
+    }
+
+    /// Saves all three allocation fields atomically. Called after Step 3 completes.
+    fn save_full_allocation(
+        &mut self,
+        account_id: AccountId,
+        account_name: &str,
+        primary: Percentage,
+        secondary: Percentage,
+        cap: Option<Money>,
+        db: &EntityDb,
+    ) {
+        if primary.0 == 0 && secondary.0 == 0 {
+            // Both zero: remove the allocation row entirely.
+            match db.envelopes().remove_allocation(account_id) {
+                Ok(()) => {
+                    self.allocations.remove(&account_id);
+                    let _ = db.audit().append(
+                        AuditAction::EnvelopeAllocationChanged,
+                        &self.entity_name,
+                        Some("Account"),
+                        Some(i64::from(account_id)),
+                        &format!("Removed envelope allocation for {account_name}"),
+                    );
+                }
+                Err(e) => tracing::error!("Failed to remove allocation: {e}"),
+            }
+        } else {
+            match db
+                .envelopes()
+                .set_allocation(account_id, primary, secondary, cap)
+            {
+                Ok(()) => {
+                    self.allocations.insert(
+                        account_id,
+                        AllocState {
+                            primary,
+                            secondary,
+                            cap,
+                        },
+                    );
+                    let cap_str = cap.map(|c| format!(" cap={c}")).unwrap_or_default();
+                    let _ = db.audit().append(
+                        AuditAction::EnvelopeAllocationChanged,
+                        &self.entity_name,
+                        Some("Account"),
+                        Some(i64::from(account_id)),
+                        &format!(
+                            "Set envelope allocation for {account_name}: primary={primary} secondary={secondary}{cap_str}"
+                        ),
+                    );
+                }
+                Err(e) => tracing::error!("Failed to set full allocation: {e}"),
+            }
+        }
     }
 
     // ── Transfer modal key handling ────────────────────────────────────────────
@@ -841,19 +1000,41 @@ impl EnvelopesTab {
             None => return,
         };
 
-        let popup = centered_rect(50, 30, area);
+        let popup = centered_rect(60, 40, area);
         frame.render_widget(Clear, popup);
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(format!("Set Allocation: {}", state.account_name));
+        let (step_num, total_steps) = match &state.step {
+            EditStep::Primary => (1, 3),
+            EditStep::Cap { .. } => (2, 3),
+            EditStep::Secondary { .. } => (3, 3),
+        };
+
+        let block = Block::default().borders(Borders::ALL).title(format!(
+            " Edit Allocation: {} ({step_num}/{total_steps}) ",
+            state.account_name
+        ));
 
         let inner = block.inner(popup);
         frame.render_widget(block, popup);
 
+        let (prompt, hint) = match &state.step {
+            EditStep::Primary => (
+                "Primary allocation %:",
+                "Enter % (0 = remove). Enter to continue, Esc to cancel.",
+            ),
+            EditStep::Cap { .. } => (
+                "Cap amount (blank = no cap):",
+                "Enter dollar amount or leave blank. Enter to continue, Esc to cancel.",
+            ),
+            EditStep::Secondary { .. } => (
+                "Secondary allocation %:",
+                "Enter % for overflow distribution. Enter to save, Esc to cancel.",
+            ),
+        };
+
         let lines = vec![
             Line::from(vec![
-                Span::raw("Percentage: "),
+                Span::raw(format!("{prompt} ")),
                 Span::styled(
                     format!("{}█", state.input),
                     Style::default().fg(Color::Yellow),
@@ -861,10 +1042,7 @@ impl EnvelopesTab {
             ]),
             Line::from(""),
             Line::from(Span::styled(
-                state
-                    .error
-                    .as_deref()
-                    .unwrap_or("Enter % (0 = remove). Enter to save, Esc to cancel."),
+                state.error.as_deref().unwrap_or(hint),
                 if state.error.is_some() {
                     Style::default().fg(Color::Red)
                 } else {
