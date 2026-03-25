@@ -146,7 +146,7 @@ is recorded here.
    - Press `Enter` on the Account field to open the account picker
    - Type the debit OR credit amount (not both — one side per line)
    - Optionally add a line note
-4. Press `F2` to add more rows, `F3` to remove the last row
+4. Press `Ctrl+↓` to add a row below the current line, `Ctrl+↑` to remove the current row
 5. Watch the totals at the bottom — Debits must equal Credits (shows green ✓ when balanced)
 6. Press `Ctrl+S` to submit the entry as a Draft
 

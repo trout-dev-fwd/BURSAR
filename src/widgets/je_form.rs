@@ -9,8 +9,8 @@
 //!   add a new line row (from the last field of the last row)
 //! - `Ctrl+S`: validate and submit
 //! - `Esc`: cancel (discard all input)
-//! - `F2`: insert a new line row below the currently focused row
-//! - `F3` / `Delete`: remove the currently focused line row (minimum 1 row kept)
+//! - `Ctrl+Down`: insert a new line row below the currently focused row
+//! - `Ctrl+Up` / `Delete`: remove the currently focused line row (minimum 1 row kept)
 //!
 //! # Integration
 //! Call `handle_key(key, accounts)` on each key event.
@@ -109,8 +109,9 @@ impl JeForm {
     pub fn new() -> Self {
         let today = chrono::Local::now().format("%Y-%m-%d").to_string();
         Self {
-            title: " New Journal Entry  Ctrl+S: submit  Esc: cancel  F2: add row  F3: del row "
-                .to_string(),
+            title:
+                " New Journal Entry  Ctrl+S: submit  Esc: cancel  Ctrl+↓: add row  Ctrl+↑: del row "
+                    .to_string(),
             editing_id: None,
             date_input: today,
             memo_input: String::new(),
@@ -131,7 +132,7 @@ impl JeForm {
     ) -> Self {
         let mut form = Self::new();
         form.title = format!(
-            " Edit Draft JE #{}  Ctrl+S: save  Esc: cancel  F2: add row  F3: del row ",
+            " Edit Draft JE #{}  Ctrl+S: save  Esc: cancel  Ctrl+↓: add row  Ctrl+↑: del row ",
             entry.je_number
         );
         form.editing_id = Some(entry.id);
@@ -239,8 +240,13 @@ impl JeForm {
             }
 
             // ── Add / remove line rows ────────────────────────────────────────
-            KeyCode::F(2) => self.add_row_after_focused(),
-            KeyCode::F(3) | KeyCode::Delete => self.remove_focused_row(),
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.add_row_after_focused()
+            }
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.remove_focused_row()
+            }
+            KeyCode::Delete => self.remove_focused_row(),
 
             // ── Tab: move forward ─────────────────────────────────────────────
             KeyCode::Tab => self.advance_focus(true),
@@ -1038,33 +1044,33 @@ mod tests {
     }
 
     #[test]
-    fn f2_inserts_row_after_focused_line() {
+    fn ctrl_down_inserts_row_after_focused_line() {
         let mut form = JeForm::new();
         let accts = make_accounts();
         form.focus = Focus::LineDebit(0);
-        form.handle_key(key(KeyCode::F(2)), &accts);
+        form.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL), &accts);
         assert_eq!(form.lines.len(), 3);
         assert_eq!(form.focus, Focus::LineAccount(1));
     }
 
     #[test]
-    fn f3_removes_focused_row_if_more_than_one() {
+    fn ctrl_up_removes_focused_row_if_more_than_one() {
         let mut form = JeForm::new();
         let accts = make_accounts();
         assert_eq!(form.lines.len(), 2);
         form.focus = Focus::LineCredit(1);
-        form.handle_key(key(KeyCode::F(3)), &accts);
+        form.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL), &accts);
         assert_eq!(form.lines.len(), 1, "Row should be removed");
     }
 
     #[test]
-    fn f3_does_not_remove_last_row() {
+    fn ctrl_up_does_not_remove_last_row() {
         let mut form = JeForm::new();
         let accts = make_accounts();
         // Remove until 1 row remains.
         form.lines.truncate(1);
         form.focus = Focus::LineDebit(0);
-        form.handle_key(key(KeyCode::F(3)), &accts);
+        form.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL), &accts);
         assert_eq!(form.lines.len(), 1, "Cannot remove last row");
     }
 
