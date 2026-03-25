@@ -263,14 +263,6 @@ _(Discoveries from implementation — update as the project evolves)_
 - **Progress bar during download.** Same forced-render pattern as AI calls: `terminal.draw()` between chunk reads. Blocks event loop, acceptable on splash screen.
 - **`b`/`f` feedback keys scoped to `?` overlay.** Not global hotkeys. No conflicts with per-tab bindings. Feedback only available in Running state, not startup screen.
 
-### V4 — Tax Workstation
-- **`%-b` is invalid in chrono format.** The `-` flag (suppress padding) applies to numeric specifiers only. Use `%b` for abbreviated month name, `%-d` for zero-stripped day. Invalid format causes chrono's `Display` to return `Err`, panicking in `.to_string()`.
-- **Re-flagging always overwrites via UPSERT.** `set_manual` and `set_non_deductible` use `INSERT ... ON CONFLICT DO UPDATE`. The `ai_suggested_form` column is intentionally omitted from the UPDATE SET clause so it's preserved as an audit trail after any user override.
-- **IRS publication HTML varies.** Section headings aren't always `<h2>`. The parser uses `while let` loop (not `loop/break`) per clippy's `while_let_loop` lint. Uses lowercase comparison for tag names to handle mixed-case tags from real IRS pages.
-- **Batch size is 25 JEs per AI request.** Larger batches risk hitting context limits. Token budget is finite; IRS reference chunks are included in the system prompt.
-- **Tax context built lazily.** `build_tax_context` returns `None` when `tax_reference` table is empty and no JE is selected — avoids injecting an empty system prompt block.
-- **`send_cached_simple` on AiClient.** Single-round cached requests (no tool use) for batch review. Distinct from the tool-use `classify_round` path used by chat.
-
 ### V3 — Transfer Detection
 - **Junction table replaces `import_ref` column.** `journal_entry_import_refs` (junction table) stores multiple refs per JE. Supports both sides of a cross-bank transfer on the same JE.
 - **Migration runs on `EntityDb::open()`.** Detects old schema (column exists) vs new (junction table exists). Copies non-NULL values, rebuilds table without the column.
@@ -279,3 +271,11 @@ _(Discoveries from implementation — update as the project evolves)_
 - **Confirmed matches create no new draft.** Only a second import_ref row is inserted in the junction table. The existing draft is untouched — user fixes categorization during normal draft review.
 - **Rejected matches (V3 simplification).** Rejected transfer matches create a draft JE with only the bank line (no contra account). User must add the offsetting account before posting.
 - **Transfer items are `MatchSource::TransferMatch` in `flow.matches`.** They are skipped in `has_unmatched`, `run_pass2_step`, and the creating loop. Processed separately in `run_draft_creation_step` via `flow.transfer_matches`.
+
+### V4 — Tax Workstation
+- **`%-b` is invalid in chrono format.** The `-` flag (suppress padding) applies to numeric specifiers only. Use `%b` for abbreviated month name, `%-d` for zero-stripped day. Invalid format causes chrono's `Display` to return `Err`, panicking in `.to_string()`.
+- **Re-flagging always overwrites via UPSERT.** `set_manual` and `set_non_deductible` use `INSERT ... ON CONFLICT DO UPDATE`. The `ai_suggested_form` column is intentionally omitted from the UPDATE SET clause so it's preserved as an audit trail after any user override.
+- **IRS publication HTML varies.** Section headings aren't always `<h2>`. The parser uses `while let` loop (not `loop/break`) per clippy's `while_let_loop` lint. Uses lowercase comparison for tag names to handle mixed-case tags from real IRS pages.
+- **Batch size is 25 JEs per AI request.** Larger batches risk hitting context limits. Token budget is finite; IRS reference chunks are included in the system prompt.
+- **Tax context built lazily.** `build_tax_context` returns `None` when `tax_reference` table is empty and no JE is selected — avoids injecting an empty system prompt block.
+- **`send_cached_simple` on AiClient.** Single-round cached requests (no tool use) for batch review. Distinct from the tool-use `classify_round` path used by chat.

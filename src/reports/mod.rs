@@ -1,4 +1,4 @@
-//! Report trait, shared formatting utilities, and file output for all 8 reports.
+//! Report trait, shared formatting utilities, and file output for all 10 reports.
 //!
 //! All reports implement the `Report` trait and use the shared formatting helpers
 //! (`format_header`, `format_table`, `format_money`) to produce consistent `.txt` output
@@ -38,7 +38,7 @@ pub struct ReportParams {
     pub account_id: Option<AccountId>,
 }
 
-/// Implemented by each of the 8 reports.
+/// Implemented by each of the 10 reports.
 pub trait Report {
     /// Human-readable report name (used in the filename and header).
     fn name(&self) -> &str;

@@ -1,4 +1,4 @@
-//! Reports tab — menu of all 8 reports with parameter entry and file generation.
+//! Reports tab — menu of all 10 reports with parameter entry and file generation.
 
 use std::path::PathBuf;
 
