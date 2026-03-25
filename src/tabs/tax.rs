@@ -443,7 +443,15 @@ impl TaxTab {
 
     fn render_list(&self, frame: &mut Frame, area: Rect) {
         let total = self.rows.len();
-        let reviewed = self.rows.iter().filter(|r| r.tag.is_some()).count();
+        let reviewed = self
+            .rows
+            .iter()
+            .filter(|r| {
+                r.tag
+                    .as_ref()
+                    .is_some_and(|t| t.status != TaxReviewStatus::Unreviewed)
+            })
+            .count();
         let pct = if total > 0 { reviewed * 100 / total } else { 0 };
         let fy_label = self.fiscal_year_label();
         let title = format!(
