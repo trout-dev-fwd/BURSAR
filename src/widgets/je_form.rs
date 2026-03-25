@@ -90,6 +90,7 @@ pub struct JeForm {
     date_input: String,
     memo_input: String,
     memo_cursor: usize,
+    memo_scroll: std::cell::Cell<usize>,
     lines: Vec<LineRow>,
     focus: Focus,
     /// The embedded account picker popup (shown when a line's Account field is focused).
@@ -117,6 +118,7 @@ impl JeForm {
             date_input: today,
             memo_input: String::new(),
             memo_cursor: 0,
+            memo_scroll: std::cell::Cell::new(0),
             lines: vec![LineRow::default(), LineRow::default()],
             focus: Focus::Date,
             account_picker: AccountPicker::new(),
@@ -249,6 +251,7 @@ impl JeForm {
             KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.remove_focused_row()
             }
+            KeyCode::Delete if self.focus == Focus::Memo => self.handle_delete(),
             KeyCode::Delete => self.remove_focused_row(),
 
             // ── Tab: move forward ─────────────────────────────────────────────
@@ -498,6 +501,16 @@ impl JeForm {
                 self.lines[i].credit_input.pop();
             }
             Focus::LineAccount(_) => {}
+        }
+        self.error = None;
+    }
+
+    fn handle_delete(&mut self) {
+        let chars_len = self.memo_input.chars().count();
+        if self.memo_cursor < chars_len {
+            let mut chars: Vec<char> = self.memo_input.chars().collect();
+            chars.remove(self.memo_cursor);
+            self.memo_input = chars.into_iter().collect();
         }
         self.error = None;
     }
@@ -819,14 +832,18 @@ impl JeForm {
             .borders(Borders::ALL)
             .style(memo_style);
 
-        // Horizontal scroll: cursor position tracks where the user is editing.
+        // Horizontal scroll: only adjust when cursor moves past visible edges.
         let cursor_pos = self.memo_cursor;
         let visible_width = cols[1].width.saturating_sub(2) as usize;
-        let scroll = if visible_width > 0 && cursor_pos >= visible_width {
-            cursor_pos - visible_width + 1
-        } else {
-            0
-        };
+        let mut scroll = self.memo_scroll.get();
+        if visible_width > 0 {
+            if cursor_pos < scroll {
+                scroll = cursor_pos;
+            } else if cursor_pos >= scroll + visible_width {
+                scroll = cursor_pos - visible_width + 1;
+            }
+        }
+        self.memo_scroll.set(scroll);
         let memo_chars: Vec<char> = self.memo_input.chars().collect();
         let before_cursor: String = memo_chars
             .get(scroll..cursor_pos)
