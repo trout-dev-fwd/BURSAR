@@ -162,7 +162,7 @@ impl App {
         Self {
             entity,
             config,
-            active_tab: 0,
+            active_tab: 1,
             mode: AppMode::Normal,
             status_bar,
             fiscal_modal: None,
