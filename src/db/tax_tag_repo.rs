@@ -637,6 +637,64 @@ mod tests {
     }
 
     #[test]
+    fn accept_suggestion_preserves_reason() {
+        let (conn, period_id) = setup_db();
+        let je_id = make_je(&conn, period_id);
+        let repo = TaxTagRepo::new(&conn);
+
+        repo.set_ai_pending(je_id).expect("pending");
+        repo.set_ai_suggested(je_id, TaxFormTag::ScheduleC, "AI reason preserved")
+            .expect("suggested");
+        repo.accept_suggestion(je_id).expect("accept");
+
+        let tag = repo.get_for_je(je_id).expect("get").expect("exists");
+        assert_eq!(tag.status, TaxReviewStatus::Confirmed);
+        assert_eq!(tag.form_tag, Some(TaxFormTag::ScheduleC));
+        // reason is not overwritten by accept_suggestion — only form_tag and status change
+        assert_eq!(tag.reason.as_deref(), Some("AI reason preserved"));
+    }
+
+    #[test]
+    fn override_after_ai_suggested_preserves_ai_suggested_form() {
+        let (conn, period_id) = setup_db();
+        let je_id = make_je(&conn, period_id);
+        let repo = TaxTagRepo::new(&conn);
+
+        repo.set_ai_pending(je_id).expect("pending");
+        repo.set_ai_suggested(je_id, TaxFormTag::ScheduleC, "AI original reason")
+            .expect("suggested");
+        repo.set_manual(je_id, TaxFormTag::ScheduleE, Some("User override"))
+            .expect("override");
+
+        let tag = repo.get_for_je(je_id).expect("get").expect("exists");
+        assert_eq!(tag.status, TaxReviewStatus::Confirmed);
+        assert_eq!(tag.form_tag, Some(TaxFormTag::ScheduleE));
+        assert_eq!(tag.reason.as_deref(), Some("User override"));
+        // ai_suggested_form is NOT cleared by set_manual — preserved as audit trail
+        assert_eq!(tag.ai_suggested_form, Some(TaxFormTag::ScheduleC));
+    }
+
+    #[test]
+    fn re_flag_ai_suggested_with_non_deductible_preserves_ai_suggested_form() {
+        let (conn, period_id) = setup_db();
+        let je_id = make_je(&conn, period_id);
+        let repo = TaxTagRepo::new(&conn);
+
+        repo.set_ai_pending(je_id).expect("pending");
+        repo.set_ai_suggested(je_id, TaxFormTag::ScheduleC, "AI reason")
+            .expect("suggested");
+        repo.set_non_deductible(je_id, Some("Personal expense"))
+            .expect("reject");
+
+        let tag = repo.get_for_je(je_id).expect("get").expect("exists");
+        assert_eq!(tag.status, TaxReviewStatus::NonDeductible);
+        assert_eq!(tag.form_tag, Some(TaxFormTag::NonDeductible));
+        assert_eq!(tag.reason.as_deref(), Some("Personal expense"));
+        // ai_suggested_form preserved even after rejection
+        assert_eq!(tag.ai_suggested_form, Some(TaxFormTag::ScheduleC));
+    }
+
+    #[test]
     fn tax_form_tag_round_trip() {
         for tag in TaxFormTag::all() {
             let s = tag.to_string();

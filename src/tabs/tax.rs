@@ -794,8 +794,26 @@ impl Tab for TaxTab {
             KeyCode::Enter => {
                 if self.detail.is_some() {
                     self.close_detail();
-                } else {
-                    self.open_detail(db);
+                } else if let Some(row) = self.selected_row() {
+                    let je_id = row.je_id;
+                    let is_ai_suggested = row
+                        .tag
+                        .as_ref()
+                        .map(|t| t.status == TaxReviewStatus::AiSuggested)
+                        .unwrap_or(false);
+                    if is_ai_suggested {
+                        match db.tax_tags().accept_suggestion(je_id) {
+                            Ok(()) => {
+                                self.reload_rows(db);
+                                return TabAction::ShowMessage(
+                                    "AI suggestion accepted.".to_string(),
+                                );
+                            }
+                            Err(e) => return TabAction::ShowMessage(format!("Error: {e}")),
+                        }
+                    } else {
+                        self.open_detail(db);
+                    }
                 }
             }
             KeyCode::Esc => {
