@@ -53,6 +53,7 @@ impl EntityDb {
         initialize_schema(&conn)?;
         migrate_fixed_asset_details(&conn)?;
         migrate_to_junction_table(&conn)?;
+        migrate_envelope_allocations(&conn)?;
         // Seed default accounts on a fresh database (no rows → first open).
         let account_count: i64 =
             conn.query_row("SELECT COUNT(*) FROM accounts", [], |row| row.get(0))?;
@@ -247,6 +248,27 @@ fn migrate_to_junction_table(conn: &Connection) -> Result<()> {
     )?;
     conn.execute_batch("PRAGMA foreign_keys=ON;")?;
 
+    Ok(())
+}
+
+/// Ensures `envelope_allocations` has the `secondary_percentage` and `cap_amount`
+/// columns added in V5. Databases created before V5 have the table but lack these columns.
+fn migrate_envelope_allocations(conn: &Connection) -> Result<()> {
+    let mut stmt = conn.prepare("PRAGMA table_info(envelope_allocations)")?;
+    let columns: Vec<String> = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    if !columns.contains(&"secondary_percentage".to_string()) {
+        conn.execute_batch(
+            "ALTER TABLE envelope_allocations
+             ADD COLUMN secondary_percentage INTEGER NOT NULL DEFAULT 0",
+        )?;
+    }
+    if !columns.contains(&"cap_amount".to_string()) {
+        conn.execute_batch("ALTER TABLE envelope_allocations ADD COLUMN cap_amount INTEGER")?;
+    }
     Ok(())
 }
 
@@ -454,5 +476,63 @@ mod tests {
         initialize_schema(&conn).expect("schema");
         // Should not fail — column absent, migration is a no-op.
         migrate_to_junction_table(&conn).expect("migration on new schema should be no-op");
+    }
+
+    #[test]
+    fn migrate_envelope_allocations_adds_columns_to_old_schema() {
+        // Simulate a pre-V5 database: create envelope_allocations without the new columns.
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch("PRAGMA foreign_keys=OFF;").unwrap();
+        conn.execute_batch(
+            "CREATE TABLE envelope_allocations (
+                id         INTEGER PRIMARY KEY,
+                account_id INTEGER NOT NULL UNIQUE,
+                percentage INTEGER NOT NULL,
+                created_at TEXT    NOT NULL,
+                updated_at TEXT    NOT NULL
+            );
+            INSERT INTO envelope_allocations (account_id, percentage, created_at, updated_at)
+            VALUES (1, 10000000, '2026-01-01T00:00:00', '2026-01-01T00:00:00');",
+        )
+        .unwrap();
+
+        migrate_envelope_allocations(&conn).expect("migration");
+
+        // Both columns should now exist.
+        let mut stmt = conn
+            .prepare("PRAGMA table_info(envelope_allocations)")
+            .unwrap();
+        let cols: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(
+            cols.contains(&"secondary_percentage".to_string()),
+            "secondary_percentage must be added by migration"
+        );
+        assert!(
+            cols.contains(&"cap_amount".to_string()),
+            "cap_amount must be added by migration"
+        );
+
+        // Existing row should still be present with defaults.
+        let row: (i64, Option<i64>) = conn
+            .query_row(
+                "SELECT secondary_percentage, cap_amount FROM envelope_allocations WHERE account_id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("query existing row");
+        assert_eq!(row.0, 0, "secondary_percentage should default to 0");
+        assert!(row.1.is_none(), "cap_amount should default to NULL");
+    }
+
+    #[test]
+    fn migrate_envelope_allocations_is_noop_on_new_schema() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        initialize_schema(&conn).expect("schema");
+        // Should not fail — columns already present.
+        migrate_envelope_allocations(&conn).expect("migration on new schema should be no-op");
     }
 }

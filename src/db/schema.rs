@@ -132,11 +132,13 @@ pub fn initialize_schema(conn: &Connection) -> Result<()> {
         );
 
         CREATE TABLE IF NOT EXISTS envelope_allocations (
-            id              INTEGER PRIMARY KEY,
-            account_id      INTEGER NOT NULL UNIQUE REFERENCES accounts(id),
-            percentage      INTEGER NOT NULL,
-            created_at      TEXT    NOT NULL,
-            updated_at      TEXT    NOT NULL
+            id                   INTEGER PRIMARY KEY,
+            account_id           INTEGER NOT NULL UNIQUE REFERENCES accounts(id),
+            percentage           INTEGER NOT NULL,
+            secondary_percentage INTEGER NOT NULL DEFAULT 0,
+            cap_amount           INTEGER,
+            created_at           TEXT    NOT NULL,
+            updated_at           TEXT    NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS envelope_ledger (
@@ -699,6 +701,30 @@ mod tests {
         assert!(
             !col_names.contains(&"import_ref".to_string()),
             "journal_entries should not have import_ref column in new schema"
+        );
+    }
+
+    #[test]
+    fn envelope_allocations_has_secondary_percentage_and_cap_amount() {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        initialize_schema(&conn).expect("initialize_schema");
+
+        let mut stmt = conn
+            .prepare("PRAGMA table_info('envelope_allocations')")
+            .expect("prepare");
+        let col_names: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("query")
+            .map(|r| r.expect("row"))
+            .collect();
+
+        assert!(
+            col_names.contains(&"secondary_percentage".to_string()),
+            "envelope_allocations must have secondary_percentage column"
+        );
+        assert!(
+            col_names.contains(&"cap_amount".to_string()),
+            "envelope_allocations must have cap_amount column"
         );
     }
 
