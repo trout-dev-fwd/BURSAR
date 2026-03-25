@@ -7,6 +7,7 @@ use ratatui::{
     widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState, Wrap},
 };
 
+use crate::ai::tax_context::{SelectedJeContext, build_tax_context};
 use crate::db::EntityDb;
 use crate::db::account_repo::Account;
 use crate::db::fiscal_repo::FiscalYear;
@@ -595,6 +596,63 @@ impl TaxTab {
         }
     }
 
+    /// Builds a `SelectedJeContext` for the highlighted row by fetching JE lines.
+    /// Returns `None` if no row is selected or the lines can't be loaded.
+    fn build_selected_je_context(&self, db: &EntityDb) -> Option<SelectedJeContext> {
+        let row = self.selected_row()?;
+        let je_id = row.je_id;
+        let (_, lines) = db.journals().get_with_lines(je_id).ok()?;
+
+        let formatted_lines: Vec<(String, String, String)> = lines
+            .iter()
+            .map(|l| {
+                let account = self.account_display(l.account_id);
+                let debit = if l.debit_amount.is_zero() {
+                    String::new()
+                } else {
+                    l.debit_amount.to_string()
+                };
+                let credit = if l.credit_amount.is_zero() {
+                    String::new()
+                } else {
+                    l.credit_amount.to_string()
+                };
+                (account, debit, credit)
+            })
+            .collect();
+
+        let (form_display, status_display, reason) = match &row.tag {
+            None => (None, "Unreviewed".to_string(), None),
+            Some(tag) => {
+                let form = match tag.status {
+                    TaxReviewStatus::AiSuggested => tag
+                        .ai_suggested_form
+                        .as_ref()
+                        .map(|f| format!("{}?", f.display_name())),
+                    _ => tag.form_tag.as_ref().map(|f| f.display_name().to_string()),
+                };
+                let status = match tag.status {
+                    TaxReviewStatus::Unreviewed => "Unreviewed",
+                    TaxReviewStatus::AiPending => "AI Pending",
+                    TaxReviewStatus::AiSuggested => "AI Suggested",
+                    TaxReviewStatus::Confirmed => "Confirmed",
+                    TaxReviewStatus::NonDeductible => "Non-Deductible",
+                };
+                (form, status.to_string(), tag.reason.clone())
+            }
+        };
+
+        Some(SelectedJeContext {
+            je_number: row.je_number.clone(),
+            entry_date: row.entry_date,
+            memo: row.memo.clone(),
+            lines: formatted_lines,
+            form_display,
+            status_display,
+            reason,
+        })
+    }
+
     fn render_form_picker(&self, frame: &mut Frame, area: Rect, cursor: usize) {
         let row_count = self.enabled_forms.len();
         let popup_height = (row_count + 4).min(area.height as usize) as u16;
@@ -834,14 +892,20 @@ impl Tab for TaxTab {
         vec![
             ("↑/↓ or k/j", "Navigate entries"),
             ("←/→", "Cycle fiscal year"),
-            ("Enter", "View JE detail lines"),
+            ("Enter", "Accept AI suggestion / view detail"),
             ("f", "Flag with tax form + reason"),
             ("n", "Mark as non-deductible"),
             ("a", "Queue for AI review"),
+            ("R", "Run AI batch review on queued JEs"),
             ("m", "Edit memo"),
             ("c", "Configure enabled tax forms"),
             ("u", "Update tax reference library"),
         ]
+    }
+
+    fn build_tax_ai_context(&self, db: &EntityDb, message: &str) -> Option<String> {
+        let selected_je = self.build_selected_je_context(db);
+        build_tax_context(db, message, selected_je.as_ref())
     }
 }
 

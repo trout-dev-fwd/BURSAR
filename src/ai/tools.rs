@@ -7,7 +7,29 @@ use crate::types::{ArApStatus, AuditAction};
 
 // ── Tool Definitions ──────────────────────────────────────────────────────────
 
-/// Returns all 10 tool definitions for the Claude API `tools` parameter.
+/// Returns the `get_tax_tag` tool definition.
+///
+/// This tool is only included in Tax tab AI requests (`tool_definitions_with_tax`).
+pub fn tax_tool_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "get_tax_tag".to_string(),
+        description: "Get tax classification for a journal entry by JE number. \
+                       Returns form_tag, status, reason, and ai_suggested_form."
+            .to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "je_number": {
+                    "type": "string",
+                    "description": "The journal entry number, e.g. 'JE-0004' or '4'."
+                }
+            },
+            "required": ["je_number"]
+        }),
+    }
+}
+
+/// Returns the standard 10 tool definitions for non-Tax tab AI requests.
 pub fn tool_definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
@@ -192,6 +214,7 @@ pub fn fulfill_tool_call(tool_call: &ToolCall, db: &EntityDb) -> Result<String, 
         "get_envelope_balances" => handle_get_envelope_balances(db),
         "get_trial_balance" => handle_get_trial_balance(params, db),
         "get_audit_log" => handle_get_audit_log(params, db),
+        "get_tax_tag" => handle_get_tax_tag(params, db),
         unknown => {
             return Ok(format!("Error: unknown tool '{unknown}'"));
         }
@@ -541,6 +564,46 @@ fn handle_get_audit_log(params: &Value, db: &EntityDb) -> anyhow::Result<String>
         "entries": filtered,
         "count": filtered.len(),
     }))?)
+}
+
+fn handle_get_tax_tag(params: &Value, db: &EntityDb) -> anyhow::Result<String> {
+    use crate::db::journal_repo::JournalFilter;
+
+    let je_number_input = require_string(params, "je_number")?;
+
+    // Normalise to "JE-XXXX" format (accept "JE-4", "4", "0004" etc.).
+    let digits = je_number_input
+        .strip_prefix("JE-")
+        .or_else(|| je_number_input.strip_prefix("je-"))
+        .unwrap_or(je_number_input);
+    let n: u32 = digits
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Invalid je_number '{je_number_input}'"))?;
+    let je_number_str = format!("JE-{n:04}");
+
+    let all = db.journals().list(&JournalFilter::default())?;
+    let je = all
+        .into_iter()
+        .find(|j| j.je_number == je_number_str)
+        .ok_or_else(|| anyhow::anyhow!("Journal entry {je_number_str} not found"))?;
+
+    match db.tax_tags().get_for_je(je.id)? {
+        None => Ok(serde_json::to_string(&serde_json::json!({
+            "je_number": je_number_str,
+            "status": "unreviewed",
+            "message": "No tax tag — this JE has not been reviewed yet.",
+        }))?),
+        Some(tag) => Ok(serde_json::to_string(&serde_json::json!({
+            "je_number": je_number_str,
+            "status": tag.status.to_string(),
+            "form_tag": tag.form_tag.as_ref().map(|f| f.to_string()),
+            "form_display": tag.form_tag.as_ref().map(|f| f.display_name()),
+            "ai_suggested_form": tag.ai_suggested_form.as_ref().map(|f| f.to_string()),
+            "ai_suggested_form_display": tag.ai_suggested_form.as_ref().map(|f| f.display_name()),
+            "reason": tag.reason,
+            "reviewed_at": tag.reviewed_at,
+        }))?),
+    }
 }
 
 // ── Parameter Helpers ─────────────────────────────────────────────────────────

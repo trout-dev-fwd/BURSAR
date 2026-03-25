@@ -5,7 +5,7 @@ use crate::{
         AiError, AiResponse, ApiContent, ApiMessage, ApiRole, RoundResult, ToolResult,
         client::AiClient,
         context::read_context,
-        tools::{fulfill_tool_call, tool_definitions},
+        tools::{fulfill_tool_call, tax_tool_definition, tool_definitions},
     },
     config::{load_entity_toml, load_secrets, save_entity_toml},
     types::AiRequestState,
@@ -58,10 +58,40 @@ impl App {
         let context_dir = self.context_dir();
         let context = read_context(&self.entity.name, &context_dir).unwrap_or_default();
 
+        // ── Tax tab: extract last user message for keyword-based reference lookup ──
+        let last_user_message: String = messages
+            .iter()
+            .rev()
+            .find(|m| matches!(m.role, ApiRole::User))
+            .and_then(|m| {
+                if let ApiContent::Text(t) = &m.content {
+                    Some(t.clone())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default();
+
+        // Tax tab is at index 9. When active, append IRS reference chunks and
+        // selected JE context to the system prompt, and add get_tax_tag tool.
+        const TAX_TAB_INDEX: usize = 9;
+        let on_tax_tab = self.active_tab == TAX_TAB_INDEX;
+        let tax_context_block: Option<String> = if on_tax_tab {
+            self.entity.tabs[TAX_TAB_INDEX]
+                .build_tax_ai_context(&self.entity.db, &last_user_message)
+        } else {
+            None
+        };
+
         // ── Build system prompt ───────────────────────────────────────────────
         let persona = self.chat_panel.current_persona.clone();
         let entity_name = self.entity.name.clone();
-        let system_prompt = AiClient::build_system_prompt(&persona, &entity_name, &context);
+        let base_prompt = AiClient::build_system_prompt(&persona, &entity_name, &context);
+        let system_prompt = if let Some(tax_block) = tax_context_block {
+            format!("{base_prompt}\n\n{tax_block}")
+        } else {
+            base_prompt
+        };
 
         // ── Log AiPrompt (last user message) ─────────────────────────────────
         if let Some(msg) = messages
@@ -80,7 +110,10 @@ impl App {
         let _ = terminal.draw(|frame| self.render_frame(frame));
 
         // ── Tool use loop (up to 5 follow-up rounds) ─────────────────────────
-        let tools = tool_definitions();
+        let mut tools = tool_definitions();
+        if on_tax_tab {
+            tools.push(tax_tool_definition());
+        }
         let Some(client) = self.ai_client.take() else {
             self.ai_state = AiRequestState::Idle;
             self.status_bar.set_ai_status(None);

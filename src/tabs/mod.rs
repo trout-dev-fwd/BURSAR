@@ -142,4 +142,12 @@ pub trait Tab {
     fn selected_draft_import_ref(&self) -> Option<String> {
         None
     }
+
+    /// Returns a formatted tax-context string for the highlighted entry.
+    ///
+    /// Only the Tax tab overrides this. All other tabs return `None` so that
+    /// the AI handler skips tax-specific context entirely.
+    fn build_tax_ai_context(&self, _db: &EntityDb, _message: &str) -> Option<String> {
+        None
+    }
 }
