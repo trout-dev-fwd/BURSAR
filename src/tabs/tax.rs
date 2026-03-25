@@ -175,6 +175,8 @@ pub struct TaxTab {
     modal: Option<TaxModal>,
     /// Inline detail panel state (shown alongside the list).
     detail: Option<TaxDetailState>,
+    /// Number of chunks in the tax_reference table (0 = library not loaded yet).
+    tax_ref_count: i64,
 }
 
 impl TaxTab {
@@ -189,6 +191,7 @@ impl TaxTab {
             accounts: Vec::new(),
             modal: None,
             detail: None,
+            tax_ref_count: 0,
         }
     }
 
@@ -464,8 +467,13 @@ impl TaxTab {
             .count();
         let pct = if total > 0 { reviewed * 100 / total } else { 0 };
         let fy_label = self.fiscal_year_label();
+        let ref_status = if self.tax_ref_count > 0 {
+            format!("Tax Ref: {} sections", self.tax_ref_count)
+        } else {
+            "Tax Ref: not loaded (press u)".to_string()
+        };
         let title = format!(
-            " Tax Workstation — {fy_label}  |  Tax Review: {reviewed}/{total} ({pct}%)  [←/→ year] "
+            " Tax Workstation — {fy_label}  |  {ref_status}  |  Tax Review: {reviewed}/{total} ({pct}%)  [←/→ year] "
         );
 
         let block = Block::default().borders(Borders::ALL).title(title);
@@ -509,12 +517,12 @@ impl TaxTab {
             .collect();
 
         let widths = [
-            Constraint::Length(7),  // Date  "Jan 15"
-            Constraint::Length(9),  // JE #  "JE-0004"
-            Constraint::Min(20),    // Memo
-            Constraint::Length(12), // Amount
-            Constraint::Length(18), // Form
-            Constraint::Length(16), // Status
+            Constraint::Length(7),  // Date    "Jan 15"
+            Constraint::Length(9),  // JE #    "JE-0004"
+            Constraint::Min(30),    // Memo    (flexible — fills remaining space)
+            Constraint::Length(12), // Amount  (fixed)
+            Constraint::Length(18), // Form    (fixed)
+            Constraint::Length(14), // Status  (fixed)
         ];
 
         let table = Table::new(rows, widths)
@@ -911,6 +919,10 @@ impl Tab for TaxTab {
         match db.accounts().list_all() {
             Ok(accts) => self.accounts = accts,
             Err(e) => tracing::error!("Failed to load accounts: {e}"),
+        }
+        match db.tax_refs().count() {
+            Ok(n) => self.tax_ref_count = n,
+            Err(e) => tracing::error!("Failed to count tax reference chunks: {e}"),
         }
     }
 
