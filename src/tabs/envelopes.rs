@@ -28,6 +28,15 @@ enum View {
     Balances,
 }
 
+// ── Per-account allocation state (primary %, secondary %, cap) ────────────────
+
+#[derive(Debug, Clone, Copy)]
+struct AllocState {
+    primary: Percentage,
+    secondary: Percentage,
+    cap: Option<Money>,
+}
+
 // ── Allocation edit modal ─────────────────────────────────────────────────────
 
 struct EditPercentState {
@@ -84,8 +93,8 @@ pub struct EnvelopesTab {
     view: View,
     /// All non-placeholder, active accounts (for the allocation config view).
     accounts: Vec<Account>,
-    /// Current allocations keyed by account_id.
-    allocations: HashMap<AccountId, Percentage>,
+    /// Current allocations keyed by account_id (primary %, secondary %, cap).
+    allocations: HashMap<AccountId, AllocState>,
     /// Envelope ledger balances (earmarked amounts) — refreshed from DB.
     envelope_balances: HashMap<AccountId, Money>,
     /// GL account balances — refreshed from DB.
@@ -141,7 +150,16 @@ impl EnvelopesTab {
             Ok(allocs) => {
                 self.allocations = allocs
                     .into_iter()
-                    .map(|a| (a.account_id, a.percentage))
+                    .map(|a| {
+                        (
+                            a.account_id,
+                            AllocState {
+                                primary: a.percentage,
+                                secondary: a.secondary_percentage,
+                                cap: a.cap_amount,
+                            },
+                        )
+                    })
                     .collect();
             }
             Err(e) => {
@@ -268,7 +286,7 @@ impl EnvelopesTab {
         let current = self
             .allocations
             .get(&acct.id)
-            .map(|p| format!("{:.2}", p.0 as f64 / 1_000_000.0))
+            .map(|s| format!("{:.2}", s.primary.0 as f64 / 1_000_000.0))
             .unwrap_or_default();
         self.modal = Some(EditPercentState {
             account_id: acct.id,
@@ -330,12 +348,23 @@ impl EnvelopesTab {
             }
         } else {
             let pct = Percentage::from_display(pct_display);
+            // Preserve existing secondary/cap when editing only primary.
+            let existing = self.allocations.get(&account_id);
+            let secondary = existing.map(|s| s.secondary).unwrap_or(Percentage(0));
+            let cap = existing.and_then(|s| s.cap);
             match db
                 .envelopes()
-                .set_allocation(account_id, pct, Percentage(0), None)
+                .set_allocation(account_id, pct, secondary, cap)
             {
                 Ok(()) => {
-                    self.allocations.insert(account_id, pct);
+                    self.allocations.insert(
+                        account_id,
+                        AllocState {
+                            primary: pct,
+                            secondary,
+                            cap,
+                        },
+                    );
                     let _ = db.audit().append(
                         AuditAction::EnvelopeAllocationChanged,
                         &self.entity_name,
@@ -631,17 +660,41 @@ impl EnvelopesTab {
     // ── Rendering ─────────────────────────────────────────────────────────────
 
     fn render_allocations(&self, frame: &mut Frame, area: Rect) {
-        let rows: Vec<Row> = self
+        let mut rows: Vec<Row> = self
             .accounts
             .iter()
             .map(|acct| {
-                let pct_str = self
-                    .allocations
-                    .get(&acct.id)
-                    .map(|p| format!("{p}"))
-                    .unwrap_or_else(|| "—".to_string());
+                let alloc = self.allocations.get(&acct.id);
 
-                let style = if self.allocations.contains_key(&acct.id) {
+                let avail_str = if let Some(_state) = alloc {
+                    let earmarked = self
+                        .envelope_balances
+                        .get(&acct.id)
+                        .copied()
+                        .unwrap_or(Money(0));
+                    let gl_bal = self.gl_balances.get(&acct.id).copied().unwrap_or(Money(0));
+                    let available = Money((earmarked.0 - gl_bal.0).max(0));
+                    format!("{available}")
+                } else {
+                    "—".to_string()
+                };
+
+                let cap_str = match alloc.and_then(|s| s.cap) {
+                    Some(cap) => format!("{cap}"),
+                    None => "—".to_string(),
+                };
+
+                let primary_str = match alloc {
+                    Some(s) if s.primary.0 > 0 => format!("{}", s.primary),
+                    _ => "—".to_string(),
+                };
+
+                let secondary_str = match alloc {
+                    Some(s) if s.secondary.0 > 0 => format!("{}", s.secondary),
+                    _ => "—".to_string(),
+                };
+
+                let style = if alloc.is_some() {
                     Style::default().fg(Color::Cyan)
                 } else {
                     Style::default()
@@ -650,22 +703,63 @@ impl EnvelopesTab {
                 Row::new(vec![
                     Cell::from(acct.number.as_str()),
                     Cell::from(acct.name.as_str()),
-                    Cell::from(pct_str),
+                    Cell::from(avail_str),
+                    Cell::from(cap_str),
+                    Cell::from(primary_str),
+                    Cell::from(secondary_str),
                 ])
                 .style(style)
             })
             .collect();
 
+        // Totals row.
+        let total_primary: i64 = self.allocations.values().map(|s| s.primary.0).sum();
+        let total_secondary: i64 = self.allocations.values().map(|s| s.secondary.0).sum();
+        let hundred_pct = 100_000_000i64; // 100% in Percentage scale
+        let primary_total_str = format!("{}", Percentage(total_primary));
+        let secondary_total_str = format!("{}", Percentage(total_secondary));
+        let primary_total_style = if total_primary > hundred_pct {
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().add_modifier(Modifier::BOLD)
+        };
+        let secondary_total_style = if total_secondary > hundred_pct {
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().add_modifier(Modifier::BOLD)
+        };
+        rows.push(
+            Row::new(vec![
+                Cell::from(""),
+                Cell::from("TOTAL").style(Style::default().add_modifier(Modifier::BOLD)),
+                Cell::from(""),
+                Cell::from(""),
+                Cell::from(primary_total_str).style(primary_total_style),
+                Cell::from(secondary_total_str).style(secondary_total_style),
+            ])
+            .style(Style::default().add_modifier(Modifier::BOLD)),
+        );
+
         let widths = [
             Constraint::Length(8),  // Number
             Constraint::Min(10),    // Name (gets remaining space)
-            Constraint::Length(12), // Allocation %
+            Constraint::Length(12), // Avail
+            Constraint::Length(12), // Cap
+            Constraint::Length(12), // Primary %
+            Constraint::Length(12), // Secondary %
         ];
 
         let table = Table::new(rows, widths)
             .header(
-                Row::new(vec!["#", "Account Name", "Allocation %"])
-                    .style(Style::default().add_modifier(Modifier::BOLD)),
+                Row::new(vec![
+                    "#",
+                    "Account Name",
+                    "Avail",
+                    "Cap",
+                    "Primary %",
+                    "Secondary %",
+                ])
+                .style(Style::default().add_modifier(Modifier::BOLD)),
             )
             .block(
                 Block::default()
@@ -688,7 +782,7 @@ impl EnvelopesTab {
             .iter()
             .filter(|a| self.allocations.contains_key(&a.id))
             .map(|acct| {
-                let pct = self.allocations[&acct.id];
+                let pct = self.allocations[&acct.id].primary;
                 let earmarked = self
                     .envelope_balances
                     .get(&acct.id)
