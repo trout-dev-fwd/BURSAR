@@ -795,7 +795,18 @@ impl JeForm {
             .title("Memo")
             .borders(Borders::ALL)
             .style(memo_style);
-        let memo_text = Paragraph::new(format!("{}_", self.memo_input)).block(memo_block);
+
+        // Horizontal scroll: cursor is always at the end of memo_input.
+        let cursor_pos = self.memo_input.chars().count();
+        let visible_width = cols[1].width.saturating_sub(2) as usize;
+        let scroll = if visible_width > 0 && cursor_pos >= visible_width {
+            cursor_pos - visible_width + 1
+        } else {
+            0
+        };
+        let memo_chars: Vec<char> = self.memo_input.chars().collect();
+        let visible_memo: String = memo_chars.get(scroll..).unwrap_or(&[]).iter().collect();
+        let memo_text = Paragraph::new(format!("{visible_memo}_")).block(memo_block);
         frame.render_widget(memo_text, cols[1]);
     }
 
