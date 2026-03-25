@@ -1,9 +1,9 @@
 # V4 Progress Tracker
 
 ## Current State
-- **Active Phase**: Phase 3 complete
-- **Last Completed Task**: Phase 3, Task 3
-- **Next Task**: Phase 4, Task 1
+- **Active Phase**: Phase 4 complete
+- **Last Completed Task**: Phase 4, Task 3
+- **Next Task**: Phase 5, Task 1
 - **Blockers**: None
 
 ## Completed Phases
@@ -41,8 +41,19 @@ All 3 tasks committed. Verification: `cargo fmt && cargo clippy -D warnings && c
 | 2 | (see git log) | Manual flagging, reason input, and memo editing |
 | 3 | (see git log) | Tax Form Guide in user guide and help overlay updates |
 
+## Completed Phases (continued)
+
+### Phase 4 — AI Batch Review (2026-03-25)
+All 3 tasks committed. Verification: `cargo fmt && cargo clippy -D warnings && cargo test` all pass (791 tests).
+
+| Task | Commit | Description |
+|------|--------|-------------|
+| 1 | 2790a1f | Tax-scoped AI context, tax tag tool, and keyword extraction |
+| 2 | 3949512 | AI batch classification with R hotkey and prompt caching |
+| 3 | 465fb14 | AI suggestion review — accept, override, reject |
+
 ## Current Phase Progress
-_(Phase 3 complete — Phase 4 not started)_
+_(Phase 4 complete — Phase 5 not started)_
 
 ## Decisions & Discoveries
 
@@ -144,6 +155,24 @@ _(Phase 3 complete — Phase 4 not started)_
 - **[Phase 3, Task 3]**: Guide's "Tab 9: Audit Log" header corrected to "Tab 0: Audit Log" (was missed in
   Phase 1 guide update). Global Controls table updated from `1`–`9` to `0`–`9`. Ctrl+H description updated
   in both the guide and the `?` overlay.
+
+## Decisions & Discoveries (Phase 4)
+
+- **[Phase 4, Task 1]**: `KEYWORD_MAP` has 24 entries covering topic terms and form names. Both
+  paths tested: topic keywords pull topic tags, form name keywords (e.g., "schedule c") map to
+  multi-topic strings like `small_business,business_expense`. `build_tax_context` returns `None`
+  when tax_refs table is empty and no selected JE — avoids empty system prompt injection.
+
+- **[Phase 4, Task 2]**: `TaxReviewStatus` import removed from `tax_handler.rs` (unused).
+  `TAX_TAB_INDEX` const removed (dead code). Used `audit().append()` not `.log()` for audit
+  logging — AuditRepo method is `append`. `send_cached_simple` added to AiClient for single-round
+  cached requests without tool use.
+
+- **[Phase 4, Task 3]**: `Enter` on `ai_suggested` JEs accepts suggestion (copies
+  `ai_suggested_form` → `form_tag`, status → confirmed, reason preserved). `ai_suggested_form`
+  is NOT in the UPSERT SET clause for `set_manual` or `set_non_deductible`, so it's automatically
+  preserved as an audit trail after any override. Three new tests added to tax_tag_repo.rs:
+  accept_preserves_reason, override_preserves_ai_suggested_form, re_flag_preserves_ai_suggested_form.
 
 ## Known Issues
 - None currently.
