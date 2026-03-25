@@ -484,6 +484,7 @@ to the right IRS form — manually or with AI assistance.
 | `↑/↓` or `k/j` | Move up / down through entries |
 | `←/→` | Switch fiscal year |
 | `Enter` | View full JE detail (lines, accounts, amounts) — press again or `Esc` to close |
+| `Space` | Accept AI suggestion (only on AI-suggested entries) |
 
 ### Classifying Entries
 
@@ -515,8 +516,9 @@ classification. Re-flagging overwrites the previous form, status, and reason.
 | `R` | Run AI batch review on all queued entries |
 
 After batch review, AI-suggested entries appear in **cyan** with a `?` suffix on the
-form name (e.g., `Schedule C?`). Press `Enter` to accept the suggestion, `f` to
-override with a different form, or `n` to mark as non-deductible.
+form name (e.g., `Schedule C?`). Press `Space` to accept the suggestion, `Enter` to
+view the full detail before deciding, `f` to override with a different form, or `n`
+to mark as non-deductible.
 
 ### Tax Reference Library
 

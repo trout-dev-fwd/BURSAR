@@ -802,14 +802,19 @@ impl Tab for TaxTab {
             KeyCode::Enter => {
                 if self.detail.is_some() {
                     self.close_detail();
-                } else if let Some(row) = self.selected_row() {
-                    let je_id = row.je_id;
+                } else {
+                    self.open_detail(db);
+                }
+            }
+            KeyCode::Char(' ') => {
+                if let Some(row) = self.selected_row() {
                     let is_ai_suggested = row
                         .tag
                         .as_ref()
                         .map(|t| t.status == TaxReviewStatus::AiSuggested)
                         .unwrap_or(false);
                     if is_ai_suggested {
+                        let je_id = row.je_id;
                         match db.tax_tags().accept_suggestion(je_id) {
                             Ok(()) => {
                                 self.reload_rows(db);
@@ -819,8 +824,6 @@ impl Tab for TaxTab {
                             }
                             Err(e) => return TabAction::ShowMessage(format!("Error: {e}")),
                         }
-                    } else {
-                        self.open_detail(db);
                     }
                 }
             }
@@ -934,7 +937,8 @@ impl Tab for TaxTab {
         vec![
             ("↑/↓ or k/j", "Navigate entries"),
             ("←/→", "Cycle fiscal year"),
-            ("Enter", "Accept AI suggestion / view detail"),
+            ("Enter", "View JE detail"),
+            ("Space", "Accept AI suggestion"),
             ("f", "Flag with tax form + reason"),
             ("n", "Mark as non-deductible"),
             ("a", "Queue for AI review"),
