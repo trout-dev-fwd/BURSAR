@@ -37,10 +37,10 @@ These work from any tab:
 
 | Key | Action |
 |-----|--------|
-| `0`–`9` | Jump to tab by number (only when no form/modal is open) |
+| `1`–`9` / `0` | Jump to tab by number (`0` = Audit Log; only when no form/modal is open) |
 | `Ctrl+←` / `Ctrl+→` | Cycle to the previous / next tab (wraps around) |
 | `Ctrl+K` | Open / close the AI Accountant panel |
-| `f` | Open fiscal period management (close/reopen periods, year-end close) |
+| `y` | Open fiscal period management (close/reopen periods, year-end close) |
 | `?` | Show hotkey quick-reference for the current tab; also shows Feedback section (`b` / `f`) |
 | `Ctrl+H` | Open this user guide (& form guide) |
 | `q` | Quit the application |
@@ -622,9 +622,16 @@ that year.**
 
 ### Hotkeys
 
+**Global (any tab):**
+
+| Key  | Action                  |
+|------|-------------------------|
+| `y`  | Open fiscal period manager |
+
+**Inside the fiscal manager:**
+
 | Key  | Action                                           |
 |------|--------------------------------------------------|
-| `f`  | Open fiscal period manager                       |
 | `a`  | Add a new fiscal year (creates all 12 periods)   |
 | `c`  | Close the selected period                        |
 | `o`  | Reopen a closed period                           |
@@ -633,7 +640,7 @@ that year.**
 
 ### Typical Workflow
 
-1. Press `f` to open the fiscal period manager.
+1. Press `y` to open the fiscal period manager.
 2. Press `a` to add a new fiscal year — type the year (e.g. `2026`) and press `Enter`.
 3. All 12 periods (P01–P12) are created in **Open** status immediately.
 4. Enter or import transactions for that year normally.
@@ -644,14 +651,14 @@ that year.**
 
 ### Adding a Fiscal Year
 
-1. Press `f` to open the fiscal period manager
+1. Press `y` to open the fiscal period manager
 2. Press `a` — a prompt asks for the fiscal year number
 3. Type the four-digit year (e.g. `2026`) and press `Enter`
 4. Twelve periods (P01–P12) are created automatically, all in Open status
 
 ### Closing a Period
 
-1. Press `f` to open the fiscal period manager
+1. Press `y` to open the fiscal period manager
 2. Select a period using the arrow keys and press `c` to close it
 3. Confirm — all journal entries in that period become locked (cannot be posted, reversed,
    or modified)

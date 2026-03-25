@@ -224,7 +224,7 @@ impl App {
                 self.show_help = true;
             }
             // Open fiscal period management modal.
-            KeyCode::Char('f') if key.modifiers == KeyModifiers::NONE => {
+            KeyCode::Char('y') if key.modifiers == KeyModifiers::NONE => {
                 self.fiscal_modal =
                     Some(FiscalModal::new(self.entity.name.clone(), &self.entity.db));
             }
@@ -237,9 +237,13 @@ impl App {
                     self.focus = FocusTarget::MainTab;
                 }
             }
-            // Tab switching: 0–9 keys select tabs by number.
+            // Tab switching: '1'–'9' → vec indices 0–8; '0' → Audit Log at index 9.
             KeyCode::Char(c @ '0'..='9') if key.modifiers == KeyModifiers::NONE => {
-                let idx = (c as usize) - ('0' as usize);
+                let idx = if c == '0' {
+                    9 // Audit Log is last in the vec
+                } else {
+                    (c as usize) - ('1' as usize)
+                };
                 if idx < self.entity.tabs.len() {
                     self.active_tab = idx;
                 }
@@ -614,10 +618,10 @@ pub(super) fn render_help_overlay(
     panel_visible: bool,
 ) {
     let global_hotkeys: &[(&str, &str)] = &[
-        ("0–9", "Switch to tab"),
+        ("1–9 / 0", "Switch to tab (0 = Audit Log)"),
         ("Ctrl+← / Ctrl+→", "Previous / next tab"),
         ("Ctrl+K", "AI Accountant panel"),
-        ("f", "Fiscal period management"),
+        ("y", "Fiscal period management"),
         ("Ctrl+H", "Open user guide (& form guide)"),
         ("q", "Quit"),
         ("?", "Show / hide this help"),
