@@ -208,7 +208,9 @@ impl AiClient {
     /// Send a single message without tool use, with prompt caching enabled.
     ///
     /// Used for tax batch review where the system prompt (enabled forms +
-    /// IRS reference chunks) is identical across all batches in a single run.
+    /// classification rules) is identical across all batches in a single run.
+    /// NOTE: IRS reference chunks are NOT included in the batch prompt — they
+    /// are only injected for interactive Ctrl+K conversations from the Tax tab.
     pub fn send_cached_simple(
         &self,
         system: &str,

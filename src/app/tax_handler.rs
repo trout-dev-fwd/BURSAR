@@ -160,6 +160,12 @@ impl App {
 
             let user_text = build_batch_user_prompt(batch.iter().map(|j| j.prompt_text.as_str()));
 
+            // Log AiPrompt before sending so we can inspect what was sent.
+            let _ = self.entity.db.audit().log_ai_prompt(
+                &self.entity.name,
+                &format!("[Tax batch {}/{batch_count}] {}", batch_idx + 1, user_text),
+            );
+
             let messages = vec![ApiMessage {
                 role: ApiRole::User,
                 content: ApiContent::Text(user_text),
@@ -174,6 +180,16 @@ impl App {
                     continue;
                 }
             };
+
+            // Log AiResponse summary for this batch.
+            let _ = self.entity.db.audit().log_ai_response(
+                &self.entity.name,
+                &format!(
+                    "[Tax batch {}/{batch_count}] {} JEs classified",
+                    batch_idx + 1,
+                    batch.len()
+                ),
+            );
 
             // Log AiTaxReview audit entry for this batch.
             let _ = self.entity.db.audit().append(
@@ -285,6 +301,11 @@ impl App {
 ///
 /// The system prompt is identical across batches, so it gets cached by
 /// the Anthropic API (`cache_control: ephemeral` via `send_cached_simple`).
+///
+/// This prompt intentionally does NOT include IRS tax_reference chunks.
+/// Those are only injected for interactive Ctrl+K conversations from the
+/// Tax tab (via `build_tax_context`). Keeping them out of the batch prompt
+/// reduces token cost and avoids confusion with the concise classification task.
 fn build_batch_system_prompt(enabled_forms: &[String]) -> String {
     let form_list: String = enabled_forms
         .iter()
