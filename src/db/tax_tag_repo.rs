@@ -30,6 +30,20 @@ pub struct TaxTagWithJe {
     pub total_debits: Money,
 }
 
+/// A posted JE with its optional tax tag, for the Tax tab list view.
+/// `tag: None` means the JE has no tax tag (implying Unreviewed status).
+#[derive(Debug, Clone)]
+pub struct PostedJeWithTag {
+    pub je_id: JournalEntryId,
+    pub je_number: String,
+    pub entry_date: NaiveDate,
+    pub memo: Option<String>,
+    /// Total debits for the JE (all lines summed).
+    pub total_debits: Money,
+    /// `None` means the JE has not been tagged yet.
+    pub tag: Option<TaxTag>,
+}
+
 // ── Repository ────────────────────────────────────────────────────────────────
 
 pub struct TaxTagRepo<'conn> {
@@ -209,6 +223,123 @@ impl<'conn> TaxTagRepo<'conn> {
                     total_debits: Money(debits_raw),
                 })
             })
+            .collect()
+    }
+
+    /// Returns ALL posted JEs in `[start, end]` LEFT JOINed with their tax tags.
+    /// JEs with no tag have `tag: None` (Unreviewed). Used by the Tax tab list view.
+    pub fn list_all_posted_for_date_range(
+        &self,
+        start: NaiveDate,
+        end: NaiveDate,
+    ) -> Result<Vec<PostedJeWithTag>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT j.id, j.je_number, j.entry_date, j.memo,
+                    COALESCE((SELECT SUM(l.debit_amount) FROM journal_entry_lines l
+                               WHERE l.journal_entry_id = j.id), 0),
+                    t.id, t.form_tag, t.status, t.ai_suggested_form, t.reason, t.reviewed_at
+             FROM journal_entries j
+             LEFT JOIN tax_tags t ON t.journal_entry_id = j.id
+             WHERE j.status = 'Posted'
+               AND j.entry_date >= ?1
+               AND j.entry_date <= ?2
+             ORDER BY j.entry_date, j.je_number",
+        )?;
+        let rows = stmt
+            .query_map(params![start.to_string(), end.to_string()], |row| {
+                let je_id_raw: i64 = row.get(0)?;
+                let je_number: String = row.get(1)?;
+                let entry_date_str: String = row.get(2)?;
+                let memo: Option<String> = row.get(3)?;
+                let total_debits_raw: i64 = row.get(4)?;
+                let tag_id: Option<i64> = row.get(5)?;
+                let form_tag_str: Option<String> = row.get(6)?;
+                let status_str: Option<String> = row.get(7)?;
+                let ai_form_str: Option<String> = row.get(8)?;
+                let reason: Option<String> = row.get(9)?;
+                let reviewed_at: Option<String> = row.get(10)?;
+                Ok((
+                    je_id_raw,
+                    je_number,
+                    entry_date_str,
+                    memo,
+                    total_debits_raw,
+                    tag_id,
+                    form_tag_str,
+                    status_str,
+                    ai_form_str,
+                    reason,
+                    reviewed_at,
+                ))
+            })?
+            .map(|r| r.map_err(anyhow::Error::from))
+            .collect::<Result<Vec<_>>>()
+            .context("Failed to list posted JEs with tax tags")?;
+
+        rows.into_iter()
+            .map(
+                |(
+                    je_id_raw,
+                    je_number,
+                    date_str,
+                    memo,
+                    debits_raw,
+                    tag_id,
+                    form_tag_str,
+                    status_str,
+                    ai_form_str,
+                    reason,
+                    reviewed_at,
+                )| {
+                    let entry_date = date_str
+                        .parse::<NaiveDate>()
+                        .with_context(|| format!("Invalid date in journal_entries: {date_str}"))?;
+                    let je_id = JournalEntryId::from(je_id_raw);
+
+                    let tag = if let Some(id) = tag_id {
+                        let form_tag = form_tag_str
+                            .as_deref()
+                            .map(|s| {
+                                s.parse::<TaxFormTag>()
+                                    .map_err(|e| anyhow::anyhow!("Invalid form_tag '{s}': {e}"))
+                            })
+                            .transpose()?;
+                        let ai_suggested_form = ai_form_str
+                            .as_deref()
+                            .map(|s| {
+                                s.parse::<TaxFormTag>().map_err(|e| {
+                                    anyhow::anyhow!("Invalid ai_suggested_form '{s}': {e}")
+                                })
+                            })
+                            .transpose()?;
+                        let status = status_str
+                            .as_deref()
+                            .ok_or_else(|| anyhow::anyhow!("NULL status for tax_tag id={id}"))?
+                            .parse::<TaxReviewStatus>()
+                            .map_err(|e| anyhow::anyhow!("Invalid status: {e}"))?;
+                        Some(TaxTag {
+                            id,
+                            journal_entry_id: je_id,
+                            form_tag,
+                            status,
+                            ai_suggested_form,
+                            reason,
+                            reviewed_at,
+                        })
+                    } else {
+                        None
+                    };
+
+                    Ok(PostedJeWithTag {
+                        je_id,
+                        je_number,
+                        entry_date,
+                        memo,
+                        total_debits: Money(debits_raw),
+                        tag,
+                    })
+                },
+            )
             .collect()
     }
 }
@@ -604,5 +735,104 @@ mod tests {
         // Verify JournalEntryStatus is accessible (used in list_for_date_range filter).
         let _ = JournalEntryStatus::Posted;
         let _ = JournalEntryStatus::Draft;
+    }
+
+    // ── list_all_posted_for_date_range tests ──────────────────────────────────
+
+    #[test]
+    fn list_all_posted_untagged_je_returns_tag_none() {
+        let (conn, period_id) = setup_db();
+        let je_id = make_je(&conn, period_id);
+        post_je(&conn, je_id);
+        let repo = TaxTagRepo::new(&conn);
+
+        let start = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+        let end = NaiveDate::from_ymd_opt(2026, 1, 31).unwrap();
+        let results = repo
+            .list_all_posted_for_date_range(start, end)
+            .expect("list");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].je_id, je_id);
+        assert!(results[0].tag.is_none(), "untagged JE should have tag=None");
+    }
+
+    #[test]
+    fn list_all_posted_tagged_je_returns_tag_some() {
+        let (conn, period_id) = setup_db();
+        let je_id = make_je(&conn, period_id);
+        post_je(&conn, je_id);
+        let repo = TaxTagRepo::new(&conn);
+        repo.set_manual(je_id, TaxFormTag::ScheduleC, Some("Supplies"))
+            .expect("tag");
+
+        let start = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+        let end = NaiveDate::from_ymd_opt(2026, 1, 31).unwrap();
+        let results = repo
+            .list_all_posted_for_date_range(start, end)
+            .expect("list");
+
+        assert_eq!(results.len(), 1);
+        let tag = results[0].tag.as_ref().expect("should have tag");
+        assert_eq!(tag.form_tag, Some(TaxFormTag::ScheduleC));
+        assert_eq!(tag.status, TaxReviewStatus::Confirmed);
+        assert_eq!(tag.reason.as_deref(), Some("Supplies"));
+    }
+
+    #[test]
+    fn list_all_posted_excludes_drafts() {
+        let (conn, period_id) = setup_db();
+        let _je_id = make_je(&conn, period_id); // stays Draft
+        let repo = TaxTagRepo::new(&conn);
+
+        let start = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+        let end = NaiveDate::from_ymd_opt(2026, 1, 31).unwrap();
+        let results = repo
+            .list_all_posted_for_date_range(start, end)
+            .expect("list");
+        assert!(results.is_empty(), "draft JEs must be excluded");
+    }
+
+    #[test]
+    fn list_all_posted_excludes_out_of_range() {
+        let (conn, period_id) = setup_db();
+        let je_id = make_je(&conn, period_id);
+        post_je(&conn, je_id);
+        let repo = TaxTagRepo::new(&conn);
+
+        // Query February — JE is in January
+        let start = NaiveDate::from_ymd_opt(2026, 2, 1).unwrap();
+        let end = NaiveDate::from_ymd_opt(2026, 2, 28).unwrap();
+        let results = repo
+            .list_all_posted_for_date_range(start, end)
+            .expect("list");
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn list_all_posted_includes_multiple_statuses() {
+        let (conn, period_id) = setup_db();
+        let je_a = make_je(&conn, period_id);
+        let je_b = make_je(&conn, period_id);
+        let je_c = make_je(&conn, period_id);
+        post_je(&conn, je_a);
+        post_je(&conn, je_b);
+        post_je(&conn, je_c);
+        let repo = TaxTagRepo::new(&conn);
+
+        repo.set_manual(je_a, TaxFormTag::ScheduleC, None)
+            .expect("tag a");
+        repo.set_ai_pending(je_b).expect("tag b");
+        // je_c intentionally untagged
+
+        let start = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+        let end = NaiveDate::from_ymd_opt(2026, 1, 31).unwrap();
+        let results = repo
+            .list_all_posted_for_date_range(start, end)
+            .expect("list");
+
+        assert_eq!(results.len(), 3, "all three posted JEs should be returned");
+        let untagged = results.iter().filter(|r| r.tag.is_none()).count();
+        assert_eq!(untagged, 1, "one JE should be untagged");
     }
 }
