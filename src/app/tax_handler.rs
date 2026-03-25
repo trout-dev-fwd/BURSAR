@@ -44,10 +44,10 @@ impl App {
         }
 
         // ── Build enabled forms list for system prompt ────────────────────────
-        // Get enabled forms from the Tax tab (index 9).
+        // Get enabled forms from the Tax tab (index 8).
         let enabled_forms_str = {
             use crate::tabs::tax::TaxTab;
-            // SAFETY: We know tabs[9] is a TaxTab by construction in EntityContext::new.
+            // SAFETY: We know tabs[8] is a TaxTab by construction in EntityContext::new.
             // We use downcast_ref here via Any — but since Tab doesn't implement Any,
             // we access enabled_forms indirectly through the Tab trait's tax method.
             // Instead, we read the form config from the entity TOML so we don't need a downcast.

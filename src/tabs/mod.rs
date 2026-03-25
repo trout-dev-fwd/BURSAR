@@ -29,23 +29,23 @@ use crate::types::{AccountId, ApItemId, ArItemId, JournalEntryId};
 /// All 10 application tabs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TabId {
-    AuditLog,           // index 0
-    ChartOfAccounts,    // index 1
-    GeneralLedger,      // index 2
-    JournalEntries,     // index 3
-    AccountsReceivable, // index 4
-    AccountsPayable,    // index 5
-    Envelopes,          // index 6
-    FixedAssets,        // index 7
-    Reports,            // index 8
-    Tax,                // index 9
+    ChartOfAccounts,    // index 0 (key '1')
+    GeneralLedger,      // index 1 (key '2')
+    JournalEntries,     // index 2 (key '3')
+    AccountsReceivable, // index 3 (key '4')
+    AccountsPayable,    // index 4 (key '5')
+    Envelopes,          // index 5 (key '6')
+    FixedAssets,        // index 6 (key '7')
+    Reports,            // index 7 (key '8')
+    Tax,                // index 8 (key '9')
+    AuditLog,           // index 9 (key '0')
 }
 
 impl TabId {
-    /// Returns all tab IDs in display order.
+    /// Returns all tab IDs in visual display order.
+    /// Key bindings: '1'–'9' map to indices 0–8, '0' maps to index 9 (Audit Log).
     pub fn all() -> [TabId; 10] {
         [
-            TabId::AuditLog,
             TabId::ChartOfAccounts,
             TabId::GeneralLedger,
             TabId::JournalEntries,
@@ -55,6 +55,7 @@ impl TabId {
             TabId::FixedAssets,
             TabId::Reports,
             TabId::Tax,
+            TabId::AuditLog,
         ]
     }
 }
