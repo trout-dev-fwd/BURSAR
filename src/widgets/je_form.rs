@@ -89,6 +89,7 @@ pub struct JeForm {
     editing_id: Option<JournalEntryId>,
     date_input: String,
     memo_input: String,
+    memo_cursor: usize,
     lines: Vec<LineRow>,
     focus: Focus,
     /// The embedded account picker popup (shown when a line's Account field is focused).
@@ -115,6 +116,7 @@ impl JeForm {
             editing_id: None,
             date_input: today,
             memo_input: String::new(),
+            memo_cursor: 0,
             lines: vec![LineRow::default(), LineRow::default()],
             focus: Focus::Date,
             account_picker: AccountPicker::new(),
@@ -138,6 +140,7 @@ impl JeForm {
         form.editing_id = Some(entry.id);
         form.date_input = entry.entry_date.format("%Y-%m-%d").to_string();
         form.memo_input = entry.memo.clone().unwrap_or_default();
+        form.memo_cursor = form.memo_input.chars().count();
 
         // Build line rows sorted by sort_order.
         let mut sorted = lines.to_vec();
@@ -277,8 +280,20 @@ impl JeForm {
             // Down/Up move between rows; Left/Right move between columns in a row.
             // These mirror Tab/BackTab as a fallback when Tab is intercepted by
             // the chat panel (V2 focus model).
+            // When Memo is focused, Left/Right move the cursor within the text.
             KeyCode::Down => self.move_focus_down(),
             KeyCode::Up => self.move_focus_up(),
+            KeyCode::Right if self.focus == Focus::Memo => {
+                let len = self.memo_input.chars().count();
+                if self.memo_cursor < len {
+                    self.memo_cursor += 1;
+                }
+            }
+            KeyCode::Left if self.focus == Focus::Memo => {
+                if self.memo_cursor > 0 {
+                    self.memo_cursor -= 1;
+                }
+            }
             KeyCode::Right => self.move_focus_right(),
             KeyCode::Left => self.move_focus_left(),
 
@@ -469,7 +484,12 @@ impl JeForm {
                 self.date_input.pop();
             }
             Focus::Memo => {
-                self.memo_input.pop();
+                if self.memo_cursor > 0 {
+                    let mut chars: Vec<char> = self.memo_input.chars().collect();
+                    chars.remove(self.memo_cursor - 1);
+                    self.memo_input = chars.into_iter().collect();
+                    self.memo_cursor -= 1;
+                }
             }
             Focus::LineDebit(i) => {
                 self.lines[i].debit_input.pop();
@@ -490,7 +510,10 @@ impl JeForm {
                 }
             }
             Focus::Memo => {
-                self.memo_input.push(c);
+                let mut chars: Vec<char> = self.memo_input.chars().collect();
+                chars.insert(self.memo_cursor, c);
+                self.memo_input = chars.into_iter().collect();
+                self.memo_cursor += 1;
             }
             Focus::LineDebit(i) => {
                 if c.is_ascii_digit() || c == '.' {
@@ -796,8 +819,8 @@ impl JeForm {
             .borders(Borders::ALL)
             .style(memo_style);
 
-        // Horizontal scroll: cursor is always at the end of memo_input.
-        let cursor_pos = self.memo_input.chars().count();
+        // Horizontal scroll: cursor position tracks where the user is editing.
+        let cursor_pos = self.memo_cursor;
         let visible_width = cols[1].width.saturating_sub(2) as usize;
         let scroll = if visible_width > 0 && cursor_pos >= visible_width {
             cursor_pos - visible_width + 1
@@ -805,8 +828,13 @@ impl JeForm {
             0
         };
         let memo_chars: Vec<char> = self.memo_input.chars().collect();
-        let visible_memo: String = memo_chars.get(scroll..).unwrap_or(&[]).iter().collect();
-        let memo_text = Paragraph::new(format!("{visible_memo}_")).block(memo_block);
+        let before_cursor: String = memo_chars
+            .get(scroll..cursor_pos)
+            .unwrap_or(&[])
+            .iter()
+            .collect();
+        let after_cursor: String = memo_chars.get(cursor_pos..).unwrap_or(&[]).iter().collect();
+        let memo_text = Paragraph::new(format!("{before_cursor}_{after_cursor}")).block(memo_block);
         frame.render_widget(memo_text, cols[1]);
     }
 
