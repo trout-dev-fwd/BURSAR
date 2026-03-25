@@ -93,6 +93,8 @@ pub enum TabAction {
     SaveTaxFormConfig(Vec<String>),
     /// Start ingestion of IRS tax reference publications (`u` key in Tax tab).
     StartTaxIngestion,
+    /// Run AI batch review on all ai_pending JEs (`R` key in Tax tab).
+    RunAiBatchReview,
     /// Quit the application.
     Quit,
 }

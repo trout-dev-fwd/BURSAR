@@ -205,6 +205,20 @@ impl AiClient {
         text.ok_or_else(|| AiError::ParseError("Response contained no text content".to_string()))
     }
 
+    /// Send a single message without tool use, with prompt caching enabled.
+    ///
+    /// Used for tax batch review where the system prompt (enabled forms +
+    /// IRS reference chunks) is identical across all batches in a single run.
+    pub fn send_cached_simple(
+        &self,
+        system: &str,
+        messages: &[ApiMessage],
+    ) -> Result<String, AiError> {
+        let response = self.send_request(system, messages, None, true)?;
+        let (text, _tools) = Self::parse_response(&response)?;
+        text.ok_or_else(|| AiError::ParseError("Response contained no text content".to_string()))
+    }
+
     /// Make a single API call with tool definitions.
     ///
     /// Returns [`RoundResult::Done`] if Claude produced a text-only response,

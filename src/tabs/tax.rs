@@ -210,6 +210,15 @@ impl TaxTab {
         &self.enabled_forms
     }
 
+    /// Returns all tax form tags as their string representations.
+    /// Used by tax_handler.rs when no entity config is present.
+    pub fn all_form_tags_as_strings() -> Vec<String> {
+        TaxFormTag::all()
+            .into_iter()
+            .map(|f| f.to_string())
+            .collect()
+    }
+
     fn reload_fiscal_years(&mut self, db: &EntityDb) {
         match db.fiscal().list_fiscal_years() {
             Ok(years) => {
@@ -836,6 +845,9 @@ impl Tab for TaxTab {
             }
             KeyCode::Char('u') => {
                 return TabAction::StartTaxIngestion;
+            }
+            KeyCode::Char('R') => {
+                return TabAction::RunAiBatchReview;
             }
             _ => {}
         }

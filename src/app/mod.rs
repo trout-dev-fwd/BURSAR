@@ -1,6 +1,7 @@
 mod ai_handler;
 mod import_handler;
 mod key_dispatch;
+mod tax_handler;
 use import_handler::render_import_modal;
 use key_dispatch::{render_help_overlay, render_secondary_entity_picker};
 
@@ -145,6 +146,8 @@ pub struct App {
     feedback_modal: Option<FeedbackModal>,
     /// Set when the `u` key is pressed in the Tax tab; consumed by process_pending.
     pending_tax_ingestion: bool,
+    /// Set when the `R` key is pressed in the Tax tab; consumed by process_pending.
+    pending_tax_batch_review: bool,
 }
 
 impl App {
@@ -181,6 +184,7 @@ impl App {
             pending_draft_creation: false,
             feedback_modal: None,
             pending_tax_ingestion: false,
+            pending_tax_batch_review: false,
         }
     }
 
@@ -243,6 +247,10 @@ impl App {
         if self.pending_tax_ingestion {
             self.pending_tax_ingestion = false;
             self.run_tax_ingestion(terminal);
+        }
+        if self.pending_tax_batch_review {
+            self.pending_tax_batch_review = false;
+            self.handle_tax_batch_review(terminal);
         }
     }
 

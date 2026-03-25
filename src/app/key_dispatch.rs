@@ -577,6 +577,11 @@ impl App {
                 self.status_bar
                     .set_message("Preparing to ingest IRS publications...".to_string());
             }
+            TabAction::RunAiBatchReview => {
+                self.pending_tax_batch_review = true;
+                self.status_bar
+                    .set_message("Starting AI batch review...".to_string());
+            }
             TabAction::SaveTaxFormConfig(forms) => {
                 let (toml_path, workspace_dir) = self.entity_toml_path();
                 let mut entity_cfg =

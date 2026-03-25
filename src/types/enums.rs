@@ -80,6 +80,8 @@ pub enum AuditAction {
     AiToolUse,
     CsvImport,
     MappingLearned,
+    // V4: AI tax batch review
+    AiTaxReview,
 }
 
 // ── ImportMatchType ───────────────────────────────────────────────────────────
@@ -621,6 +623,7 @@ impl fmt::Display for AuditAction {
             AuditAction::AiToolUse => write!(f, "AiToolUse"),
             AuditAction::CsvImport => write!(f, "CsvImport"),
             AuditAction::MappingLearned => write!(f, "MappingLearned"),
+            AuditAction::AiTaxReview => write!(f, "AiTaxReview"),
         }
     }
 }
@@ -658,6 +661,7 @@ impl FromStr for AuditAction {
             "AiToolUse" => Ok(AuditAction::AiToolUse),
             "CsvImport" => Ok(AuditAction::CsvImport),
             "MappingLearned" => Ok(AuditAction::MappingLearned),
+            "AiTaxReview" => Ok(AuditAction::AiTaxReview),
             _ => Err(UnknownAuditAction(s.to_owned())),
         }
     }
@@ -742,7 +746,8 @@ mod tests {
             AiResponse,
             AiToolUse,
             CsvImport,
-            MappingLearned
+            MappingLearned,
+            AiTaxReview
         );
     }
 
