@@ -116,25 +116,42 @@ impl TextInputModal {
     }
 
     /// Renders the modal centered within `area`.
+    ///
+    /// Uses horizontal scrolling so that long text always shows the region around
+    /// the cursor, keeping the cursor visible regardless of buffer length.
     pub fn render(&self, frame: &mut Frame, area: Rect) {
-        let modal = centered_rect(60, 30, area);
+        let modal = centered_rect(80, 30, area);
         frame.render_widget(Clear, modal);
 
-        let before_str = self.buffer[..self.char_byte_pos(self.cursor_pos)].to_owned();
-        let cursor_str = if self.cursor_pos < self.buffer.chars().count() {
-            let start = self.char_byte_pos(self.cursor_pos);
-            let end = self.char_byte_pos(self.cursor_pos + 1);
-            self.buffer[start..end].to_owned()
+        // Inner content width: modal minus 2 border cols minus 2 padding spaces.
+        let inner_width = modal.width.saturating_sub(4) as usize;
+
+        // Calculate scroll offset so the cursor stays within the visible window.
+        let scroll = if inner_width > 0 && self.cursor_pos >= inner_width {
+            self.cursor_pos - inner_width + 1
         } else {
-            " ".to_owned()
+            0
         };
-        let after_str = {
-            let after_byte = if self.cursor_pos < self.buffer.chars().count() {
-                self.char_byte_pos(self.cursor_pos + 1)
-            } else {
-                self.buffer.len()
-            };
-            self.buffer[after_byte..].to_owned()
+
+        // Build visible char slices.
+        let chars: Vec<char> = self.buffer.chars().collect();
+        let char_count = chars.len();
+
+        let visible_before: String = chars
+            .get(scroll..self.cursor_pos.min(char_count))
+            .unwrap_or(&[])
+            .iter()
+            .collect();
+        let cursor_char: String = chars
+            .get(self.cursor_pos)
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| " ".to_owned());
+        let after_start = self.cursor_pos + 1;
+        let after_end = (scroll + inner_width).min(char_count);
+        let visible_after: String = if after_start <= after_end {
+            chars[after_start..after_end].iter().collect()
+        } else {
+            String::new()
         };
 
         let lines = vec![
@@ -146,15 +163,15 @@ impl TextInputModal {
             Line::from(""),
             Line::from(vec![
                 Span::raw("  "),
-                Span::raw(before_str),
+                Span::raw(visible_before),
                 Span::styled(
-                    cursor_str,
+                    cursor_char,
                     Style::default()
                         .fg(Color::Black)
                         .bg(Color::White)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::raw(after_str),
+                Span::raw(visible_after),
             ]),
             Line::from(""),
             Line::from(Span::styled(
@@ -178,15 +195,6 @@ impl TextInputModal {
     #[cfg(test)]
     pub(crate) fn buffer(&self) -> &str {
         &self.buffer
-    }
-
-    /// Returns the byte position in `self.buffer` for the given char index.
-    fn char_byte_pos(&self, char_idx: usize) -> usize {
-        self.buffer
-            .char_indices()
-            .nth(char_idx)
-            .map(|(i, _)| i)
-            .unwrap_or(self.buffer.len())
     }
 }
 
