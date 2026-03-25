@@ -989,7 +989,7 @@ impl JournalEntriesTab {
         };
 
         let title = format!(
-            " {} — {} line(s)  [c] Cleared  [g] GL  [m] Edit memo ",
+            " {} — {} line(s)  [/]: line  [c] Cleared  [g] GL  [m] Edit memo ",
             entry.je_number,
             d.lines.len()
         );
@@ -1177,6 +1177,7 @@ impl Tab for JournalEntriesTab {
                 ("r", "Reverse posted entry"),
                 ("s", "Scheduled entries sub-view"),
                 ("i", "New inter-entity entry"),
+                ("[/]", "Select detail line"),
                 ("g", "Go to General Ledger"),
                 ("f", "Cycle fiscal period filter"),
                 ("t", "Create scheduled entry"),
@@ -1225,6 +1226,22 @@ impl Tab for JournalEntriesTab {
             }
             KeyCode::Enter => {
                 // No-op in master-detail layout (detail is always visible).
+            }
+            // Navigate detail lines within the always-visible detail panel.
+            KeyCode::Char('[') => {
+                if let Some(ref mut d) = self.detail
+                    && d.focused_line > 0
+                {
+                    d.focused_line -= 1;
+                }
+            }
+            KeyCode::Char(']') => {
+                if let Some(ref mut d) = self.detail {
+                    let max = d.lines.len().saturating_sub(1);
+                    if d.focused_line < max {
+                        d.focused_line += 1;
+                    }
+                }
             }
             KeyCode::Char('c') | KeyCode::Char('C') => {
                 return self.toggle_reconcile(db);
