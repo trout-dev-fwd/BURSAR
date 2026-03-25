@@ -1520,7 +1520,10 @@ fn build_review_rows(flow: &crate::ai::csv_import::ImportFlowState) -> Vec<Revie
 
     let mut rows = Vec::new();
 
-    // Transfer matches section appears first, before the approve button.
+    // Approve button appears at the very top.
+    rows.push(ReviewRow::ApproveAction);
+
+    // Transfer matches section follows the approve button.
     if !flow.transfer_matches.is_empty() {
         rows.push(ReviewRow::TransferHeader {
             count: flow.transfer_matches.len(),
@@ -1529,8 +1532,6 @@ fn build_review_rows(flow: &crate::ai::csv_import::ImportFlowState) -> Vec<Revie
             rows.push(ReviewRow::TransferItem { transfer_idx: i });
         }
     }
-
-    rows.push(ReviewRow::ApproveAction);
 
     for (source, label, section_idx) in &sections {
         let indices: Vec<usize> = flow
@@ -2441,67 +2442,67 @@ mod tests {
     // ── navigation tests (via build_review_rows structure) ───────────────────
 
     #[test]
-    fn review_rows_with_transfer_matches_start_with_transfer_header() {
+    fn review_rows_with_transfer_matches_start_with_approve_action() {
         let mut flow = ImportFlowState::new();
         flow.transfer_matches.push(make_transfer_row(true));
         flow.transfer_matches.push(make_transfer_row(false));
 
         let rows = build_review_rows(&flow);
 
-        // First row must be the transfer header.
+        // First row must be the approve button.
         assert!(
-            matches!(rows[0], ReviewRow::TransferHeader { count: 2 }),
-            "expected TransferHeader(2), got {:?}",
+            matches!(rows[0], ReviewRow::ApproveAction),
+            "expected ApproveAction at index 0, got {:?}",
             rows[0]
         );
-        // Next two rows are the transfer items.
+        // Then the transfer header.
+        assert!(
+            matches!(rows[1], ReviewRow::TransferHeader { count: 2 }),
+            "expected TransferHeader(2) at index 1, got {:?}",
+            rows[1]
+        );
+        // Then the transfer items.
         assert!(matches!(
-            rows[1],
+            rows[2],
             ReviewRow::TransferItem { transfer_idx: 0 }
         ));
         assert!(matches!(
-            rows[2],
+            rows[3],
             ReviewRow::TransferItem { transfer_idx: 1 }
         ));
-        // Then the approve button.
-        assert!(matches!(rows[3], ReviewRow::ApproveAction));
     }
 
     #[test]
-    fn nav_down_from_last_transfer_item_reaches_approve_action() {
+    fn nav_down_from_approve_action_reaches_transfer_header() {
         let mut flow = ImportFlowState::new();
         flow.transfer_matches.push(make_transfer_row(true));
 
         let rows = build_review_rows(&flow);
-        // Transfer section: index 0 = header, index 1 = item, index 2 = ApproveAction.
-        let last_transfer_idx = 1usize;
-        let approve_idx = last_transfer_idx + 1;
+        // ApproveAction(0), TransferHeader(1), TransferItem(2)
+        let approve_idx = 0usize;
+        let transfer_header_idx = approve_idx + 1;
 
-        assert!(matches!(
-            rows[last_transfer_idx],
-            ReviewRow::TransferItem { .. }
-        ));
         assert!(matches!(rows[approve_idx], ReviewRow::ApproveAction));
+        assert!(matches!(
+            rows[transfer_header_idx],
+            ReviewRow::TransferHeader { .. }
+        ));
     }
 
     #[test]
-    fn nav_up_from_approve_action_reaches_last_transfer_item() {
+    fn approve_action_is_first_row_with_transfer_matches() {
         let mut flow = ImportFlowState::new();
         flow.transfer_matches.push(make_transfer_row(true));
         flow.transfer_matches.push(make_transfer_row(true));
 
         let rows = build_review_rows(&flow);
-        // header(0), item(1), item(2), ApproveAction(3)
-        let approve_idx = 3usize;
-        let last_transfer_idx = approve_idx - 1;
-
-        assert!(matches!(rows[approve_idx], ReviewRow::ApproveAction));
+        // ApproveAction(0), TransferHeader(1), item(2), item(3)
+        assert!(matches!(rows[0], ReviewRow::ApproveAction));
+        assert!(matches!(rows[1], ReviewRow::TransferHeader { count: 2 }));
         assert!(matches!(
-            rows[last_transfer_idx],
+            rows[3],
             ReviewRow::TransferItem { transfer_idx: 1 }
         ));
-        // Pressing ↑ from approve_idx: approve_idx.saturating_sub(1) == last_transfer_idx.
-        assert_eq!(approve_idx.saturating_sub(1), last_transfer_idx);
     }
 
     // ── empty transfer section ────────────────────────────────────────────────
