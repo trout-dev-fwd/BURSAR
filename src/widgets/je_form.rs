@@ -734,10 +734,15 @@ impl JeForm {
         let block = Block::default()
             .title(self.title.as_str())
             .borders(Borders::ALL)
-            .style(Style::default().fg(Color::White));
+            .style(Style::default().fg(Color::White).bg(Color::Rgb(30, 30, 30)));
 
         let inner = block.inner(area);
         frame.render_widget(block, area);
+        // Fill inner area with the same dark background.
+        frame.render_widget(
+            Paragraph::new("").style(Style::default().bg(Color::Rgb(30, 30, 30))),
+            inner,
+        );
 
         // ── Header: Date + Memo ───────────────────────────────────────────────
         let header_height = 3u16;
