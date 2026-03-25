@@ -149,6 +149,8 @@ enum TaxModal {
 struct TaxDetailState {
     je_number: String,
     memo: Option<String>,
+    /// Reason from the tax tag, if one exists.
+    reason: Option<String>,
     lines: Vec<JournalEntryLine>,
     focused_line: usize,
 }
@@ -316,11 +318,13 @@ impl TaxTab {
         let je_id = row.je_id;
         let je_number = row.je_number.clone();
         let memo = row.memo.clone();
+        let reason = row.tag.as_ref().and_then(|t| t.reason.clone());
         match db.journals().get_with_lines(je_id) {
             Ok((_, lines)) => {
                 self.detail = Some(TaxDetailState {
                     je_number,
                     memo,
+                    reason,
                     lines,
                     focused_line: 0,
                 });
@@ -592,16 +596,30 @@ impl TaxTab {
 
         let block = Block::default().title(title).borders(Borders::ALL);
 
+        // Build meta lines (Memo and Form Reason, both in yellow).
+        let mut meta_lines: Vec<Line> = Vec::new();
         if let Some(memo) = &d.memo {
+            meta_lines.push(Line::from(vec![Span::styled(
+                format!("  Memo: {memo}"),
+                Style::default().fg(Color::Yellow),
+            )]));
+        }
+        if let Some(reason) = &d.reason {
+            meta_lines.push(Line::from(vec![Span::styled(
+                format!("  Form Reason: {reason}"),
+                Style::default().fg(Color::Yellow),
+            )]));
+        }
+
+        if !meta_lines.is_empty() {
+            let meta_height = meta_lines.len() as u16 + 1;
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Length(3), Constraint::Min(3)])
+                .constraints([Constraint::Length(meta_height), Constraint::Min(3)])
                 .split(area);
 
             frame.render_widget(
-                Paragraph::new(format!("  Memo: {memo}"))
-                    .style(Style::default().fg(Color::DarkGray))
-                    .wrap(Wrap { trim: false }),
+                Paragraph::new(meta_lines).wrap(Wrap { trim: false }),
                 chunks[0],
             );
             frame.render_widget(
