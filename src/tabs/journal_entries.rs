@@ -1020,7 +1020,7 @@ impl JournalEntriesTab {
 
             frame.render_widget(
                 Paragraph::new(format!("  Memo: {memo}"))
-                    .style(Style::default().fg(Color::DarkGray))
+                    .style(Style::default().fg(Color::Yellow))
                     .wrap(Wrap { trim: false }),
                 chunks[0],
             );
