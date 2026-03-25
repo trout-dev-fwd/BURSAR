@@ -1,9 +1,9 @@
 # V4 Progress Tracker
 
 ## Current State
-- **Active Phase**: Phase 2 complete
-- **Last Completed Task**: Phase 2, Task 3
-- **Next Task**: Phase 3, Task 1
+- **Active Phase**: Phase 3 complete
+- **Last Completed Task**: Phase 3, Task 3
+- **Next Task**: Phase 4, Task 1
 - **Blockers**: None
 
 ## Completed Phases
@@ -30,8 +30,19 @@ All 3 tasks committed. Verification: `cargo fmt && cargo clippy -D warnings && c
 | 2 | (see git log) | HTML fetcher and parser for IRS publications |
 | 3 | (see git log) | Wire tax reference ingestion to `u` hotkey |
 
+## Completed Phases (continued)
+
+### Phase 3 — Tax Review Workflow (2026-03-25)
+All 3 tasks committed. Verification: `cargo fmt && cargo clippy -D warnings && cargo test` all pass (765 tests).
+
+| Task | Commit | Description |
+|------|--------|-------------|
+| 1 | (see git log) | Tax tab JE list view with status and fiscal year selector |
+| 2 | (see git log) | Manual flagging, reason input, and memo editing |
+| 3 | (see git log) | Tax Form Guide in user guide and help overlay updates |
+
 ## Current Phase Progress
-_(Phase 2 complete — Phase 3 not started)_
+_(Phase 3 complete — Phase 4 not started)_
 
 ## Decisions & Discoveries
 
@@ -112,6 +123,27 @@ _(Phase 2 complete — Phase 3 not started)_
 
 - **[Phase 2, Task 3]**: `chrono::Local::now().year()` returns `i32` directly (no cast needed).
   The `tax_year` column in `tax_reference` is INTEGER, stored as `i32`.
+
+## Decisions & Discoveries (Phase 3)
+
+- **[Phase 3, Task 1]**: `PostedJeWithTag` struct added to `tax_tag_repo.rs`. Uses LEFT JOIN from
+  `journal_entries` so all posted JEs appear (tag=None means Unreviewed). `list_all_posted_for_date_range`
+  collects raw row data first, then parses dates/enums post-collection — avoids rusqlite closure type
+  constraints.
+
+- **[Phase 3, Task 1]**: `selected_row()` not added in Task 1 to avoid dead_code warning. Added in Task 2
+  when the flagging keys were implemented.
+
+- **[Phase 3, Task 2]**: `TaxModal` enum covers FormPicker, FlagReason, NonDeductibleReason, MemoEdit.
+  `TaxDetailState` is a separate field (not a modal) — it splits the area vertically like the JE tab's
+  detail panel. Detail + modal can't coexist; modals have priority in handle_key dispatch.
+
+- **[Phase 3, Task 2]**: Detail panel navigation (↑/↓) intercepts keys before base hotkeys when detail
+  is open, but `f`, `n`, `a`, `m` fall through — flagging works even while detail is visible.
+
+- **[Phase 3, Task 3]**: Guide's "Tab 9: Audit Log" header corrected to "Tab 0: Audit Log" (was missed in
+  Phase 1 guide update). Global Controls table updated from `1`–`9` to `0`–`9`. Ctrl+H description updated
+  in both the guide and the `?` overlay.
 
 ## Known Issues
 - None currently.
