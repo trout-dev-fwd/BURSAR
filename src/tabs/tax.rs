@@ -335,10 +335,6 @@ impl TaxTab {
         }
     }
 
-    fn close_detail(&mut self) {
-        self.detail = None;
-    }
-
     // ── Modal key handlers ────────────────────────────────────────────────────
 
     /// Routes keys when a TaxModal is active. Returns a TabAction and whether the
@@ -394,6 +390,7 @@ impl TaxTab {
                     match db.tax_tags().set_manual(je_id, form, reason_opt) {
                         Ok(()) => {
                             self.reload_rows(db);
+                            self.open_detail(db);
                             TabAction::ShowMessage(format!("Flagged as {}.", form.display_name()))
                         }
                         Err(e) => TabAction::ShowMessage(format!("Error: {e}")),
@@ -416,6 +413,7 @@ impl TaxTab {
                     match db.tax_tags().set_non_deductible(je_id, reason_opt) {
                         Ok(()) => {
                             self.reload_rows(db);
+                            self.open_detail(db);
                             TabAction::ShowMessage("Marked as non-deductible.".to_string())
                         }
                         Err(e) => TabAction::ShowMessage(format!("Error: {e}")),
@@ -438,10 +436,7 @@ impl TaxTab {
                     match db.journals().update_memo(je_id, memo_opt) {
                         Ok(()) => {
                             self.reload_rows(db);
-                            // Re-sync the detail panel if open.
-                            if self.detail.is_some() {
-                                self.open_detail(db);
-                            }
+                            self.open_detail(db);
                             TabAction::ShowMessage("Memo updated.".to_string())
                         }
                         Err(e) => TabAction::ShowMessage(format!("Error: {e}")),
@@ -540,14 +535,17 @@ impl TaxTab {
 
     fn render_detail(&self, frame: &mut Frame, area: Rect) {
         let Some(d) = &self.detail else {
+            frame.render_widget(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Detail ")
+                    .style(Style::default().fg(Color::DarkGray)),
+                area,
+            );
             return;
         };
 
-        let title = format!(
-            " {} — {} line(s)  ↑↓: scroll  Esc: close ",
-            d.je_number,
-            d.lines.len()
-        );
+        let title = format!(" {} — {} line(s) ", d.je_number, d.lines.len());
 
         let header = Row::new(vec![
             Cell::from("#").style(Style::default().add_modifier(Modifier::BOLD)),
@@ -765,48 +763,22 @@ impl Tab for TaxTab {
             return self.handle_modal_key(key, db);
         }
 
-        // Detail panel navigation.
-        if self.detail.is_some() {
-            match key.code {
-                KeyCode::Up | KeyCode::Char('k') => {
-                    if let Some(ref mut d) = self.detail
-                        && d.focused_line > 0
-                    {
-                        d.focused_line -= 1;
-                    }
-                    return TabAction::None;
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    if let Some(ref mut d) = self.detail {
-                        let max = d.lines.len().saturating_sub(1);
-                        if d.focused_line < max {
-                            d.focused_line += 1;
-                        }
-                    }
-                    return TabAction::None;
-                }
-                KeyCode::Esc | KeyCode::Enter => {
-                    self.close_detail();
-                    return TabAction::None;
-                }
-                // Fall through to base hotkeys (f, n, a, m still work with detail open).
-                _ => {}
-            }
-        }
-
         // Base key handling.
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => {
                 self.scroll_up();
+                self.open_detail(db);
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 self.scroll_down();
+                self.open_detail(db);
             }
             KeyCode::Left => {
                 if !self.fiscal_years.is_empty() {
                     self.selected_fy_index = self.selected_fy_index.saturating_sub(1);
                     self.detail = None;
                     self.reload_rows(db);
+                    self.open_detail(db);
                 }
             }
             KeyCode::Right => {
@@ -815,14 +787,11 @@ impl Tab for TaxTab {
                     self.selected_fy_index = (self.selected_fy_index + 1).min(max);
                     self.detail = None;
                     self.reload_rows(db);
+                    self.open_detail(db);
                 }
             }
             KeyCode::Enter => {
-                if self.detail.is_some() {
-                    self.close_detail();
-                } else {
-                    self.open_detail(db);
-                }
+                // No-op in master-detail layout (detail is always visible).
             }
             KeyCode::Char(' ') => {
                 if let Some(row) = self.selected_row() {
@@ -836,6 +805,7 @@ impl Tab for TaxTab {
                         match db.tax_tags().accept_suggestion(je_id) {
                             Ok(()) => {
                                 self.reload_rows(db);
+                                self.open_detail(db);
                                 return TabAction::ShowMessage(
                                     "AI suggestion accepted.".to_string(),
                                 );
@@ -844,9 +814,6 @@ impl Tab for TaxTab {
                         }
                     }
                 }
-            }
-            KeyCode::Esc => {
-                self.close_detail();
             }
             KeyCode::Char('f') => {
                 if let Some(row) = self.selected_row() {
@@ -871,6 +838,7 @@ impl Tab for TaxTab {
                     match db.tax_tags().set_ai_pending(je_id) {
                         Ok(()) => {
                             self.reload_rows(db);
+                            self.open_detail(db);
                             return TabAction::ShowMessage("Queued for AI review.".to_string());
                         }
                         Err(e) => return TabAction::ShowMessage(format!("Error: {e}")),
@@ -903,16 +871,13 @@ impl Tab for TaxTab {
     }
 
     fn render(&self, frame: &mut Frame, area: Rect) {
-        if self.detail.is_some() {
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
-                .split(area);
-            self.render_list(frame, chunks[0]);
-            self.render_detail(frame, chunks[1]);
-        } else {
-            self.render_list(frame, area);
-        }
+        // Master-detail layout: list on top, detail always visible below.
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+            .split(area);
+        self.render_list(frame, chunks[0]);
+        self.render_detail(frame, chunks[1]);
 
         // Form config modal overlays everything.
         if let Some(ref modal) = self.form_config_modal {
@@ -945,6 +910,8 @@ impl Tab for TaxTab {
             Ok(n) => self.tax_ref_count = n,
             Err(e) => tracing::error!("Failed to count tax reference chunks: {e}"),
         }
+        // Always sync detail for the selected entry (master-detail layout).
+        self.open_detail(db);
     }
 
     fn wants_input(&self) -> bool {
@@ -953,9 +920,8 @@ impl Tab for TaxTab {
 
     fn hotkey_help(&self) -> Vec<(&'static str, &'static str)> {
         vec![
-            ("↑/↓ or k/j", "Navigate entries"),
+            ("↑/↓ or k/j", "Navigate entries (detail auto-updates)"),
             ("←/→", "Cycle fiscal year"),
-            ("Enter", "View JE detail"),
             ("Space", "Accept AI suggestion"),
             ("f", "Flag with tax form + reason"),
             ("n", "Mark as non-deductible"),
