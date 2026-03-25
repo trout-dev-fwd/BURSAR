@@ -257,7 +257,7 @@ impl FromStr for TaxReviewStatus {
 
 /// A tax form classification for a journal entry.
 /// Stored as TEXT in `tax_tags.form_tag` and `tax_tags.ai_suggested_form`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TaxFormTag {
     ScheduleC,
     ScheduleAMedical,

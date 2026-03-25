@@ -21,6 +21,7 @@ pub mod cash_flow;
 pub mod envelope_budget;
 pub mod fixed_asset_schedule;
 pub mod income_statement;
+pub mod tax_summary;
 pub mod trial_balance;
 
 // ── Report trait ─────────────────────────────────────────────────────────────
