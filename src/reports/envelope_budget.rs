@@ -1,11 +1,12 @@
 //! Envelope Budget Summary report.
 //!
-//! Shows all accounts with envelope allocations, their allocation percentage,
-//! total earmarked (fills/transfers/reversals in the period), GL spending for
-//! the period, and available balance (Earmarked − GL Balance).
+//! Shows all accounts with envelope allocations, their primary and secondary
+//! allocation percentages, optional cap, total earmarked (fills/transfers/
+//! reversals in the period), GL spending for the period, and available balance
+//! (Earmarked − GL Balance, clamped to $0).
 //!
-//! Sorted by account number. Includes a totals row and an "Unallocated" line
-//! showing the percentage of revenue not yet assigned to any envelope.
+//! Sorted by account number. Includes a totals row (primary %, secondary %)
+//! and an "Unallocated" line showing the primary % not yet assigned.
 
 use anyhow::Result;
 
@@ -54,14 +55,18 @@ impl Report for EnvelopeBudgetSummary {
         let headers = [
             "Account #",
             "Account Name",
-            "Allocation %",
-            "Earmarked",
+            "Primary %",
+            "Secondary %",
+            "Cap",
             "GL Balance",
+            "Earmarked",
             "Available",
         ];
         let alignments = [
             Align::Left,
             Align::Left,
+            Align::Right,
+            Align::Right,
             Align::Right,
             Align::Right,
             Align::Right,
@@ -72,7 +77,8 @@ impl Report for EnvelopeBudgetSummary {
         let mut total_earmarked = Money(0);
         let mut total_gl = Money(0);
         let mut total_available = Money(0);
-        let mut total_alloc_pct = Percentage(0);
+        let mut total_primary_pct = Percentage(0);
+        let mut total_secondary_pct = Percentage(0);
 
         for (alloc, account) in &alloc_rows {
             let earmarked = db
@@ -81,19 +87,38 @@ impl Report for EnvelopeBudgetSummary {
             let gl_balance = db
                 .accounts()
                 .get_balance_for_date_range(account.id, start, end)?;
-            let available = earmarked - gl_balance;
+            // Available clamps to $0: overspending shows as $0, not negative.
+            let available = Money((earmarked - gl_balance).0.max(0));
 
             total_earmarked = total_earmarked + earmarked;
             total_gl = total_gl + gl_balance;
             total_available = total_available + available;
-            total_alloc_pct = Percentage(total_alloc_pct.0 + alloc.percentage.0);
+            total_primary_pct = Percentage(total_primary_pct.0 + alloc.percentage.0);
+            total_secondary_pct = Percentage(total_secondary_pct.0 + alloc.secondary_percentage.0);
+
+            let primary_pct = if alloc.percentage.0 > 0 {
+                alloc.percentage.to_string()
+            } else {
+                "\u{2014}".to_owned() // em dash
+            };
+            let secondary_pct = if alloc.secondary_percentage.0 > 0 {
+                alloc.secondary_percentage.to_string()
+            } else {
+                "\u{2014}".to_owned()
+            };
+            let cap_str = alloc
+                .cap_amount
+                .map(format_money)
+                .unwrap_or_else(|| "\u{2014}".to_owned());
 
             rows.push(vec![
                 account.number.clone(),
                 account.name.clone(),
-                alloc.percentage.to_string(),
-                format_money(earmarked),
+                primary_pct,
+                secondary_pct,
+                cap_str,
                 format_money(gl_balance),
+                format_money(earmarked),
                 format_money(available),
             ]);
         }
@@ -102,22 +127,26 @@ impl Report for EnvelopeBudgetSummary {
         rows.push(vec![
             String::new(),
             "TOTAL".to_owned(),
-            total_alloc_pct.to_string(),
-            format_money(total_earmarked),
+            total_primary_pct.to_string(),
+            total_secondary_pct.to_string(),
+            String::new(),
             format_money(total_gl),
+            format_money(total_earmarked),
             format_money(total_available),
         ]);
 
-        // Unallocated line: 100% minus sum of all allocation percentages.
+        // Unallocated primary line: 100% minus sum of primary percentages.
         let unallocated_pct = Percentage(
             Percentage::from_display(100.0)
                 .0
-                .saturating_sub(total_alloc_pct.0),
+                .saturating_sub(total_primary_pct.0),
         );
         rows.push(vec![
             String::new(),
             "Unallocated".to_owned(),
             unallocated_pct.to_string(),
+            String::new(),
+            String::new(),
             String::new(),
             String::new(),
             String::new(),
@@ -350,5 +379,51 @@ mod tests {
         let pos_5100 = output.find("5100").expect("5100 missing");
         let pos_5200 = output.find("5200").expect("5200 missing");
         assert!(pos_5100 < pos_5200, "5100 should appear before 5200");
+    }
+
+    #[test]
+    fn envelope_budget_shows_two_tier_fields() {
+        let (db, _) = make_db();
+        let acct_a = create_account(&db, "5100", "Savings Goal", AccountType::Expense);
+        let acct_b = create_account(&db, "5200", "Overflow Dest", AccountType::Expense);
+
+        // A: 10% primary, $500 cap.
+        db.envelopes()
+            .set_allocation(
+                acct_a,
+                Percentage::from_display(10.0),
+                Percentage(0),
+                Some(Money(50_000_000_000)), // $500
+            )
+            .expect("set A");
+        // B: 0% primary, 40% secondary.
+        db.envelopes()
+            .set_allocation(acct_b, Percentage(0), Percentage::from_display(40.0), None)
+            .expect("set B");
+
+        let params = make_params(
+            "Acme",
+            NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 12, 31).unwrap(),
+        );
+        let output = EnvelopeBudgetSummary
+            .generate(&db, &params)
+            .expect("generate");
+
+        // Column headers should appear.
+        assert!(output.contains("Primary %"), "Primary % header missing");
+        assert!(output.contains("Secondary %"), "Secondary % header missing");
+        assert!(output.contains("Cap"), "Cap header missing");
+
+        // A's primary 10% and $500 cap should appear.
+        assert!(output.contains("10.00%"), "A primary % missing");
+        assert!(output.contains("500.00"), "A cap amount missing");
+
+        // B's secondary 40% should appear; its primary should be em dash.
+        assert!(output.contains("40.00%"), "B secondary % missing");
+
+        // Totals row should show summed primary and secondary percentages.
+        // Primary total = 10%, secondary total = 40%.
+        assert!(output.contains("TOTAL"), "TOTAL row missing");
     }
 }
