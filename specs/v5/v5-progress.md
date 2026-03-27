@@ -3,7 +3,7 @@
 ## Current State
 - **Active Phase**: Phase 3 — complete
 - **Last Completed Task**: Phase 3, Task 3
-- **Next Task**: None (V5 complete — awaiting release v0.6.0)
+- **Next Task**: None (V5 complete — released as v0.6.0)
 - **Blockers**: None
 
 ## Completed Phases
