@@ -1,13 +1,15 @@
 # V5 Progress Tracker
 
 ## Current State
-- **Active Phase**: Phase 2 — complete
-- **Last Completed Task**: Phase 2, Task 3
-- **Next Task**: Phase 3, Task 1
+- **Active Phase**: Phase 3 — complete
+- **Last Completed Task**: Phase 3, Task 3
+- **Next Task**: None (V5 complete — awaiting release v0.6.0)
 - **Blockers**: None
 
 ## Completed Phases
-_(none fully released yet)_
+- [x] V5 Phase 1: Schema + Migration + Repo Changes
+- [x] V5 Phase 2: Fill Algorithm + Allocation Config UI
+- [x] V5 Phase 3: Testing + Documentation_
 
 ## Current Phase Progress
 
@@ -20,6 +22,11 @@ _(none fully released yet)_
 - [x] Task 1: two-tier envelope fill algorithm with caps and overflow
 - [x] Task 2: update Allocation Config view with new columns and totals
 - [x] Task 3: sequential editing for primary, cap, and secondary allocation
+
+### Phase 3: Testing + Documentation
+- [x] Task 1: integration tests for two-tier envelope fill
+- [x] Task 2: update Envelope Budget Summary report with new fields
+- [x] Task 3: update CLAUDE.md, user guide, and progress tracking
 
 ## Decisions & Discoveries
 
@@ -79,6 +86,21 @@ _(none fully released yet)_
 
 - **[Phase 2, Task 3]**: Cap = $0 is treated as "no cap" (same as empty). A cap of $0 would
   permanently block all primary fills, which is unusual. The spec says "Empty/0 clears the cap."
+
+- **[Phase 3, Task 1]**: Integration tests placed in `tests_v5.rs` (sibling module) rather than
+  `tests.rs` to avoid pushing `tests.rs` past the 1,500-line limit (it was at 1,426 lines).
+  Added `#[cfg(test)] mod tests_v5;` to `journal/mod.rs`. Two new tests added: full four-account
+  two-tier scenario and resume-after-spend. Scenarios 1, 2, 4, 5 from the spec were already
+  covered by existing tests from Phase 2, Task 1.
+
+- **[Phase 3, Task 2]**: Envelope Budget Summary report updated with new columns (Primary %,
+  Secondary %, Cap). Old "Allocation %" column replaced. Zero % values display as em dash (`—`).
+  Available column now clamps to $0. Totals row shows both primary and secondary percentage sums.
+
+- **[Phase 3, Task 3]**: User guide Envelopes section rewritten to document two-tier fill
+  behavior with an example, new Allocation Config column table, and sequential editing flow.
+  Envelope Budget Summary report description in Reports section updated to mention new columns.
+  CLAUDE.md updated with V5 specs table, key decisions, and gotchas section.
 
 ## Known Issues
 - None currently.

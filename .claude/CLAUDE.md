@@ -90,6 +90,16 @@ Detailed specifications live in `specs/`. Read the relevant files for your curre
 | `specs/v4/v4-phase-4.md` | AI batch review: queue, prompt caching, pipe-separated response, accept/override/reject. |
 | `specs/v4/v4-phase-5.md` | Tax Summary report with reasons, CLAUDE.md, user guide. |
 
+### V5 Specs
+
+| File | Contents |
+|------|----------|
+| `specs/v5/v5-SPEC.md` | Master entry point: two-tier envelope allocations, success criteria, fill algorithm. |
+| `specs/v5/v5-progress.md` | V5 task tracking, decisions log, known issues. |
+| `specs/v5/v5-phase-1.md` | Schema migration, updated EnvelopeRepo, consumer updates. |
+| `specs/v5/v5-phase-2.md` | Two-tier fill algorithm, Allocation Config UI, sequential editing. |
+| `specs/v5/v5-phase-3.md` | Integration tests, Envelope Budget Summary report updates, documentation. |
+
 **Do not duplicate spec content here.** This file stays lean. Specs are the source of truth.
 
 ## Key Decisions
@@ -169,10 +179,20 @@ V2.2 introduces user-visible features that require guide updates:
 - **`TaxFormTag` derives `Hash`:** needed for `HashMap<TaxFormTag, Vec<_>>` grouping in Tax Summary report.
 - **Tax Summary report:** groups confirmed JEs by form with reasons and subtotals. Non-deductible and unreviewed shown as counts. Report index 9 in Reports tab.
 
+### V5
+
+- **Two-tier envelope fills:** primary fills first (gated by cap) → overflow pool → secondary fills (ignore cap). Overflow = sum of blocked primary fills from capped accounts.
+- **Cap only gates primary.** Secondary fills never check the cap; an account at its cap still receives secondary fills (goes above cap).
+- **Available clamps to $0.** Overspending (GL balance > earmarked) displays as $0.00, never negative.
+- **Sequential editing:** `Enter` on an account triggers three prompts in sequence: Primary % → Cap amount → Secondary %. Empty/0 for cap clears it.
+- **Schema migration:** `ALTER TABLE envelope_allocations ADD COLUMN` for `secondary_percentage` (default 0) and `cap_amount` (nullable). Existing allocations unchanged.
+- **Allocation Config view columns:** Account # | Account Name | Avail | Cap | Primary % | Secondary % — with totals row.
+- **Report columns:** Envelope Budget Summary now shows Primary %, Secondary %, Cap, GL Balance, Earmarked, Available. Totals row shows both percentage sums.
+
 ## Commit Messages
 
 ```
-V4 Phase N, Task M: [short description]
+V5 Phase N, Task M: [short description]
 ```
 
 One commit per task. See `specs/v1/implementation-protocols.md` for full protocol.
@@ -279,3 +299,10 @@ _(Discoveries from implementation — update as the project evolves)_
 - **Batch size is 25 JEs per AI request.** Larger batches risk hitting context limits. Token budget is finite; IRS reference chunks are included in the system prompt.
 - **Tax context built lazily.** `build_tax_context` returns `None` when `tax_reference` table is empty and no JE is selected — avoids injecting an empty system prompt block.
 - **`send_cached_simple` on AiClient.** Single-round cached requests (no tool use) for batch review. Distinct from the tool-use `classify_round` path used by chat.
+
+### V5 — Two-Tier Envelope Allocations
+- **Cap of $0 is treated as no cap.** Parsed as empty → `cap_amount = None`. A genuine $0 cap would permanently block all primary fills; the spec says "Empty/0 clears the cap."
+- **Dual-allocation accounts can go above cap.** Cap only gates primary fills. Secondary fills run regardless of the current balance vs. cap. This is intentional.
+- **Overflow only comes from capped primary allocations.** Accounts whose primary % is simply unallocated (no entry in `envelope_allocations`) do NOT contribute to overflow — only accounts that have a cap AND hit it.
+- **Reversal undoes specific fill amounts, doesn't recalculate tiers.** `get_fills_for_je` returns all Fill entries (primary and secondary alike). Reversal negates each individually; it doesn't re-run the two-tier algorithm.
+- **`tests_v5.rs` is a sibling module to `tests.rs`.** `tests.rs` was at 1,426 lines when Phase 3 tests were added; a second module avoids exceeding the 1,500-line limit. Both are gated by `#[cfg(test)]` in `journal/mod.rs`.

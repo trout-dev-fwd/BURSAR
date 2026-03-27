@@ -342,29 +342,61 @@ Same as AR: `n` (new), `p` (payment), `Enter` (payment history), `o` (open sourc
 
 Envelope budgeting lets you earmark portions of incoming cash for specific purposes.
 Think of it as putting money into labeled envelopes: "this much for rent, this much
-for insurance, this much for repairs."
+for insurance, this much for emergency savings."
 
-### How Envelopes Work
-1. You set a percentage for each account you want to budget (e.g., Rent = 15%)
-2. When you post a journal entry that brings cash in (debit to a Cash/Bank account),
-   the app automatically calculates: 15% of that cash → earmarked for Rent
-3. As you spend money (post expense entries), the Available amount decreases
-4. If Available goes negative, you've overspent that envelope
+### How Envelopes Work (Two-Tier System)
+
+Envelopes use a two-tier fill system: **primary allocations** fill first, and when a
+primary fill is blocked by a cap, the blocked amount flows to an **overflow pool**
+that **secondary allocations** then distribute.
+
+**Step 1 — Primary fills:** For each account with a primary %, the app calculates
+that % of the cash received. If the account has a cap and is already at or near
+the cap, the fill is limited to the remaining room. Any blocked amount goes to
+the overflow pool.
+
+**Step 2 — Secondary fills:** If there is overflow and some accounts have a secondary
+%, each gets their % of the overflow pool. Secondary fills **ignore the cap** — an
+account at its cap still receives secondary fills.
+
+**Step 3 — Remainder:** If secondary percentages total less than 100%, the leftover
+overflow stays unearmarked (no special handling needed).
+
+**Example:** You have an Emergency Fund account at 10% primary, $500 cap (currently
+full at $500), and a Vacation account at 5% secondary. You receive $1,000 cash.
+- Primary: 10% × $1,000 = $100, but cap is full → overflow = $100
+- Secondary: 5% × $100 overflow = $5 → Vacation gets $5
+- Emergency Fund stays at $500; Vacation grows by $5
 
 **Important:** Envelopes are budgetary only. They don't create journal entries or
 affect your actual account balances. They're a planning layer on top of your real accounting.
 
+### Allocation Config View Columns
+
+| Column | Meaning |
+|--------|---------|
+| Account # / Name | The account being budgeted |
+| Avail | Current envelope balance (earmarked minus GL spending), clamped to $0 |
+| Cap | Maximum earmarked balance for primary fills; `—` = no cap |
+| Primary % | % of each cash receipt earmarked for this account |
+| Secondary % | % of the overflow pool directed here; fills ignore the cap |
+
 ### Setting Allocations (Allocation Config view)
 1. On the Envelopes tab, you start in the Allocation Config view
-2. Select an account and press `Enter` to edit its percentage
-3. Type the percentage (e.g., "15.5") and press `Enter` to save
-4. Press `d` to remove an allocation
-5. Percentages don't need to add up to 100% — unallocated cash simply stays unearmarked
+2. Select an account and press `Enter` to edit its allocation
+3. Three sequential prompts appear:
+   - **Primary allocation %** — type a number (e.g., "10.5") or press `Enter` to keep current
+   - **Cap amount** — type a dollar amount (e.g., "500") or press `Enter` to keep; leave empty or "0" to remove the cap
+   - **Secondary allocation %** — type a number or press `Enter` to keep current
+4. Press `d` to remove an allocation entirely
+5. Primary percentages across all accounts must total ≤ 100%
+6. Secondary percentages across all accounts must total ≤ 100%
+7. The totals row at the bottom shows current primary and secondary totals at a glance
 
 ### Viewing Balances (Balances view)
 1. Press `v` to switch from Allocation Config to the Balances view
-2. Columns: Account Name, Allocation %, GL Balance (amount spent), Earmarked (budgeted amount),
-   Available (budget remaining)
+2. Columns: Account Name, GL Balance (amount spent), Earmarked (budgeted amount),
+   Available (budget remaining, clamped to $0 — overspending shows as $0.00)
 3. Use `←→` arrow keys to switch between fiscal years
 4. The header shows which fiscal year you're viewing (e.g., "FY 2026")
 
@@ -463,11 +495,11 @@ mid-year, current earnings appear as the gap).
 
 **Income Statement** — Shows profitability over a period. Revenue minus Expenses = Net Income.
 
-**Envelope Budget Summary** — Shows each account with an envelope allocation: the percentage
-allocated, how much has been earmarked (fills/transfers in the period), how much has been
-spent (GL balance change in the period), and what remains available (Earmarked − GL Balance).
-An "Unallocated" line at the bottom shows what percentage of revenue is not yet assigned to
-any envelope.
+**Envelope Budget Summary** — Shows each account with an envelope allocation: primary %,
+secondary %, cap amount, how much has been earmarked (fills/transfers in the period), how
+much has been spent (GL balance change in the period), and what remains available (Earmarked
+− GL Balance, clamped to $0). The totals row shows the sum of primary and secondary
+percentages. An "Unallocated" line shows the primary percentage not yet assigned.
 
 ---
 
